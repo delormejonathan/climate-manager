@@ -53,9 +53,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Called when entry data/options change (e.g. zone added/removed)."""
-    coordinator: DelormejClimateCoordinator = hass.data[DOMAIN][entry.entry_id]
-    await coordinator.async_reload_zones()
+    """Called when entry data/options change (e.g. zone added/removed).
+
+    We reload the entire entry so platforms get a chance to add/remove their
+    per-zone entities. async_reload_zones() only rebuilds the in-memory zone
+    map — it doesn't notify sensor.py / switch.py / etc., so newly-added zones
+    would have no entities visible in the UI.
+    """
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 # === Services ===
