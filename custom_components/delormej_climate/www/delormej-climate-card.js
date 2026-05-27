@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.6.3
+ * delormej-climate-card  v0.6.4
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -729,6 +729,30 @@ const STYLES = `
   .dc-override-row .lbl { color: #e96f8e; font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .dc-override-row .val { font-weight: 700; font-variant-numeric: tabular-nums; color: #e96f8e; }
 
+  /* Collapsible 'Détails techniques' — hidden by default, keeps §1 concise */
+  .dc-details-toggle {
+    margin-top: 10px;
+    border-top: 1px dashed var(--dc-hairline);
+    padding-top: 4px;
+  }
+  .dc-details-toggle > summary {
+    cursor: pointer; list-style: none;
+    padding: 10px 4px;
+    font-size: 0.8em; color: var(--dc-muted); font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+    user-select: none;
+  }
+  .dc-details-toggle > summary::-webkit-details-marker { display: none; }
+  .dc-details-toggle > summary::before {
+    content: "▸";
+    display: inline-block;
+    transition: transform 0.2s ease;
+    color: var(--dc-dim);
+  }
+  .dc-details-toggle[open] > summary::before { transform: rotate(90deg); }
+  .dc-details-toggle > summary:hover { color: var(--dc-fg); }
+  .dc-details-toggle[open] .dc-metrics { margin-top: 4px; }
+
   /* ============ §2 AUTOMATISATION ============ */
   .dc-control { margin-bottom: 14px; }
   .dc-control:last-child { margin-bottom: 0; }
@@ -973,29 +997,32 @@ const TEMPLATE = `
 
     <div class="dc-pills" data-bind="status-pills"></div>
 
-    <div class="dc-metrics">
-      <div class="dc-metric-row">
-        <span class="label"><ha-icon icon="mdi:send"></ha-icon>Consigne envoyée</span>
-        <span class="value" data-bind="metric-setpoint-sent">—</span>
-      </div>
-      <div class="dc-metric-row">
-        <span class="label"><ha-icon icon="mdi:thermostat"></ha-icon>Consigne clim</span>
-        <span class="value" data-bind="metric-clim-setpoint">—</span>
-      </div>
-      <div class="dc-metric-row">
-        <span class="label"><ha-icon icon="mdi:thermometer"></ha-icon>Sonde clim</span>
-        <span class="value" data-bind="metric-clim-sonde">—</span>
-      </div>
-      <div class="dc-metric-row">
-        <span class="label"><ha-icon icon="mdi:gauge"></ha-icon>Régime</span>
-        <span class="value" data-bind="metric-regime">—</span>
-      </div>
-    </div>
-
     <div class="dc-override-row" data-bind="override-row" style="display:none">
       <span class="lbl"><ha-icon icon="mdi:account-clock"></ha-icon>Override jusqu'à</span>
       <span class="val" data-bind="override-until-val">—</span>
     </div>
+
+    <details class="dc-details-toggle">
+      <summary>Détails techniques</summary>
+      <div class="dc-metrics">
+        <div class="dc-metric-row">
+          <span class="label"><ha-icon icon="mdi:send"></ha-icon>Consigne envoyée par le module</span>
+          <span class="value" data-bind="metric-setpoint-sent">—</span>
+        </div>
+        <div class="dc-metric-row">
+          <span class="label"><ha-icon icon="mdi:thermostat"></ha-icon>Consigne actuelle de la clim</span>
+          <span class="value" data-bind="metric-clim-setpoint">—</span>
+        </div>
+        <div class="dc-metric-row">
+          <span class="label"><ha-icon icon="mdi:thermometer"></ha-icon>Sonde interne clim</span>
+          <span class="value" data-bind="metric-clim-sonde">—</span>
+        </div>
+        <div class="dc-metric-row">
+          <span class="label"><ha-icon icon="mdi:gauge"></ha-icon>Régime de pilotage</span>
+          <span class="value" data-bind="metric-regime">—</span>
+        </div>
+      </div>
+    </details>
   </section>
 
   <!-- ════════════════════════════════════ §2 AUTOMATISATION -->
@@ -1150,7 +1177,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.6.3 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.6.4 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
