@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.5.2
+ * delormej-climate-card  v0.5.3
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -224,18 +224,23 @@ class DelormejClimateCard extends HTMLElement {
     const target = attrs.target_temperature;
     const targetBlock = $("target-block");
     const arrowEl = $("target-arrow");
+    const heroRow = this.querySelector(".dc-hero-row");
     if (target != null) {
-      targetBlock.style.visibility = "";
-      arrowEl.style.visibility = "";
+      targetBlock.style.display = "";
+      arrowEl.style.display = "";
+      heroRow.classList.remove("hero-row--idle");
       $("target-temp").textContent = this._fmtTemp(target);
       const dir = attrs.direction;
       arrowEl.textContent = dir === "cool" ? "↓" : dir === "heat" ? "↑" : "→";
       arrowEl.style.color =
         dir === "cool" ? "var(--dc-cool)" :
-        dir === "heat" ? "var(--dc-heat)" : "var(--dc-dim)";
+        dir === "heat" ? "var(--dc-heat)" : "var(--dc-muted)";
     } else {
-      targetBlock.style.visibility = "hidden";
-      arrowEl.style.visibility = "hidden";
+      // No target → hide the arrow + target block entirely, keep big room temp
+      // centered.  Add idle modifier for the "à l'écoute" badge.
+      targetBlock.style.display = "none";
+      arrowEl.style.display = "none";
+      heroRow.classList.add("hero-row--idle");
     }
 
     // Narrative
@@ -545,7 +550,18 @@ const STYLES = `
   }
   .dc-hero-row {
     display: flex; align-items: center; justify-content: center;
-    gap: 18px;
+    gap: 18px; flex-wrap: wrap;
+  }
+  /* Idle (no target): centered room temp, slightly larger to balance the bubble */
+  .dc-hero-row.hero-row--idle .room { font-size: 3.4em; line-height: 1; }
+  .dc-hero-row.hero-row--idle .room-label {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: var(--dc-radius-pill);
+    background: var(--dc-bg-bubble); margin-top: 12px;
+  }
+  .dc-hero-row.hero-row--idle .room-label::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--dc-muted);
   }
   .dc-hero .room-block { text-align: center; }
   .dc-hero .room {
@@ -805,7 +821,15 @@ const STYLES = `
   .dc-input-wrap input:focus { outline: none; }
   .dc-input-wrap .unit { font-size: 0.82em; color: var(--dc-muted); font-weight: 600; }
 
-  .dc-triple { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  /* Temporisations — stack rows instead of cramping 3 cols on narrow widths */
+  .dc-rows { display: flex; flex-direction: column; gap: 8px; }
+  .dc-rows .dc-field-row {
+    display: grid; grid-template-columns: 1fr 110px;
+    gap: 12px; align-items: center;
+  }
+  .dc-rows .dc-field-row label {
+    font-size: 0.88em; color: var(--dc-muted); font-weight: 600;
+  }
 
   .dc-err {
     margin: 10px var(--dc-pad); padding: 12px 14px;
@@ -984,16 +1008,16 @@ const TEMPLATE = `
       <div class="dc-subblock-title">
         <ha-icon icon="mdi:timer-sand"></ha-icon> Temporisations
       </div>
-      <div class="dc-triple">
-        <div class="dc-field">
+      <div class="dc-rows">
+        <div class="dc-field-row">
           <label>Stabilisation</label>
           <div class="dc-input-wrap"><input type="number" step="1" data-bind="num-stabDuration"><span class="unit">min</span></div>
         </div>
-        <div class="dc-field">
+        <div class="dc-field-row">
           <label>Cooldown</label>
           <div class="dc-input-wrap"><input type="number" step="1" data-bind="num-cooldownDuration"><span class="unit">min</span></div>
         </div>
-        <div class="dc-field">
+        <div class="dc-field-row">
           <label>Override max</label>
           <div class="dc-input-wrap"><input type="number" step="1" data-bind="num-overrideDuration"><span class="unit">min</span></div>
         </div>
@@ -1015,7 +1039,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.5.2 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.5.3 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
