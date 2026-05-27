@@ -1,0 +1,35 @@
+{
+  "id": "1730136417541",
+  "alias": "Désarmement : allumer les lumières",
+  "description": "",
+  "triggers": [
+    {
+      "entity_id": [
+        "alarm_control_panel.ajax_alarm_maison"
+      ],
+      "to": "disarmed",
+      "trigger": "state"
+    }
+  ],
+  "conditions": [
+    {
+      "condition": "sun",
+      "after": "sunset"
+    }
+  ],
+  "actions": [
+    {
+      "action": "light.turn_on",
+      "metadata": {},
+      "data": {
+        "brightness_pct": 20
+      },
+      "target": {
+        "entity_id": [
+          "light.plan_de_travail"
+        ]
+      }
+    }
+  ],
+  "mode": "single"
+}

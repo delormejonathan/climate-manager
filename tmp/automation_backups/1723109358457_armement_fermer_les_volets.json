@@ -1,0 +1,46 @@
+{
+  "id": "1723109358457",
+  "alias": "Armement - Fermer les volets",
+  "description": "",
+  "triggers": [
+    {
+      "entity_id": [
+        "alarm_control_panel.ajax_alarm_maison"
+      ],
+      "to": "armed_away",
+      "trigger": "state",
+      "for": {
+        "hours": 0,
+        "minutes": 5,
+        "seconds": 0
+      }
+    },
+    {
+      "entity_id": [
+        "alarm_control_panel.ajax_alarm_maison"
+      ],
+      "to": "armed_night",
+      "trigger": "state",
+      "for": {
+        "hours": 0,
+        "minutes": 5,
+        "seconds": 0
+      }
+    }
+  ],
+  "conditions": [],
+  "actions": [
+    {
+      "action": "cover.close_cover",
+      "metadata": {},
+      "data": {},
+      "target": {
+        "entity_id": [
+          "cover.store_banne_inverted",
+          "cover.volet_roulant_salon"
+        ]
+      }
+    }
+  ],
+  "mode": "single"
+}
