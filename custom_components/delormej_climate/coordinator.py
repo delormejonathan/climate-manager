@@ -122,26 +122,58 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     # === State listener: detect external overrides ===
 
+    # Attributes on a climate.* entity that a user (or app) actively chooses.
+    # A change to current_temperature, last_updated, etc. is the integration's
+    # own polling — NOT an override. Detecting override on those was the v0.1.x
+    # bug where every Daikin poll silently flipped the zone to MANUAL_OVERRIDE_TIMED.
+    _OVERRIDE_TRIGGER_ATTRS = frozenset(
+        {
+            "temperature",  # setpoint
+            "fan_mode",
+            "swing_mode",
+            "swing_horizontal_mode",
+            "preset_mode",
+            "target_temp_high",
+            "target_temp_low",
+        }
+    )
+
     @callback
     def _on_clim_state_changed(self, event: Event[EventStateChangedData]) -> None:
         entity_id = event.data["entity_id"]
         new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
         if new_state is None:
             return
-        # Find zone owning this entity
         zone = next(
             (z for z in self._zones.values() if z.config.climate_entity == entity_id), None
         )
         if zone is None:
             return
-        # Was it us?
         if self._context_tracker.is_ours(event.context):
+            return
+        # Did anything user-actionable actually change? If old_state is None this
+        # is the initial state (HA boot or integration reload) — not an override.
+        if old_state is None:
+            return
+        if old_state.state == new_state.state and not self._user_action_changed(
+            old_state, new_state
+        ):
             return
         # External override
         now = utc_now_ts()
         schedule_on = self._read_schedule_on(zone)
         zone.on_external_override(now, schedule_on)
         self.hass.async_create_task(self.async_request_refresh())
+
+    def _user_action_changed(self, old_state, new_state) -> bool:
+        """Return True iff a user-actionable attribute differs between old and new."""
+        old_attrs = old_state.attributes or {}
+        new_attrs = new_state.attributes or {}
+        for attr in self._OVERRIDE_TRIGGER_ATTRS:
+            if old_attrs.get(attr) != new_attrs.get(attr):
+                return True
+        return False
 
     # === Apply commands ===
 

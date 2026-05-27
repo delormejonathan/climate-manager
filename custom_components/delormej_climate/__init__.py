@@ -129,46 +129,57 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 # === Services ===
 
 
+def _find_zone(hass: HomeAssistant, zone_ref: str):
+    """Resolve a zone ref (UUID, name, or slugified name) to (coordinator, zone)."""
+    ref_norm = zone_ref.strip().lower()
+    for coord in _all_coordinators(hass):
+        for zone in coord.zones.values():
+            if (
+                zone.config.zone_id == zone_ref
+                or zone.config.name.lower() == ref_norm
+                or _slug(zone.config.name) == ref_norm
+            ):
+                return coord, zone
+    return None, None
+
+
+def _slug(s: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+
+
 def _register_services(hass: HomeAssistant) -> None:
     if hass.services.has_service(DOMAIN, SERVICE_SET_MODE):
         return
 
     async def _set_mode(call: ServiceCall) -> None:
-        zone_id = call.data["zone_id"]
-        mode = call.data["mode"]
-        for coord in _all_coordinators(hass):
-            zone = coord.zone(zone_id)
-            if zone:
-                zone.set_mode(mode, utc_now_ts())
-                await coord.async_tick_now()
-                return
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            _LOGGER.warning("set_mode: zone %r not found", call.data["zone_id"])
+            return
+        zone.set_mode(call.data["mode"], utc_now_ts())
+        await coord.async_tick_now()
 
     async def _force_off(call: ServiceCall) -> None:
-        zone_id = call.data["zone_id"]
-        for coord in _all_coordinators(hass):
-            zone = coord.zone(zone_id)
-            if zone:
-                zone.set_mode(ZoneMode.OFF, utc_now_ts())
-                await coord.async_tick_now()
-                return
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            return
+        zone.set_mode(ZoneMode.OFF, utc_now_ts())
+        await coord.async_tick_now()
 
     async def _reset_override(call: ServiceCall) -> None:
-        zone_id = call.data["zone_id"]
-        for coord in _all_coordinators(hass):
-            zone = coord.zone(zone_id)
-            if zone:
-                zone.reset_override(utc_now_ts())
-                await coord.async_tick_now()
-                return
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            return
+        zone.reset_override(utc_now_ts())
+        await coord.async_tick_now()
 
     async def _boost(call: ServiceCall) -> None:
-        zone_id = call.data["zone_id"]
-        for coord in _all_coordinators(hass):
-            zone = coord.zone(zone_id)
-            if zone:
-                zone.trigger_boost(utc_now_ts())
-                await coord.async_tick_now()
-                return
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            return
+        zone.trigger_boost(utc_now_ts())
+        await coord.async_tick_now()
 
     async def _reload(_: ServiceCall) -> None:
         for coord in _all_coordinators(hass):
