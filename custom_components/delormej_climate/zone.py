@@ -27,7 +27,6 @@ from homeassistant.components.climate import (
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
 
 from .const import (
-    AGGRESSIVITY_PROFILES,
     BOOST_DURATION_MIN,
     BOOST_FAN_MODE,
     BOOST_OFFSET,
@@ -36,7 +35,9 @@ from .const import (
     DEFAULT_AGGRESSIVITY,
     DEFAULT_DUREE_COOLDOWN_MIN,
     DEFAULT_DUREE_STABILISATION_MIN,
+    DEFAULT_FAN_INTENSITY,
     DEFAULT_OVERRIDE_DUREE_MIN,
+    DEFAULT_POWER,
     DEFAULT_SEUIL_DEBUT_CHAUFFAGE,
     DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT,
     DEFAULT_SEUIL_FIN_CHAUFFAGE,
@@ -44,6 +45,8 @@ from .const import (
     DEFAULT_SWING_MODE,
     ECART_APPROCHE_THRESHOLD,
     ECART_ATTAQUE_THRESHOLD,
+    FAN_PROFILES,
+    POWER_PROFILES,
     RATE_LIMIT_SECONDS,
     SETPOINT_NOOP_DELTA,
     Regime,
@@ -125,7 +128,13 @@ class ZoneConfig:
     duree_cooldown_min: int = DEFAULT_DUREE_COOLDOWN_MIN
     override_duree_min: int = DEFAULT_OVERRIDE_DUREE_MIN
     aggressive_when_absent: bool = True
+    # Legacy single-knob (kept for backward compat in stored configs).
     aggressivity: str = DEFAULT_AGGRESSIVITY
+    # New decoupled knobs — preferred. If a zone has only `aggressivity` in
+    # storage (pre-v0.7 config), from_dict mirrors it into both power +
+    # fan_intensity so behaviour is unchanged at upgrade time.
+    power: str = DEFAULT_POWER
+    fan_intensity: str = DEFAULT_FAN_INTENSITY
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ZoneConfig:
@@ -154,6 +163,13 @@ class ZoneConfig:
             override_duree_min=int(d.get("override_duree_min", DEFAULT_OVERRIDE_DUREE_MIN)),
             aggressive_when_absent=bool(d.get("aggressive_when_absent", True)),
             aggressivity=str(d.get("aggressivity", DEFAULT_AGGRESSIVITY)),
+            # Migration: when only the legacy 'aggressivity' is stored, mirror
+            # it into power + fan_intensity (same name happens to work for
+            # both — 'agressif' fan becomes the new 'fort' though).
+            power=str(d.get("power", d.get("aggressivity", DEFAULT_POWER))),
+            fan_intensity=str(d.get("fan_intensity", _legacy_to_fan(
+                d.get("aggressivity", DEFAULT_AGGRESSIVITY)
+            ))),
         )
 
 
@@ -499,24 +515,23 @@ class Zone:
             return []
 
         cmds: list[Command] = []
-        profile = AGGRESSIVITY_PROFILES.get(
-            self.config.aggressivity, AGGRESSIVITY_PROFILES[DEFAULT_AGGRESSIVITY]
-        )
+        power_profile = POWER_PROFILES.get(self.config.power, POWER_PROFILES[DEFAULT_POWER])
+        fan_profile = FAN_PROFILES.get(self.config.fan_intensity, FAN_PROFILES[DEFAULT_FAN_INTENSITY])
 
         # HVAC mode
         if force_hvac or inp.clim_current_hvac_mode != target_mode:
             cmds.append(self._cmd_set_hvac_mode(target_mode))
 
-        # Setpoint
-        offset = _offset_for_regime(regime, profile)
+        # Setpoint — driven by the POWER profile
+        offset = _offset_for_regime(regime, power_profile)
         setpoint = self._setpoint_for_offset(inp, offset, target_mode)
         if setpoint is not None and self._setpoint_should_send(setpoint, inp):
             cmds.append(self._cmd_set_temperature(setpoint))
             self.state.last_setpoint_sent = setpoint
 
-        # Fan — only if the clim has a fan_mode at all
+        # Fan — driven by the FAN profile, and only if the clim has fan_modes at all
         if inp.supports_fan_mode:
-            target_fan = _fan_for_regime(regime, profile)
+            target_fan = _fan_for_regime(regime, fan_profile)
             if target_fan and inp.clim_current_fan_mode != target_fan:
                 cmds.append(self._cmd_set_fan_mode(target_fan))
                 self.state.last_fan_sent = target_fan
@@ -599,13 +614,13 @@ class Zone:
         )
 
 
-def _offset_for_regime(regime: str, profile: dict) -> float:
+def _offset_for_regime(regime: str, power_profile: dict) -> float:
     if regime == Regime.ATTAQUE:
-        return profile["offset_attaque"]
+        return power_profile["attaque"]
     if regime == Regime.CROISIERE:
-        return profile["offset_croisiere"]
+        return power_profile["croisiere"]
     if regime == Regime.APPROCHE:
-        return profile["offset_approche"]
+        return power_profile["approche"]
     if regime == Regime.STABILISATION:
         return 0.0
     if regime == Regime.BOOST:
@@ -613,18 +628,24 @@ def _offset_for_regime(regime: str, profile: dict) -> float:
     return 0.0
 
 
-def _fan_for_regime(regime: str, profile: dict) -> str | None:
+def _fan_for_regime(regime: str, fan_profile: dict) -> str | None:
     if regime == Regime.ATTAQUE:
-        return profile["fan_attaque"]
+        return fan_profile["attaque"]
     if regime == Regime.CROISIERE:
-        return profile["fan_croisiere"]
+        return fan_profile["croisiere"]
     if regime == Regime.APPROCHE:
-        return profile["fan_approche"]
+        return fan_profile["approche"]
     if regime == Regime.STABILISATION:
         return "quiet"  # always quiet during stabilization — pendulum at neutral
     if regime == Regime.BOOST:
         return BOOST_FAN_MODE
     return None
+
+
+def _legacy_to_fan(legacy: str) -> str:
+    """Legacy 'aggressivity' → fan_intensity. The old 'agressif' meant 'fort'
+    for fan; doux/normal carry over."""
+    return "fort" if legacy == "agressif" else legacy
 
 
 def utc_now_ts() -> float:

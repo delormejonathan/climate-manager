@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.6.5
+ * delormej-climate-card  v0.7.0
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -78,7 +78,8 @@ class DelormejClimateCard extends HTMLElement {
       setpointSent: this._ent("sensor", "setpoint_sent"),
       overrideUntil: this._ent("sensor", "override_until"),
       modeSelect: this._ent("select", "mode"),
-      aggressivitySelect: this._ent("select", "aggressivity"),
+      powerSelect: this._ent("select", "power"),
+      fanIntensitySelect: this._ent("select", "fan_intensity"),
       heatStart: this._ent("number", "heat_start_threshold"),
       heatStop: this._ent("number", "heat_stop_threshold"),
       coolStart: this._ent("number", "cool_start_threshold"),
@@ -129,10 +130,15 @@ class DelormejClimateCard extends HTMLElement {
       b.addEventListener("click", () => this._call("select", "select_option",
         { entity_id: ids.modeSelect, option: b.dataset.mode }));
     });
-    // Agressivité
-    $("aggressivity").querySelectorAll("button").forEach((b) => {
+    // Puissance
+    $("power").querySelectorAll("button").forEach((b) => {
       b.addEventListener("click", () => this._call("select", "select_option",
-        { entity_id: ids.aggressivitySelect, option: b.dataset.aggressivity }));
+        { entity_id: ids.powerSelect, option: b.dataset.power }));
+    });
+    // Ventilation
+    $("fan-intensity").querySelectorAll("button").forEach((b) => {
+      b.addEventListener("click", () => this._call("select", "select_option",
+        { entity_id: ids.fanIntensitySelect, option: b.dataset.fanIntensity }));
     });
     // Quick actions
     $("boost-btn").addEventListener("click", () =>
@@ -336,9 +342,12 @@ class DelormejClimateCard extends HTMLElement {
     $("mode").querySelectorAll("button").forEach((b) =>
       b.classList.toggle("active", b.dataset.mode === currentMode));
 
-    const currentAgg = get(ids.aggressivitySelect)?.state || attrs.aggressivity || "normal";
-    $("aggressivity").querySelectorAll("button").forEach((b) =>
-      b.classList.toggle("active", b.dataset.aggressivity === currentAgg));
+    const currentPower = get(ids.powerSelect)?.state || attrs.power || "normal";
+    $("power").querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("active", b.dataset.power === currentPower));
+    const currentFan = get(ids.fanIntensitySelect)?.state || attrs.fan_intensity || "normal";
+    $("fan-intensity").querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("active", b.dataset.fanIntensity === currentFan));
 
     const inOverride = attrs.in_override === true;
     const resumeBtn = $("resume-btn");
@@ -776,7 +785,8 @@ const STYLES = `
     box-shadow: 0 1px 3px rgba(0,0,0,0.2);
   }
   .dc-segmented.tone-warn button.active[data-mode="boost"],
-  .dc-segmented.tone-warn button.active[data-aggressivity="agressif"] {
+  .dc-segmented.tone-warn button.active[data-power="agressif"],
+  .dc-segmented.tone-warn button.active[data-fan-intensity="fort"] {
     background: var(--dc-warn); color: white;
   }
   .dc-segmented.tone-danger button.active[data-mode="off"] {
@@ -1035,11 +1045,20 @@ const TEMPLATE = `
     </div>
 
     <div class="dc-control">
-      <div class="dc-control-label">Agressivité</div>
-      <div class="dc-segmented tone-warn" data-bind="aggressivity">
-        <button data-aggressivity="doux">Doux</button>
-        <button data-aggressivity="normal">Normal</button>
-        <button data-aggressivity="agressif">Agressif</button>
+      <div class="dc-control-label">Puissance (consigne)</div>
+      <div class="dc-segmented tone-warn" data-bind="power">
+        <button data-power="doux">Doux</button>
+        <button data-power="normal">Normal</button>
+        <button data-power="agressif">Agressif</button>
+      </div>
+    </div>
+
+    <div class="dc-control">
+      <div class="dc-control-label">Ventilation (bruit)</div>
+      <div class="dc-segmented tone-warn" data-bind="fan-intensity">
+        <button data-fan-intensity="doux">Doux</button>
+        <button data-fan-intensity="normal">Normal</button>
+        <button data-fan-intensity="fort">Fort</button>
       </div>
     </div>
 
@@ -1170,7 +1189,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.6.5 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.7.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

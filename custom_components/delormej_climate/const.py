@@ -38,9 +38,13 @@ CONF_DUREE_STABILISATION_MIN = "duree_stabilisation_min"
 CONF_DUREE_COOLDOWN_MIN = "duree_cooldown_min"
 CONF_OVERRIDE_DUREE_MIN = "override_duree_min"
 CONF_AGGRESSIVE_WHEN_ABSENT = "aggressive_when_absent"
-CONF_AGGRESSIVITY = "aggressivity"
+CONF_AGGRESSIVITY = "aggressivity"          # legacy alias
+CONF_POWER = "power"
+CONF_FAN_INTENSITY = "fan_intensity"
 
 DEFAULT_AGGRESSIVITY = "normal"
+DEFAULT_POWER = "normal"
+DEFAULT_FAN_INTENSITY = "normal"
 
 # Defaults
 DEFAULT_SEUIL_DEBUT_CHAUFFAGE = 19.5
@@ -133,42 +137,46 @@ class ZoneMode:
     ALL: ClassVar[list[str]] = [AUTO, OFF, BOOST]
 
 
-class Aggressivity:
-    """Profil de pilotage : combinaison d'offsets + ventilation par régime."""
+class Power:
+    """Puissance de pilotage : contrôle uniquement le décalage de consigne envoyé
+    à la clim (= à quel point on demande à la clim de turbiner). Dissociée de la
+    ventilation pour permettre 'puissance agressif + ventilation douce' (chambre
+    enfant qui dort)."""
 
     DOUX = "doux"
     NORMAL = "normal"
     AGRESSIF = "agressif"
-
     ALL: ClassVar[list[str]] = [DOUX, NORMAL, AGRESSIF]
 
 
-# Per-aggressivity tuning. Offsets en °C (toujours positifs ; le signe est appliqué
-# dans le pilotage selon hvac_mode). Doux = silence prioritaire, Agressif = vitesse
-# de refroidissement/chauffage maximale au prix du bruit.
-AGGRESSIVITY_PROFILES: dict[str, dict] = {
-    "doux": {
-        "offset_attaque": 3.0,
-        "offset_croisiere": 1.0,
-        "offset_approche": 0.5,
-        "fan_attaque": "quiet",
-        "fan_croisiere": "quiet",
-        "fan_approche": "quiet",
-    },
-    "normal": {
-        "offset_attaque": 5.0,
-        "offset_croisiere": 2.0,
-        "offset_approche": 1.0,
-        "fan_attaque": "auto",
-        "fan_croisiere": "auto",
-        "fan_approche": "quiet",
-    },
-    "agressif": {
-        "offset_attaque": 7.0,
-        "offset_croisiere": 3.0,
-        "offset_approche": 1.5,
-        "fan_attaque": "5",
-        "fan_croisiere": "4",
-        "fan_approche": "auto",
-    },
+class FanIntensity:
+    """Intensité de ventilation : contrôle uniquement le fan_mode envoyé.
+    Indépendante de la Puissance."""
+
+    DOUX = "doux"
+    NORMAL = "normal"
+    FORT = "fort"
+    ALL: ClassVar[list[str]] = [DOUX, NORMAL, FORT]
+
+
+# Backward-compat — anciennes zones avaient une seule clé `aggressivity`.
+class Aggressivity:
+    DOUX = "doux"
+    NORMAL = "normal"
+    AGRESSIF = "agressif"
+    ALL: ClassVar[list[str]] = [DOUX, NORMAL, AGRESSIF]
+
+
+# Offsets °C par régime, signe appliqué au moment du pilotage selon hvac_mode.
+POWER_PROFILES: dict[str, dict] = {
+    "doux":     {"attaque": 3.0, "croisiere": 1.0, "approche": 0.5},
+    "normal":   {"attaque": 5.0, "croisiere": 2.0, "approche": 1.0},
+    "agressif": {"attaque": 7.0, "croisiere": 3.0, "approche": 1.5},
+}
+
+# fan_mode par régime. Valeurs Daikin valides : auto, quiet, 1, 2, 3, 4, 5.
+FAN_PROFILES: dict[str, dict] = {
+    "doux":   {"attaque": "quiet", "croisiere": "quiet", "approche": "quiet"},
+    "normal": {"attaque": "auto",  "croisiere": "auto",  "approche": "quiet"},
+    "fort":   {"attaque": "5",     "croisiere": "4",     "approche": "auto"},
 }

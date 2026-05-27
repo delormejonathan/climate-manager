@@ -139,12 +139,20 @@
           "boost": "Boost"
         }
       },
-      "zone_aggressivity": {
-        "name": "Aggressivity",
+      "zone_power": {
+        "name": "Power",
         "state": {
           "doux": "Gentle",
           "normal": "Normal",
           "agressif": "Aggressive"
+        }
+      },
+      "zone_fan_intensity": {
+        "name": "Fan intensity",
+        "state": {
+          "doux": "Gentle",
+          "normal": "Normal",
+          "fort": "Strong"
         }
       }
     },

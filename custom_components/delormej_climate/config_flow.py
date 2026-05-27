@@ -12,11 +12,12 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_AGGRESSIVE_WHEN_ABSENT,
-    CONF_AGGRESSIVITY,
     CONF_CLIMATE_ENTITY,
     CONF_DUREE_COOLDOWN_MIN,
     CONF_DUREE_STABILISATION_MIN,
+    CONF_FAN_INTENSITY,
     CONF_OVERRIDE_DUREE_MIN,
+    CONF_POWER,
     CONF_PRESENCE_ABSENT_STATES,
     CONF_PRESENCE_ENTITY,
     CONF_SCHEDULE_ENTITY,
@@ -29,10 +30,11 @@ from .const import (
     CONF_ZONE_ID,
     CONF_ZONE_NAME,
     CONF_ZONES,
-    DEFAULT_AGGRESSIVITY,
     DEFAULT_DUREE_COOLDOWN_MIN,
     DEFAULT_DUREE_STABILISATION_MIN,
+    DEFAULT_FAN_INTENSITY,
     DEFAULT_OVERRIDE_DUREE_MIN,
+    DEFAULT_POWER,
     DEFAULT_SEUIL_DEBUT_CHAUFFAGE,
     DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT,
     DEFAULT_SEUIL_FIN_CHAUFFAGE,
@@ -44,7 +46,8 @@ from .const import (
     MIN_DUREE_MIN,
     MIN_OVERRIDE_DUREE_MIN,
     MIN_SEUIL,
-    Aggressivity,
+    FanIntensity,
+    Power,
 )
 
 # States typically considered "absent" for an alarm_control_panel
@@ -183,13 +186,23 @@ def _zone_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 default=defaults.get(CONF_AGGRESSIVE_WHEN_ABSENT, True),
             ): bool,
             vol.Optional(
-                CONF_AGGRESSIVITY,
-                default=defaults.get(CONF_AGGRESSIVITY, DEFAULT_AGGRESSIVITY),
+                CONF_POWER,
+                default=defaults.get(CONF_POWER, DEFAULT_POWER),
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=Aggressivity.ALL,
+                    options=Power.ALL,
                     mode=selector.SelectSelectorMode.LIST,
-                    translation_key="aggressivity",
+                    translation_key="power",
+                )
+            ),
+            vol.Optional(
+                CONF_FAN_INTENSITY,
+                default=defaults.get(CONF_FAN_INTENSITY, DEFAULT_FAN_INTENSITY),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=FanIntensity.ALL,
+                    mode=selector.SelectSelectorMode.LIST,
+                    translation_key="fan_intensity",
                 )
             ),
         }

@@ -365,7 +365,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "cooldown_ends_ts": cooldown_ends_ts,
                 "direction": direction,
                 "target_temperature": target_temperature,
-                "aggressivity": zone.config.aggressivity,
+                "aggressivity": zone.config.aggressivity,  # legacy alias
+                "power": zone.config.power,
+                "fan_intensity": zone.config.fan_intensity,
                 "supports_cool": inputs.supports_cool,
                 "supports_heat": inputs.supports_heat,
                 "supports_fan_mode": inputs.supports_fan_mode,

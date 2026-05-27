@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, Aggressivity, ZoneMode
+from .const import DOMAIN, FanIntensity, Power, ZoneMode
 from .coordinator import DelormejClimateCoordinator
 from .entity_base import DelormejClimateZoneEntity
 from .zone import utc_now_ts
@@ -20,7 +20,8 @@ async def async_setup_entry(
     entities: list[SelectEntity] = []
     for zid in coord.zones:
         entities.append(ZoneModeSelect(coord, zid))
-        entities.append(ZoneAggressivitySelect(coord, zid))
+        entities.append(ZonePowerSelect(coord, zid))
+        entities.append(ZoneFanIntensitySelect(coord, zid))
     async_add_entities(entities)
 
 
@@ -45,21 +46,41 @@ class ZoneModeSelect(DelormejClimateZoneEntity, SelectEntity):
         await self.coordinator.async_tick_now()
 
 
-class ZoneAggressivitySelect(DelormejClimateZoneEntity, SelectEntity):
-    _attr_translation_key = "zone_aggressivity"
-    _attr_icon = "mdi:speedometer"
-    _attr_options = Aggressivity.ALL
+class ZonePowerSelect(DelormejClimateZoneEntity, SelectEntity):
+    _attr_translation_key = "zone_power"
+    _attr_icon = "mdi:flash"
+    _attr_options = Power.ALL
 
     def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
-        super().__init__(coord, zone_id, "aggressivity")
+        super().__init__(coord, zone_id, "power")
 
     @property
     def current_option(self) -> str | None:
         zone = self.coordinator.zone(self._zone_id)
-        return zone.config.aggressivity if zone else None
+        return zone.config.power if zone else None
 
     async def async_select_option(self, option: str) -> None:
-        if option not in Aggressivity.ALL:
+        if option not in Power.ALL:
             return
-        self.coordinator.update_zone_config(self._zone_id, aggressivity=option)
+        self.coordinator.update_zone_config(self._zone_id, power=option)
+        await self.coordinator.async_tick_now()
+
+
+class ZoneFanIntensitySelect(DelormejClimateZoneEntity, SelectEntity):
+    _attr_translation_key = "zone_fan_intensity"
+    _attr_icon = "mdi:fan"
+    _attr_options = FanIntensity.ALL
+
+    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
+        super().__init__(coord, zone_id, "fan_intensity")
+
+    @property
+    def current_option(self) -> str | None:
+        zone = self.coordinator.zone(self._zone_id)
+        return zone.config.fan_intensity if zone else None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in FanIntensity.ALL:
+            return
+        self.coordinator.update_zone_config(self._zone_id, fan_intensity=option)
         await self.coordinator.async_tick_now()
