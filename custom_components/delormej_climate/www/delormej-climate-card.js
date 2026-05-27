@@ -160,8 +160,8 @@ class DelormejClimateCard extends HTMLElement {
           <option value="off">Off</option>
           <option value="boost">Boost</option>
         </select>
-        <button class="primary" data-bind="boost-btn" title="Boost 15 min">⚡ Boost</button>
-        <button data-bind="resume-btn" title="Reprendre auto">↺ Reprendre</button>
+        <button class="primary" data-bind="boost-btn" title="Active le boost pour 15 minutes puis retour auto">⚡ Activer Boost 15 min</button>
+        <button data-bind="resume-btn" title="Annule l'override manuel en cours">↺ Reprendre auto</button>
       </div>
 
       <details class="thresholds">
