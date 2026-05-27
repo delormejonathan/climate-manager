@@ -135,6 +135,17 @@ class DelormejClimateCard extends HTMLElement {
       }
       .dc-hero .temp .unit { font-size: 0.5em; color: var(--dc-muted); font-weight: 400; }
       .dc-hero .temp-label { font-size: 0.78em; color: var(--dc-muted); margin-top: 4px; }
+      .dc-hero .narrative {
+        margin-top: 8px; font-size: 0.95em; line-height: 1.4;
+        color: var(--dc-fg); grid-column: 1 / -1;
+      }
+      .dc-hero .narrative .target {
+        color: var(--primary-color); font-weight: 600; font-variant-numeric: tabular-nums;
+      }
+      .dc-hero .narrative .until {
+        color: var(--dc-muted); font-variant-numeric: tabular-nums;
+      }
+      .dc-hero .narrative.warn { color: var(--warning-color, #ffc107); }
       .dc-hero .regime { text-align: right; align-self: end; font-size: 0.85em; color: var(--dc-muted); }
       .dc-hero .regime-val { font-weight: 600; color: var(--dc-fg); display: block; }
 
@@ -264,6 +275,7 @@ class DelormejClimateCard extends HTMLElement {
           Régime
           <span class="regime-val" data-bind="regime">—</span>
         </div>
+        <div class="narrative" data-bind="narrative"></div>
       </div>
 
       <div class="dc-ctx" data-bind="ctx"></div>
@@ -394,7 +406,14 @@ class DelormejClimateCard extends HTMLElement {
 
     // --- Hero ---
     $("room-temp").textContent = this._fmtTemp(get(ids.roomTemp)?.state);
-    $("regime").textContent = REGIME_LABELS[get(ids.regime)?.state] ?? "—";
+    const regimeVal = get(ids.regime)?.state;
+    $("regime").textContent = REGIME_LABELS[regimeVal] ?? "—";
+
+    // --- Narrative line ---
+    const narrative = this._buildNarrative(stateVal, regimeVal, attrs, get, ids);
+    const narrativeEl = $("narrative");
+    narrativeEl.innerHTML = narrative.html;
+    narrativeEl.classList.toggle("warn", !!narrative.warn);
 
     // --- Context chips ---
     const ctx = $("ctx");
@@ -445,6 +464,86 @@ class DelormejClimateCard extends HTMLElement {
         el.value = o.state;
       }
     }
+  }
+
+  /* ============================================================== narrative */
+
+  _buildNarrative(state, regime, attrs, get, ids) {
+    const dir = attrs.direction;  // 'cool' | 'heat' | null
+    const target = attrs.target_temperature;
+    const targetSpan = (t) => `<span class="target">${this._fmtTemp(t)}°C</span>`;
+    const verb = dir === "heat" ? "Chauffage" : "Refroidissement";
+
+    if (state === "idle") {
+      const heatStart = parseFloat(get(ids.heatStart)?.state);
+      const coolStart = parseFloat(get(ids.coolStart)?.state);
+      const room = parseFloat(get(ids.roomTemp)?.state);
+      let parts = [];
+      if (!Number.isNaN(coolStart)) parts.push(`refroidira si T° > ${coolStart}°C`);
+      if (!Number.isNaN(heatStart)) parts.push(`chauffera si T° < ${heatStart}°C`);
+      // Hint about which seuil is closer
+      let hint = "";
+      if (!Number.isNaN(room) && !Number.isNaN(coolStart) && !Number.isNaN(heatStart)) {
+        const dToCool = coolStart - room;
+        const dToHeat = room - heatStart;
+        if (dToCool > 0 && dToCool < dToHeat) hint = ` (${dToCool.toFixed(1)}°C avant cool)`;
+        else if (dToHeat > 0 && dToHeat < dToCool) hint = ` (${dToHeat.toFixed(1)}°C avant heat)`;
+      }
+      return { html: `Inactif. ${parts.join(" ; ")}${hint}.`, warn: false };
+    }
+
+    if (state === "starting") {
+      return { html: `Démarrage ${dir === "heat" ? "chauffage" : "refroidissement"} vers ${targetSpan(target)}.`, warn: false };
+    }
+
+    if (state === "running") {
+      switch (regime) {
+        case "attaque":
+          return { html: `${verb} intensif vers ${targetSpan(target)}.`, warn: false };
+        case "croisiere":
+          return { html: `${verb} en cours vers ${targetSpan(target)}.`, warn: false };
+        case "approche":
+          return { html: `Approche de ${targetSpan(target)}.`, warn: false };
+        case "boost":
+          return { html: `Mode boost ${dir === "heat" ? "chauffage" : "refroidissement"} vers ${targetSpan(target)}.`, warn: false };
+        default:
+          return { html: `${verb} en cours.`, warn: false };
+      }
+    }
+
+    if (state === "stabilizing") {
+      const until = attrs.stabilization_ends_at;
+      const untilTxt = until ? ` jusqu'à <span class="until">${this._fmtTime(until)}</span>` : "";
+      return { html: `Stabilisation à ${targetSpan(target)}${untilTxt}.`, warn: false };
+    }
+
+    if (state === "cooldown") {
+      const until = attrs.cooldown_ends_at;
+      const untilTxt = until ? ` jusqu'à <span class="until">${this._fmtTime(until)}</span>` : "";
+      return { html: `Pause anti-rebond${untilTxt}.`, warn: false };
+    }
+
+    if (state === "schedule_off") {
+      return { html: "Hors plage planning, pilotage auto désactivé.", warn: true };
+    }
+
+    if (state === "manual_override_timed") {
+      const overrideUntil = get(ids.overrideUntil)?.state;
+      const untilTxt = overrideUntil && overrideUntil !== "unknown"
+        ? ` jusqu'à <span class="until">${this._fmtTime(overrideUntil)}</span>`
+        : "";
+      return { html: `Override manuel${untilTxt}.`, warn: true };
+    }
+
+    if (state === "manual_override_free") {
+      return { html: "Pilotage manuel libre (auto reprend si le planning rouvre).", warn: true };
+    }
+
+    if (state === "window_open") {
+      return { html: "Fenêtre ouverte, clim en pause.", warn: true };
+    }
+
+    return { html: "", warn: false };
   }
 
   /* ============================================================== helpers */

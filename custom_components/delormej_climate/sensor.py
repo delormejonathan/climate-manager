@@ -49,12 +49,19 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
         d = self._zone_data
         if not d:
             return None
-        return {
+        attrs = {
             "schedule_on": d.get("schedule_on"),
             "any_window_open": d.get("any_window_open"),
             "house_is_absent": d.get("house_is_absent"),
             "in_override": d.get("in_override"),
+            "direction": d.get("direction"),
+            "target_temperature": d.get("target_temperature"),
         }
+        for ts_key in ("state_entered_ts", "stabilization_ends_ts", "cooldown_ends_ts"):
+            ts = d.get(ts_key)
+            if ts:
+                attrs[ts_key.replace("_ts", "_at")] = datetime.fromtimestamp(ts, tz=UTC).isoformat()
+        return attrs
 
 
 class ZoneRegimeSensor(DelormejClimateZoneEntity, SensorEntity):

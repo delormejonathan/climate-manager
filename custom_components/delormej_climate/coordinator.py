@@ -275,6 +275,37 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         out: dict[str, Any] = {"zones": {}}
         for zid, zone in self._zones.items():
             inputs = self._gather_inputs(zone)
+            # Derived: when we entered the current state, and (for timed states)
+            # when we'll leave it. Exposing these lets the Lovelace card render
+            # narrative timers like "stabilisation jusqu'à 11:25".
+            entered_ts = zone.state.last_state_transition_ts or None
+            stabilization_ends_ts = None
+            cooldown_ends_ts = None
+            if zone.state.state == ZoneState.STABILIZING and entered_ts:
+                stabilization_ends_ts = entered_ts + zone.config.duree_stabilisation_min * 60
+            if zone.state.state == ZoneState.COOLDOWN and entered_ts:
+                cooldown_ends_ts = entered_ts + zone.config.duree_cooldown_min * 60
+
+            # Direction & target temperature inferred from underlying clim mode
+            # (more reliable than guessing from thresholds + room temp).
+            clim_mode = inputs.clim_current_hvac_mode
+            direction: str | None = None
+            target_temperature: float | None = None
+            if clim_mode == "cool":
+                direction = "cool"
+                target_temperature = zone.config.seuil_fin_refroidissement
+            elif clim_mode == "heat":
+                direction = "heat"
+                target_temperature = zone.config.seuil_fin_chauffage
+            elif zone.state.state in (ZoneState.STARTING, ZoneState.RUNNING):
+                # Just decided to start but no clim mode echoed yet — guess from
+                # the thresholds vs current temperature.
+                rt = inputs.room_temperature
+                if rt is not None and rt > zone.config.seuil_debut_refroidissement:
+                    direction, target_temperature = "cool", zone.config.seuil_fin_refroidissement
+                elif rt is not None and rt < zone.config.seuil_debut_chauffage:
+                    direction, target_temperature = "heat", zone.config.seuil_fin_chauffage
+
             out["zones"][zid] = {
                 "config": zone.config,
                 "state": zone.state.state,
@@ -292,6 +323,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "in_override": zone.state.state
                 in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE),
                 "is_off_mode": zone.state.mode == ZoneMode.OFF,
+                "state_entered_ts": entered_ts,
+                "stabilization_ends_ts": stabilization_ends_ts,
+                "cooldown_ends_ts": cooldown_ends_ts,
+                "direction": direction,
+                "target_temperature": target_temperature,
             }
         return out
 
