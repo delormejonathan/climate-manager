@@ -229,7 +229,12 @@ def _register_services(hass: HomeAssistant) -> None:
         coord, zone = _find_zone(hass, call.data["zone_id"])
         if zone is None:
             return
-        zone.force_start(call.data["direction"], utc_now_ts())
+        zd = coord.data.get("zones", {}).get(zone.config.zone_id, {}) if coord.data else {}
+        zone.force_start(
+            call.data["direction"],
+            utc_now_ts(),
+            supports={"cool": zd.get("supports_cool", True), "heat": zd.get("supports_heat", True)},
+        )
         await coord.async_tick_now()
 
     async def _reload(_: ServiceCall) -> None:

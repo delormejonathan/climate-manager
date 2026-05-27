@@ -65,11 +65,19 @@ class ZoneForceStartCoolButton(DelormejClimateZoneEntity, ButtonEntity):
     def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
         super().__init__(coord, zone_id, "force_start_cool")
 
+    @property
+    def available(self) -> bool:
+        return super().available and bool(self._zone_data and self._zone_data.get("supports_cool", True))
+
     async def async_press(self) -> None:
         zone = self.coordinator.zone(self._zone_id)
         if not zone:
             return
-        zone.force_start("cool", utc_now_ts())
+        supports = {
+            "cool": self._zone_data.get("supports_cool", True),
+            "heat": self._zone_data.get("supports_heat", True),
+        } if self._zone_data else None
+        zone.force_start("cool", utc_now_ts(), supports=supports)
         await self.coordinator.async_tick_now()
 
 
@@ -80,9 +88,17 @@ class ZoneForceStartHeatButton(DelormejClimateZoneEntity, ButtonEntity):
     def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
         super().__init__(coord, zone_id, "force_start_heat")
 
+    @property
+    def available(self) -> bool:
+        return super().available and bool(self._zone_data and self._zone_data.get("supports_heat", True))
+
     async def async_press(self) -> None:
         zone = self.coordinator.zone(self._zone_id)
         if not zone:
             return
-        zone.force_start("heat", utc_now_ts())
+        supports = {
+            "cool": self._zone_data.get("supports_cool", True),
+            "heat": self._zone_data.get("supports_heat", True),
+        } if self._zone_data else None
+        zone.force_start("heat", utc_now_ts(), supports=supports)
         await self.coordinator.async_tick_now()

@@ -71,6 +71,11 @@ class ZoneInputs:
     schedule_is_on: bool
     any_window_open: bool
     house_is_absent: bool
+    # Capabilities auto-detected from the underlying climate.* entity
+    supports_cool: bool = True
+    supports_heat: bool = True
+    supports_fan_mode: bool = True
+    supports_windnice: bool = True
 
 
 @dataclass(frozen=True)
@@ -216,7 +221,7 @@ class Zone:
         """Activate boost régime for BOOST_DURATION_MIN."""
         self.state.boost_until_ts = now_ts + BOOST_DURATION_MIN * 60
 
-    def force_start(self, direction: str, now_ts: float) -> None:
+    def force_start(self, direction: str, now_ts: float, *, supports: dict | None = None) -> None:
         """Force a cycle to start right now, in the given direction.
 
         Lets the user say 'start cooling now' while staying in auto mode —
@@ -224,9 +229,17 @@ class Zone:
         to cross the start threshold. The forced direction is cleared as
         soon as we leave STARTING/RUNNING (cycle completes or user
         intervenes).
+
+        `supports` lets the caller pass capability flags so we no-op when
+        the underlying clim doesn't support the requested direction.
         """
         if direction not in (HVACMode.COOL, HVACMode.HEAT):
             return
+        if supports is not None:
+            if direction == HVACMode.COOL and not supports.get("cool", True):
+                return
+            if direction == HVACMode.HEAT and not supports.get("heat", True):
+                return
         # Only meaningful if we're idle / cooldown / window_open. From other
         # states (running, override, etc.), force_start is a no-op.
         if self.state.state not in (
@@ -344,9 +357,15 @@ class Zone:
             return
 
         if self.state.state == ZoneState.IDLE:
-            if inp.room_temperature > self.config.seuil_debut_refroidissement:
+            if (
+                inp.supports_cool
+                and inp.room_temperature > self.config.seuil_debut_refroidissement
+            ):
                 self._transition(ZoneState.STARTING, inp.now_ts)
-            elif inp.room_temperature < self.config.seuil_debut_chauffage:
+            elif (
+                inp.supports_heat
+                and inp.room_temperature < self.config.seuil_debut_chauffage
+            ):
                 self._transition(ZoneState.STARTING, inp.now_ts)
         elif self.state.state == ZoneState.RUNNING:
             in_heat = inp.clim_current_hvac_mode == HVACMode.HEAT
@@ -398,10 +417,10 @@ class Zone:
         if setpoint is not None and self._setpoint_should_send(setpoint, inp):
             cmds.append(self._cmd_set_temperature(setpoint))
             self.state.last_setpoint_sent = setpoint
-        if inp.clim_current_fan_mode != BOOST_FAN_MODE:
+        if inp.supports_fan_mode and inp.clim_current_fan_mode != BOOST_FAN_MODE:
             cmds.append(self._cmd_set_fan_mode(BOOST_FAN_MODE))
             self.state.last_fan_sent = BOOST_FAN_MODE
-        if inp.clim_current_swing_mode != "swing":
+        if inp.supports_windnice and inp.clim_current_swing_mode != "swing":
             cmds.append(self._cmd_set_swing_mode("swing"))
         if cmds:
             self.state.last_command_ts = inp.now_ts
@@ -442,13 +461,14 @@ class Zone:
 
     def _desired_hvac_mode(self, inp: ZoneInputs) -> str | None:
         # User explicitly forced a direction (force_start) — honour it
+        # (capability already checked at force_start time).
         if self.state.forced_direction in (HVACMode.COOL, HVACMode.HEAT):
             return self.state.forced_direction
         if inp.room_temperature is None:
             return None
-        if inp.room_temperature > self.config.seuil_debut_refroidissement:
+        if inp.supports_cool and inp.room_temperature > self.config.seuil_debut_refroidissement:
             return HVACMode.COOL
-        if inp.room_temperature < self.config.seuil_debut_chauffage:
+        if inp.supports_heat and inp.room_temperature < self.config.seuil_debut_chauffage:
             return HVACMode.HEAT
         return None
 
@@ -476,14 +496,15 @@ class Zone:
             cmds.append(self._cmd_set_temperature(setpoint))
             self.state.last_setpoint_sent = setpoint
 
-        # Fan
-        target_fan = _fan_for_regime(regime, profile)
-        if target_fan and inp.clim_current_fan_mode != target_fan:
-            cmds.append(self._cmd_set_fan_mode(target_fan))
-            self.state.last_fan_sent = target_fan
+        # Fan — only if the clim has a fan_mode at all
+        if inp.supports_fan_mode:
+            target_fan = _fan_for_regime(regime, profile)
+            if target_fan and inp.clim_current_fan_mode != target_fan:
+                cmds.append(self._cmd_set_fan_mode(target_fan))
+                self.state.last_fan_sent = target_fan
 
-        # Swing (always windnice for confort)
-        if inp.clim_current_swing_mode != DEFAULT_SWING_MODE:
+        # Swing — only if 'windnice' is in the clim's swing_modes list
+        if inp.supports_windnice and inp.clim_current_swing_mode != DEFAULT_SWING_MODE:
             cmds.append(self._cmd_set_swing_mode(DEFAULT_SWING_MODE))
 
         if cmds:

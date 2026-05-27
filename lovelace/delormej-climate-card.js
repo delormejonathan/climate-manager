@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.6.0
+ * delormej-climate-card  v0.6.1
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -309,9 +309,22 @@ class DelormejClimateCard extends HTMLElement {
     resumeBtn.title = inOverride ? "Annule l'override en cours" : "Aucun override en cours";
 
     // Force-start row : only meaningful when the zone is currently not running
+    // AND the underlying clim actually supports the offered direction(s).
     const canForceStart = ["idle", "cooldown", "schedule_off", "window_open"].includes(stateVal);
+    const supportsCool = attrs.supports_cool !== false;
+    const supportsHeat = attrs.supports_heat !== false;
     const forceRow = this.querySelector(".dc-force-row");
-    if (forceRow) forceRow.style.display = canForceStart ? "" : "none";
+    if (forceRow) {
+      forceRow.style.display = canForceStart && (supportsCool || supportsHeat) ? "" : "none";
+      const coolBtn = $("force-cool-btn");
+      const heatBtn = $("force-heat-btn");
+      coolBtn.style.display = supportsCool ? "" : "none";
+      heatBtn.style.display = supportsHeat ? "" : "none";
+      // Single button → make it span the full row width
+      const single = (supportsCool ? 1 : 0) + (supportsHeat ? 1 : 0) === 1;
+      forceRow.querySelector(".dc-force-actions")
+        .style.gridTemplateColumns = single ? "1fr" : "1fr 1fr";
+    }
 
     // ─────────────────── SECTION 3: CONFIGURATION
     const climBlock = $("manual-clim-block");
@@ -394,14 +407,20 @@ class DelormejClimateCard extends HTMLElement {
       const heatStart = parseFloat(get(ids.heatStart)?.state);
       const coolStart = parseFloat(get(ids.coolStart)?.state);
       const room = parseFloat(get(ids.roomTemp)?.state);
+      const supportsCool = attrs.supports_cool !== false;
+      const supportsHeat = attrs.supports_heat !== false;
       const parts = [];
-      if (!Number.isNaN(coolStart)) parts.push(`refroidissement à ${coolStart}°C`);
-      if (!Number.isNaN(heatStart)) parts.push(`chauffage à ${heatStart}°C`);
+      if (supportsCool && !Number.isNaN(coolStart)) parts.push(`refroidissement à ${coolStart}°C`);
+      if (supportsHeat && !Number.isNaN(heatStart)) parts.push(`chauffage à ${heatStart}°C`);
       let hint = "";
-      if (!Number.isNaN(room) && !Number.isNaN(coolStart) && !Number.isNaN(heatStart)) {
-        const dToCool = coolStart - room, dToHeat = room - heatStart;
-        if (dToCool > 0 && dToCool < dToHeat) hint = ` <span class="until">(encore ${dToCool.toFixed(1)}°C avant refroidissement)</span>`;
-        else if (dToHeat > 0 && dToHeat < dToCool) hint = ` <span class="until">(encore ${dToHeat.toFixed(1)}°C avant chauffage)</span>`;
+      if (!Number.isNaN(room)) {
+        const dToCool = supportsCool && !Number.isNaN(coolStart) ? coolStart - room : null;
+        const dToHeat = supportsHeat && !Number.isNaN(heatStart) ? room - heatStart : null;
+        const both = dToCool !== null && dToHeat !== null;
+        if (both && dToCool > 0 && dToCool < dToHeat) hint = ` <span class="until">(encore ${dToCool.toFixed(1)}°C avant refroidissement)</span>`;
+        else if (both && dToHeat > 0 && dToHeat < dToCool) hint = ` <span class="until">(encore ${dToHeat.toFixed(1)}°C avant chauffage)</span>`;
+        else if (!both && dToCool !== null && dToCool > 0) hint = ` <span class="until">(encore ${dToCool.toFixed(1)}°C avant refroidissement)</span>`;
+        else if (!both && dToHeat !== null && dToHeat > 0) hint = ` <span class="until">(encore ${dToHeat.toFixed(1)}°C avant chauffage)</span>`;
       }
       const lead = parts.length === 2
         ? `Démarre le ${parts[0]} ou le ${parts[1]}`
@@ -1083,7 +1102,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.6.0 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.6.1 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

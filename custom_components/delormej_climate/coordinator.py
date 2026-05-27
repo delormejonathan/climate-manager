@@ -198,6 +198,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         clim_setpoint = None
         clim_fan = None
         clim_swing = None
+        # Capability flags — default permissive when we have no state yet
+        supports_cool = True
+        supports_heat = True
+        supports_fan_mode = True
+        supports_windnice = True
         if clim_state and clim_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             clim_hvac = clim_state.state
             attrs = clim_state.attributes
@@ -205,6 +210,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             clim_setpoint = _as_float(attrs.get(ATTR_TEMPERATURE))
             clim_fan = attrs.get(ATTR_FAN_MODE)
             clim_swing = attrs.get(ATTR_SWING_MODE)
+            hvac_modes = attrs.get("hvac_modes") or []
+            fan_modes = attrs.get("fan_modes") or []
+            swing_modes = attrs.get("swing_modes") or []
+            supports_cool = "cool" in hvac_modes
+            supports_heat = "heat" in hvac_modes
+            supports_fan_mode = bool(fan_modes)
+            supports_windnice = "windnice" in swing_modes
         return ZoneInputs(
             now_ts=now,
             room_temperature=room_temperature,
@@ -216,6 +228,10 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             schedule_is_on=self._read_schedule_on(zone),
             any_window_open=self._any_window_open(zone),
             house_is_absent=self._house_is_absent(),
+            supports_cool=supports_cool,
+            supports_heat=supports_heat,
+            supports_fan_mode=supports_fan_mode,
+            supports_windnice=supports_windnice,
         )
 
     def _average_temperature(self, sensors: list[str]) -> float | None:
@@ -329,6 +345,10 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "direction": direction,
                 "target_temperature": target_temperature,
                 "aggressivity": zone.config.aggressivity,
+                "supports_cool": inputs.supports_cool,
+                "supports_heat": inputs.supports_heat,
+                "supports_fan_mode": inputs.supports_fan_mode,
+                "supports_windnice": inputs.supports_windnice,
             }
         return out
 
