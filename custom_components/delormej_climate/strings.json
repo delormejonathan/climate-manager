@@ -116,7 +116,7 @@
         }
       },
       "zone_room_temperature": {
-        "name": "T° pièce (moyenne)"
+        "name": "T° zone"
       },
       "zone_setpoint_sent": {
         "name": "Consigne envoyée"

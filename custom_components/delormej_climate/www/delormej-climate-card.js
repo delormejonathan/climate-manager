@@ -269,7 +269,7 @@ class DelormejClimateCard extends HTMLElement {
       <div class="dc-hero">
         <div>
           <div class="temp"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
-          <div class="temp-label">T° pièce (moyenne)</div>
+          <div class="temp-label">T° zone</div>
         </div>
         <div class="regime">
           Régime

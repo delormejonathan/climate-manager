@@ -116,7 +116,7 @@
         }
       },
       "zone_room_temperature": {
-        "name": "Room temperature (average)"
+        "name": "Zone temperature"
       },
       "zone_setpoint_sent": {
         "name": "Setpoint sent"
