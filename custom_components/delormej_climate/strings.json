@@ -1,0 +1,197 @@
+{
+  "title": "Delormej Climate",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configuration globale",
+        "description": "Choisis l'entité qui porte l'info de présence (alarme) et les états qui correspondent à « absent ».",
+        "data": {
+          "presence_entity": "Entité de présence",
+          "presence_absent_states": "États considérés comme absent"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Cette intégration est déjà configurée."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Delormej Climate",
+        "description": "Que veux-tu faire ?",
+        "menu_options": {
+          "add_zone": "Ajouter une zone",
+          "edit_zone": "Modifier une zone",
+          "remove_zone": "Supprimer une zone",
+          "presence": "Réglages de présence"
+        }
+      },
+      "presence": {
+        "title": "Réglages de présence",
+        "data": {
+          "presence_entity": "Entité de présence",
+          "presence_absent_states": "États considérés comme absent"
+        }
+      },
+      "add_zone": {
+        "title": "Ajouter une zone",
+        "data": {
+          "name": "Nom de la zone",
+          "climate_entity": "Entité clim associée",
+          "temperature_sensors": "Capteurs de température (moyenne)",
+          "schedule_entity": "Entité planning (schedule)",
+          "window_sensors": "Capteurs de fenêtres (optionnel)",
+          "seuil_debut_chauffage": "Seuil début chauffage (°C)",
+          "seuil_fin_chauffage": "Seuil fin chauffage (°C)",
+          "seuil_debut_refroidissement": "Seuil début refroidissement (°C)",
+          "seuil_fin_refroidissement": "Seuil fin refroidissement (°C)",
+          "duree_stabilisation_min": "Durée stabilisation (min)",
+          "duree_cooldown_min": "Durée cooldown (min)",
+          "override_duree_min": "Durée override manuel (min)",
+          "aggressive_when_absent": "Mode agressif autorisé quand la maison est absente"
+        }
+      },
+      "edit_zone": {
+        "title": "Choisir la zone à modifier",
+        "data": {
+          "zone_id": "Zone"
+        }
+      },
+      "edit_zone_form": {
+        "title": "Modifier la zone",
+        "data": {
+          "name": "Nom de la zone",
+          "climate_entity": "Entité clim associée",
+          "temperature_sensors": "Capteurs de température (moyenne)",
+          "schedule_entity": "Entité planning (schedule)",
+          "window_sensors": "Capteurs de fenêtres (optionnel)",
+          "seuil_debut_chauffage": "Seuil début chauffage (°C)",
+          "seuil_fin_chauffage": "Seuil fin chauffage (°C)",
+          "seuil_debut_refroidissement": "Seuil début refroidissement (°C)",
+          "seuil_fin_refroidissement": "Seuil fin refroidissement (°C)",
+          "duree_stabilisation_min": "Durée stabilisation (min)",
+          "duree_cooldown_min": "Durée cooldown (min)",
+          "override_duree_min": "Durée override manuel (min)",
+          "aggressive_when_absent": "Mode agressif autorisé quand la maison est absente"
+        }
+      },
+      "remove_zone": {
+        "title": "Supprimer une zone",
+        "data": {
+          "zone_id": "Zone à supprimer"
+        }
+      }
+    },
+    "abort": {
+      "no_zones": "Aucune zone configurée.",
+      "unknown_zone": "Zone introuvable."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "zone_state": {
+        "name": "État",
+        "state": {
+          "idle": "Inactif",
+          "starting": "Démarrage",
+          "running": "Actif",
+          "stabilizing": "Stabilisation",
+          "cooldown": "Cooldown",
+          "schedule_off": "Planning fermé",
+          "manual_override_timed": "Override (timed)",
+          "manual_override_free": "Override (libre)",
+          "window_open": "Fenêtre ouverte"
+        }
+      },
+      "zone_regime": {
+        "name": "Régime",
+        "state": {
+          "none": "Aucun",
+          "attaque": "Attaque",
+          "croisiere": "Croisière",
+          "approche": "Approche",
+          "stabilisation": "Stabilisation",
+          "boost": "Boost"
+        }
+      },
+      "zone_room_temperature": {
+        "name": "T° pièce (moyenne)"
+      },
+      "zone_setpoint_sent": {
+        "name": "Consigne envoyée"
+      },
+      "zone_override_until": {
+        "name": "Override jusqu'à"
+      }
+    },
+    "switch": {
+      "zone_auto": {
+        "name": "Pilotage auto"
+      }
+    },
+    "select": {
+      "zone_mode": {
+        "name": "Mode",
+        "state": {
+          "auto": "Auto",
+          "off": "Off",
+          "boost": "Boost"
+        }
+      }
+    },
+    "number": {
+      "seuil_debut_chauffage": {
+        "name": "Seuil début chauffage"
+      },
+      "seuil_fin_chauffage": {
+        "name": "Seuil fin chauffage"
+      },
+      "seuil_debut_refroidissement": {
+        "name": "Seuil début refroidissement"
+      },
+      "seuil_fin_refroidissement": {
+        "name": "Seuil fin refroidissement"
+      },
+      "duree_stabilisation_min": {
+        "name": "Durée stabilisation"
+      },
+      "duree_cooldown_min": {
+        "name": "Durée cooldown"
+      },
+      "override_duree_min": {
+        "name": "Durée override"
+      }
+    },
+    "button": {
+      "zone_boost": {
+        "name": "Boost 15 min"
+      },
+      "zone_reset_override": {
+        "name": "Reprendre auto"
+      }
+    }
+  },
+  "services": {
+    "set_mode": {
+      "name": "Définir le mode",
+      "description": "Change le mode global d'une zone."
+    },
+    "force_off": {
+      "name": "Forcer arrêt",
+      "description": "Force la zone en mode OFF."
+    },
+    "reset_override": {
+      "name": "Annuler override",
+      "description": "Court-circuite l'override manuel en cours."
+    },
+    "boost": {
+      "name": "Boost 15 min",
+      "description": "Active le mode boost pour 15 minutes."
+    },
+    "reload_zones": {
+      "name": "Recharger les zones",
+      "description": "Recharge la configuration sans redémarrer HA."
+    }
+  }
+}

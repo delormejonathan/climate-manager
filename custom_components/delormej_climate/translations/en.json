@@ -1,0 +1,175 @@
+{
+  "title": "Delormej Climate",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Global configuration",
+        "description": "Pick the entity that holds presence information (alarm) and which states count as 'absent'.",
+        "data": {
+          "presence_entity": "Presence entity",
+          "presence_absent_states": "States considered as absent"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Integration already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Delormej Climate",
+        "description": "What do you want to do?",
+        "menu_options": {
+          "add_zone": "Add a zone",
+          "edit_zone": "Edit a zone",
+          "remove_zone": "Remove a zone",
+          "presence": "Presence settings"
+        }
+      },
+      "presence": {
+        "title": "Presence settings",
+        "data": {
+          "presence_entity": "Presence entity",
+          "presence_absent_states": "States considered as absent"
+        }
+      },
+      "add_zone": {
+        "title": "Add a zone",
+        "data": {
+          "name": "Zone name",
+          "climate_entity": "AC entity",
+          "temperature_sensors": "Temperature sensors (averaged)",
+          "schedule_entity": "Schedule entity",
+          "window_sensors": "Window sensors (optional)",
+          "seuil_debut_chauffage": "Heat start threshold (°C)",
+          "seuil_fin_chauffage": "Heat stop threshold (°C)",
+          "seuil_debut_refroidissement": "Cool start threshold (°C)",
+          "seuil_fin_refroidissement": "Cool stop threshold (°C)",
+          "duree_stabilisation_min": "Stabilization duration (min)",
+          "duree_cooldown_min": "Cooldown duration (min)",
+          "override_duree_min": "Manual override duration (min)",
+          "aggressive_when_absent": "Allow aggressive mode when house is absent"
+        }
+      },
+      "edit_zone": {
+        "title": "Pick the zone to edit",
+        "data": {
+          "zone_id": "Zone"
+        }
+      },
+      "edit_zone_form": {
+        "title": "Edit zone",
+        "data": {
+          "name": "Zone name",
+          "climate_entity": "AC entity",
+          "temperature_sensors": "Temperature sensors (averaged)",
+          "schedule_entity": "Schedule entity",
+          "window_sensors": "Window sensors (optional)",
+          "seuil_debut_chauffage": "Heat start threshold (°C)",
+          "seuil_fin_chauffage": "Heat stop threshold (°C)",
+          "seuil_debut_refroidissement": "Cool start threshold (°C)",
+          "seuil_fin_refroidissement": "Cool stop threshold (°C)",
+          "duree_stabilisation_min": "Stabilization duration (min)",
+          "duree_cooldown_min": "Cooldown duration (min)",
+          "override_duree_min": "Manual override duration (min)",
+          "aggressive_when_absent": "Allow aggressive mode when house is absent"
+        }
+      },
+      "remove_zone": {
+        "title": "Remove a zone",
+        "data": {
+          "zone_id": "Zone to remove"
+        }
+      }
+    },
+    "abort": {
+      "no_zones": "No zones configured.",
+      "unknown_zone": "Zone not found."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "zone_state": {
+        "name": "State",
+        "state": {
+          "idle": "Idle",
+          "starting": "Starting",
+          "running": "Running",
+          "stabilizing": "Stabilizing",
+          "cooldown": "Cooldown",
+          "schedule_off": "Schedule off",
+          "manual_override_timed": "Override (timed)",
+          "manual_override_free": "Override (free)",
+          "window_open": "Window open"
+        }
+      },
+      "zone_regime": {
+        "name": "Régime",
+        "state": {
+          "none": "None",
+          "attaque": "Attack",
+          "croisiere": "Cruise",
+          "approche": "Approach",
+          "stabilisation": "Stabilization",
+          "boost": "Boost"
+        }
+      },
+      "zone_room_temperature": {
+        "name": "Room temperature (average)"
+      },
+      "zone_setpoint_sent": {
+        "name": "Setpoint sent"
+      },
+      "zone_override_until": {
+        "name": "Override until"
+      }
+    },
+    "switch": {
+      "zone_auto": {
+        "name": "Auto control"
+      }
+    },
+    "select": {
+      "zone_mode": {
+        "name": "Mode",
+        "state": {
+          "auto": "Auto",
+          "off": "Off",
+          "boost": "Boost"
+        }
+      }
+    },
+    "number": {
+      "seuil_debut_chauffage": {
+        "name": "Heat start threshold"
+      },
+      "seuil_fin_chauffage": {
+        "name": "Heat stop threshold"
+      },
+      "seuil_debut_refroidissement": {
+        "name": "Cool start threshold"
+      },
+      "seuil_fin_refroidissement": {
+        "name": "Cool stop threshold"
+      },
+      "duree_stabilisation_min": {
+        "name": "Stabilization duration"
+      },
+      "duree_cooldown_min": {
+        "name": "Cooldown duration"
+      },
+      "override_duree_min": {
+        "name": "Override duration"
+      }
+    },
+    "button": {
+      "zone_boost": {
+        "name": "Boost 15 min"
+      },
+      "zone_reset_override": {
+        "name": "Resume auto"
+      }
+    }
+  }
+}

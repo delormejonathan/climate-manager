@@ -1,0 +1,551 @@
+"""Zone logic: state machine, decision algorithm, pilot algorithm.
+
+A Zone is a single climate entity + its room temperature sensors + thresholds.
+It has its own state machine and computes commands to send to the AC.
+
+The Zone class is pure logic — it does not directly call HA services. The
+coordinator passes inputs (current temperatures, schedule state, etc.) to
+`tick()`, gets back a list of Commands, and applies them.
+
+This separation makes Zone unit-testable without mocking HA.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+from homeassistant.components.climate import (
+    ATTR_FAN_MODE,
+    ATTR_HVAC_MODE,
+    ATTR_SWING_MODE,
+    HVACMode,
+)
+from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
+
+from .const import (
+    BOOST_DURATION_MIN,
+    BOOST_FAN_MODE,
+    BOOST_OFFSET,
+    CLIM_MAX_SETPOINT,
+    CLIM_MIN_SETPOINT,
+    DEFAULT_DUREE_COOLDOWN_MIN,
+    DEFAULT_DUREE_STABILISATION_MIN,
+    DEFAULT_OVERRIDE_DUREE_MIN,
+    DEFAULT_SEUIL_DEBUT_CHAUFFAGE,
+    DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT,
+    DEFAULT_SEUIL_FIN_CHAUFFAGE,
+    DEFAULT_SEUIL_FIN_REFROIDISSEMENT,
+    DEFAULT_SWING_MODE,
+    ECART_APPROCHE_THRESHOLD,
+    ECART_ATTAQUE_THRESHOLD,
+    OFFSET_APPROCHE,
+    OFFSET_ATTAQUE,
+    OFFSET_CROISIERE,
+    RATE_LIMIT_SECONDS,
+    SETPOINT_NOOP_DELTA,
+    Regime,
+    ZoneMode,
+    ZoneState,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+# === Inputs / Outputs ===
+
+
+@dataclass(frozen=True)
+class ZoneInputs:
+    """Everything the zone needs to decide its next action."""
+
+    now_ts: float
+    room_temperature: float | None  # moyenne capteurs, None si tous indispo
+    clim_internal_temperature: float | None
+    clim_current_hvac_mode: str  # 'off' | 'heat' | 'cool' | ...
+    clim_current_setpoint: float | None
+    clim_current_fan_mode: str | None
+    clim_current_swing_mode: str | None
+    schedule_is_on: bool
+    any_window_open: bool
+    house_is_absent: bool
+
+
+@dataclass(frozen=True)
+class Command:
+    """A single HA service call the coordinator should execute on behalf of the zone."""
+
+    domain: str
+    service: str
+    data: dict[str, Any]
+
+
+# === Zone state holder ===
+
+
+@dataclass
+class ZoneRuntimeState:
+    """Mutable runtime state of a zone (lives in memory)."""
+
+    state: str = ZoneState.IDLE
+    regime: str = Regime.NONE
+    last_state_transition_ts: float = 0.0
+    last_command_ts: float = 0.0
+    last_setpoint_sent: float | None = None
+    last_fan_sent: str | None = None
+    last_hvac_sent: str | None = None
+    override_until_ts: float | None = None
+    boost_until_ts: float | None = None
+    mode: str = ZoneMode.AUTO  # auto / off / boost
+
+
+@dataclass
+class ZoneConfig:
+    """Static config for a zone (from ConfigEntry.options)."""
+
+    zone_id: str
+    name: str
+    climate_entity: str
+    temperature_sensors: list[str]
+    schedule_entity: str | None
+    window_sensors: list[str] = field(default_factory=list)
+    seuil_debut_chauffage: float = DEFAULT_SEUIL_DEBUT_CHAUFFAGE
+    seuil_fin_chauffage: float = DEFAULT_SEUIL_FIN_CHAUFFAGE
+    seuil_debut_refroidissement: float = DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT
+    seuil_fin_refroidissement: float = DEFAULT_SEUIL_FIN_REFROIDISSEMENT
+    duree_stabilisation_min: int = DEFAULT_DUREE_STABILISATION_MIN
+    duree_cooldown_min: int = DEFAULT_DUREE_COOLDOWN_MIN
+    override_duree_min: int = DEFAULT_OVERRIDE_DUREE_MIN
+    aggressive_when_absent: bool = True
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ZoneConfig:
+        """Build from a stored options dict (with sensible defaults for missing keys)."""
+        return cls(
+            zone_id=d.get("id") or str(uuid.uuid4())[:8],
+            name=d["name"],
+            climate_entity=d["climate_entity"],
+            temperature_sensors=list(d.get("temperature_sensors", [])),
+            schedule_entity=d.get("schedule_entity"),
+            window_sensors=list(d.get("window_sensors", [])),
+            seuil_debut_chauffage=float(
+                d.get("seuil_debut_chauffage", DEFAULT_SEUIL_DEBUT_CHAUFFAGE)
+            ),
+            seuil_fin_chauffage=float(d.get("seuil_fin_chauffage", DEFAULT_SEUIL_FIN_CHAUFFAGE)),
+            seuil_debut_refroidissement=float(
+                d.get("seuil_debut_refroidissement", DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT)
+            ),
+            seuil_fin_refroidissement=float(
+                d.get("seuil_fin_refroidissement", DEFAULT_SEUIL_FIN_REFROIDISSEMENT)
+            ),
+            duree_stabilisation_min=int(
+                d.get("duree_stabilisation_min", DEFAULT_DUREE_STABILISATION_MIN)
+            ),
+            duree_cooldown_min=int(d.get("duree_cooldown_min", DEFAULT_DUREE_COOLDOWN_MIN)),
+            override_duree_min=int(d.get("override_duree_min", DEFAULT_OVERRIDE_DUREE_MIN)),
+            aggressive_when_absent=bool(d.get("aggressive_when_absent", True)),
+        )
+
+
+# === Zone (core logic) ===
+
+
+class Zone:
+    """Pure-logic state machine + algorithms for a single zone."""
+
+    def __init__(self, config: ZoneConfig, state: ZoneRuntimeState | None = None) -> None:
+        self.config = config
+        self.state = state or ZoneRuntimeState()
+
+    # --- public entry point ---
+
+    def tick(self, inp: ZoneInputs) -> list[Command]:
+        """Advance the state machine and emit commands for the current step."""
+        if self.state.mode == ZoneMode.OFF:
+            return self._force_off(inp)
+
+        # Boost auto-expiry
+        if self.state.boost_until_ts and inp.now_ts >= self.state.boost_until_ts:
+            self.state.boost_until_ts = None
+
+        # 1) Hard gates (window / schedule / override) override the regular flow
+        gate_cmds = self._maybe_handle_hard_gates(inp)
+        if gate_cmds is not None:
+            return gate_cmds
+
+        # 2) Time-based transitions out of STABILIZING / COOLDOWN
+        self._maybe_advance_timed_transitions(inp)
+
+        # 3) Boost is a special active régime that ignores hysteresis
+        if self.state.boost_until_ts and self.state.boost_until_ts > inp.now_ts:
+            return self._pilot_boost(inp)
+
+        # 4) Auto régime: decision (state machine) + pilot (commands)
+        self._decide(inp)
+        return self._pilot(inp)
+
+    # --- mode / external triggers ---
+
+    def set_mode(self, mode: str, now_ts: float) -> None:
+        """Switch the zone between auto / off / boost."""
+        if mode not in ZoneMode.ALL:
+            return
+        self.state.mode = mode
+        if mode == ZoneMode.BOOST:
+            self.state.boost_until_ts = now_ts + BOOST_DURATION_MIN * 60
+        elif mode == ZoneMode.AUTO:
+            self.state.boost_until_ts = None
+
+    def trigger_boost(self, now_ts: float) -> None:
+        """Activate boost régime for BOOST_DURATION_MIN."""
+        self.state.boost_until_ts = now_ts + BOOST_DURATION_MIN * 60
+
+    def reset_override(self, now_ts: float) -> None:
+        """Court-circuit any ongoing manual override."""
+        self.state.override_until_ts = None
+        if self.state.state in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE):
+            self._transition(ZoneState.IDLE, now_ts)
+
+    def on_external_override(self, now_ts: float, schedule_is_on: bool) -> None:
+        """A state_changed with a non-tracked context was detected on our clim."""
+        if schedule_is_on:
+            self._transition(ZoneState.MANUAL_OVERRIDE_TIMED, now_ts)
+            self.state.override_until_ts = now_ts + self.config.override_duree_min * 60
+        else:
+            self._transition(ZoneState.MANUAL_OVERRIDE_FREE, now_ts)
+            self.state.override_until_ts = None
+
+    # --- internal helpers ---
+
+    def _transition(self, new_state: str, now_ts: float) -> None:
+        if new_state == self.state.state:
+            return
+        _LOGGER.debug(
+            "Zone %s: transition %s → %s", self.config.zone_id, self.state.state, new_state
+        )
+        self.state.state = new_state
+        self.state.last_state_transition_ts = now_ts
+
+    def _force_off(self, inp: ZoneInputs) -> list[Command]:
+        """Mode=OFF : ensure the clim is off, do nothing else."""
+        self._transition(ZoneState.IDLE, inp.now_ts)
+        self.state.regime = Regime.NONE
+        if inp.clim_current_hvac_mode != HVACMode.OFF:
+            return [self._cmd_turn_off()]
+        return []
+
+    def _maybe_handle_hard_gates(self, inp: ZoneInputs) -> list[Command] | None:
+        """Return commands if a hard gate (window/schedule/override) overrides flow."""
+        # Window open
+        if inp.any_window_open:
+            if self.state.state != ZoneState.WINDOW_OPEN:
+                self._transition(ZoneState.WINDOW_OPEN, inp.now_ts)
+                self.state.regime = Regime.NONE
+                if inp.clim_current_hvac_mode != HVACMode.OFF:
+                    return [self._cmd_turn_off()]
+            return []
+
+        # Schedule off
+        if not inp.schedule_is_on:
+            if self.state.state == ZoneState.MANUAL_OVERRIDE_FREE:
+                # User is running clim manually with schedule off — leave it alone
+                return []
+            if self.state.state != ZoneState.SCHEDULE_OFF:
+                self._transition(ZoneState.SCHEDULE_OFF, inp.now_ts)
+                self.state.regime = Regime.NONE
+                if inp.clim_current_hvac_mode != HVACMode.OFF:
+                    return [self._cmd_turn_off()]
+            return []
+
+        # Schedule just turned on — leave override states alone, option A handled below
+        if self.state.state == ZoneState.SCHEDULE_OFF:
+            # Schedule just opened — return to IDLE for fresh decision (option A)
+            self._transition(ZoneState.IDLE, inp.now_ts)
+            # fall through to regular flow
+
+        # Manual override
+        if self.state.state == ZoneState.MANUAL_OVERRIDE_TIMED:
+            if (
+                self.state.override_until_ts is not None
+                and inp.now_ts >= self.state.override_until_ts
+            ):
+                self.state.override_until_ts = None
+                self._transition(ZoneState.IDLE, inp.now_ts)
+                # fall through to regular flow
+            else:
+                return []
+        elif self.state.state == ZoneState.MANUAL_OVERRIDE_FREE:
+            # Schedule is on now (we're past the schedule-off check) → option A: take over
+            self.state.override_until_ts = None
+            self._transition(ZoneState.IDLE, inp.now_ts)
+            # fall through
+
+        # If we were in WINDOW_OPEN and windows are now closed, also transition out
+        if self.state.state == ZoneState.WINDOW_OPEN:
+            self._transition(ZoneState.IDLE, inp.now_ts)
+
+        return None  # fall through to regular flow
+
+    def _maybe_advance_timed_transitions(self, inp: ZoneInputs) -> None:
+        """STABILIZING → COOLDOWN → IDLE based on elapsed time."""
+        if self.state.state == ZoneState.STABILIZING:
+            elapsed = inp.now_ts - self.state.last_state_transition_ts
+            if elapsed >= self.config.duree_stabilisation_min * 60:
+                self._transition(ZoneState.COOLDOWN, inp.now_ts)
+        if self.state.state == ZoneState.COOLDOWN:
+            elapsed = inp.now_ts - self.state.last_state_transition_ts
+            if elapsed >= self.config.duree_cooldown_min * 60:
+                self._transition(ZoneState.IDLE, inp.now_ts)
+
+    def _decide(self, inp: ZoneInputs) -> None:
+        """Pure decision logic (IDLE -> STARTING) based on room sensor + thresholds."""
+        if inp.room_temperature is None:
+            # No reliable room data — be conservative, do nothing.
+            return
+
+        if self.state.state == ZoneState.IDLE:
+            if inp.room_temperature > self.config.seuil_debut_refroidissement:
+                self._transition(ZoneState.STARTING, inp.now_ts)
+            elif inp.room_temperature < self.config.seuil_debut_chauffage:
+                self._transition(ZoneState.STARTING, inp.now_ts)
+        elif self.state.state == ZoneState.RUNNING:
+            in_heat = inp.clim_current_hvac_mode == HVACMode.HEAT
+            in_cool = inp.clim_current_hvac_mode == HVACMode.COOL
+            if in_heat and inp.room_temperature >= self.config.seuil_fin_chauffage:
+                self._transition(ZoneState.STABILIZING, inp.now_ts)
+            elif in_cool and inp.room_temperature <= self.config.seuil_fin_refroidissement:
+                self._transition(ZoneState.STABILIZING, inp.now_ts)
+
+    def _pilot(self, inp: ZoneInputs) -> list[Command]:
+        """Translate the current state into commands."""
+        if self.state.state in (ZoneState.IDLE, ZoneState.COOLDOWN):
+            self.state.regime = Regime.NONE
+            if inp.clim_current_hvac_mode != HVACMode.OFF:
+                return [self._cmd_turn_off()]
+            return []
+
+        if self.state.state == ZoneState.STARTING:
+            # First cycle in active mode → ATTAQUE
+            return self._emit_active(inp, Regime.ATTAQUE, force_hvac=True)
+
+        if self.state.state == ZoneState.RUNNING:
+            regime = self._compute_regime(inp)
+            return self._emit_active(inp, regime, force_hvac=False)
+
+        if self.state.state == ZoneState.STABILIZING:
+            return self._emit_active(inp, Regime.STABILISATION, force_hvac=False)
+
+        return []
+
+    def _pilot_boost(self, inp: ZoneInputs) -> list[Command]:
+        """Boost régime — strong, ignores hysteresis, fixed 15 min."""
+        if inp.room_temperature is None:
+            return []
+
+        # Boost only makes sense if we know which direction
+        target_mode = self._desired_hvac_mode(inp)
+        if target_mode is None:
+            return []
+
+        if self.state.state != ZoneState.RUNNING:
+            self._transition(ZoneState.RUNNING, inp.now_ts)
+        self.state.regime = Regime.BOOST
+
+        cmds: list[Command] = []
+        if inp.clim_current_hvac_mode != target_mode:
+            cmds.append(self._cmd_set_hvac_mode(target_mode))
+        setpoint = self._setpoint_for_offset(inp, BOOST_OFFSET, target_mode)
+        if setpoint is not None and self._setpoint_should_send(setpoint, inp):
+            cmds.append(self._cmd_set_temperature(setpoint))
+            self.state.last_setpoint_sent = setpoint
+        if inp.clim_current_fan_mode != BOOST_FAN_MODE:
+            cmds.append(self._cmd_set_fan_mode(BOOST_FAN_MODE))
+            self.state.last_fan_sent = BOOST_FAN_MODE
+        if inp.clim_current_swing_mode != "swing":
+            cmds.append(self._cmd_set_swing_mode("swing"))
+        if cmds:
+            self.state.last_command_ts = inp.now_ts
+        return cmds
+
+    # --- régime + setpoint maths ---
+
+    def _compute_regime(self, inp: ZoneInputs) -> str:
+        target_mode = self._current_active_mode(inp)
+        if target_mode is None or inp.room_temperature is None:
+            return Regime.NONE
+        seuil_fin = (
+            self.config.seuil_fin_chauffage
+            if target_mode == HVACMode.HEAT
+            else self.config.seuil_fin_refroidissement
+        )
+        # Écart positif = encore à faire pour atteindre seuil_fin
+        if target_mode == HVACMode.HEAT:
+            ecart = seuil_fin - inp.room_temperature
+        else:
+            ecart = inp.room_temperature - seuil_fin
+        if ecart > ECART_ATTAQUE_THRESHOLD:
+            return Regime.ATTAQUE
+        if ecart > ECART_APPROCHE_THRESHOLD:
+            return Regime.CROISIERE
+        if ecart > 0:
+            return Regime.APPROCHE
+        return Regime.STABILISATION
+
+    def _current_active_mode(self, inp: ZoneInputs) -> str | None:
+        """What hvac_mode we should be running in this active state."""
+        if self.state.state == ZoneState.STARTING:
+            return self._desired_hvac_mode(inp)
+        # In RUNNING/STABILIZING, keep what's already there (or recompute if off)
+        if inp.clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
+            return inp.clim_current_hvac_mode
+        return self._desired_hvac_mode(inp)
+
+    def _desired_hvac_mode(self, inp: ZoneInputs) -> str | None:
+        if inp.room_temperature is None:
+            return None
+        if inp.room_temperature > self.config.seuil_debut_refroidissement:
+            return HVACMode.COOL
+        if inp.room_temperature < self.config.seuil_debut_chauffage:
+            return HVACMode.HEAT
+        return None
+
+    def _emit_active(self, inp: ZoneInputs, regime: str, *, force_hvac: bool) -> list[Command]:
+        """Emit commands for an active state (STARTING / RUNNING / STABILIZING)."""
+        self.state.regime = regime
+        target_mode = self._current_active_mode(inp)
+        if target_mode is None:
+            # Could not decide — be safe and do nothing this tick
+            return []
+
+        cmds: list[Command] = []
+
+        # HVAC mode
+        if force_hvac or inp.clim_current_hvac_mode != target_mode:
+            cmds.append(self._cmd_set_hvac_mode(target_mode))
+
+        # Setpoint
+        offset = _offset_for_regime(regime)
+        setpoint = self._setpoint_for_offset(inp, offset, target_mode)
+        if setpoint is not None and self._setpoint_should_send(setpoint, inp):
+            cmds.append(self._cmd_set_temperature(setpoint))
+            self.state.last_setpoint_sent = setpoint
+
+        # Fan
+        target_fan = _fan_for_regime(regime)
+        if target_fan and inp.clim_current_fan_mode != target_fan:
+            cmds.append(self._cmd_set_fan_mode(target_fan))
+            self.state.last_fan_sent = target_fan
+
+        # Swing (always windnice for confort)
+        if inp.clim_current_swing_mode != DEFAULT_SWING_MODE:
+            cmds.append(self._cmd_set_swing_mode(DEFAULT_SWING_MODE))
+
+        if cmds:
+            self.state.last_command_ts = inp.now_ts
+            if force_hvac or any(c.service == "set_hvac_mode" for c in cmds):
+                # STARTING just emitted hvac on → now RUNNING for the next tick
+                if self.state.state == ZoneState.STARTING:
+                    self._transition(ZoneState.RUNNING, inp.now_ts)
+        return cmds
+
+    def _setpoint_for_offset(
+        self, inp: ZoneInputs, offset: float, target_mode: str
+    ) -> float | None:
+        """Compute consigne envoyée = T°_interne ± offset, clamped to clim limits."""
+        if inp.clim_internal_temperature is None:
+            return None
+        signed = offset if target_mode == HVACMode.HEAT else -offset
+        raw = inp.clim_internal_temperature + signed
+        # Round to nearest 0.5 (Daikin step) then clamp
+        rounded = round(raw * 2) / 2
+        return max(CLIM_MIN_SETPOINT, min(CLIM_MAX_SETPOINT, rounded))
+
+    def _setpoint_should_send(self, setpoint: float, inp: ZoneInputs) -> bool:
+        """Rate-limit: don't re-emit setpoint if too close to current or too soon."""
+        if (
+            inp.clim_current_setpoint is not None
+            and abs(setpoint - inp.clim_current_setpoint) < SETPOINT_NOOP_DELTA
+        ):
+            return False
+        if (
+            self.state.last_command_ts
+            and (inp.now_ts - self.state.last_command_ts) < RATE_LIMIT_SECONDS
+            and self.state.last_setpoint_sent is not None
+            and abs(setpoint - self.state.last_setpoint_sent) < SETPOINT_NOOP_DELTA
+        ):
+            return False
+        return True
+
+    # --- command factory ---
+
+    def _cmd_turn_off(self) -> Command:
+        return Command(
+            domain="climate",
+            service="turn_off",
+            data={ATTR_ENTITY_ID: self.config.climate_entity},
+        )
+
+    def _cmd_set_hvac_mode(self, mode: str) -> Command:
+        return Command(
+            domain="climate",
+            service="set_hvac_mode",
+            data={ATTR_ENTITY_ID: self.config.climate_entity, ATTR_HVAC_MODE: mode},
+        )
+
+    def _cmd_set_temperature(self, temp: float) -> Command:
+        return Command(
+            domain="climate",
+            service="set_temperature",
+            data={ATTR_ENTITY_ID: self.config.climate_entity, ATTR_TEMPERATURE: temp},
+        )
+
+    def _cmd_set_fan_mode(self, mode: str) -> Command:
+        return Command(
+            domain="climate",
+            service="set_fan_mode",
+            data={ATTR_ENTITY_ID: self.config.climate_entity, ATTR_FAN_MODE: mode},
+        )
+
+    def _cmd_set_swing_mode(self, mode: str) -> Command:
+        return Command(
+            domain="climate",
+            service="set_swing_mode",
+            data={ATTR_ENTITY_ID: self.config.climate_entity, ATTR_SWING_MODE: mode},
+        )
+
+
+def _offset_for_regime(regime: str) -> float:
+    if regime == Regime.ATTAQUE:
+        return OFFSET_ATTAQUE
+    if regime == Regime.CROISIERE:
+        return OFFSET_CROISIERE
+    if regime == Regime.APPROCHE:
+        return OFFSET_APPROCHE
+    if regime == Regime.STABILISATION:
+        return 0.0
+    if regime == Regime.BOOST:
+        return BOOST_OFFSET
+    return 0.0
+
+
+def _fan_for_regime(regime: str) -> str | None:
+    if regime == Regime.ATTAQUE:
+        return "auto"
+    if regime == Regime.CROISIERE:
+        return "auto"
+    if regime == Regime.APPROCHE:
+        return "quiet"
+    if regime == Regime.STABILISATION:
+        return "quiet"
+    if regime == Regime.BOOST:
+        return BOOST_FAN_MODE
+    return None
+
+
+def utc_now_ts() -> float:
+    """Monotonic time isn't right for cross-tick durations across restarts.
+    Use wall time so durations survive a HA reload."""
+    return time.time()
