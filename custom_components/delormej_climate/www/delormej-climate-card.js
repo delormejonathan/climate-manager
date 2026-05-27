@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.6.4
+ * delormej-climate-card  v0.6.5
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -209,8 +209,6 @@ class DelormejClimateCard extends HTMLElement {
     const attrs = stateObj?.attributes || {};
     const regimeVal = get(ids.regime)?.state;
     const regimeLabel = REGIME_LABELS[regimeVal] || "—";
-    $("header-regime").textContent = regimeLabel;
-    $("header-regime").style.display = regimeLabel === "—" ? "none" : "";
 
     // Header icon bubble — represents the AC device.
     // Active (cool/heat): colored bubble with snowflake/fire icon.
@@ -626,7 +624,7 @@ const STYLES = `
   }
   .dc-hero-row {
     display: flex; align-items: center; justify-content: center;
-    gap: 18px; flex-wrap: wrap;
+    gap: 14px; flex-wrap: wrap;
   }
   /* Idle (no target): centered room temp, slightly larger to balance the bubble */
   .dc-hero-row.hero-row--idle .room { font-size: 3.4em; line-height: 1; }
@@ -655,22 +653,20 @@ const STYLES = `
     font-weight: 500;
   }
   .dc-hero .arrow {
-    color: var(--dc-muted); font-size: 1.8em; font-weight: 400;
-    width: 36px; height: 36px; border-radius: 50%;
-    background: var(--dc-bg-bubble);
+    color: var(--dc-muted); font-size: 1.1em; font-weight: 400;
+    width: 22px; height: 22px;
     display: flex; align-items: center; justify-content: center;
   }
   .dc-hero .target-block {
-    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
   }
   .dc-hero .target-block .target {
-    font-size: 1.5em; font-weight: 700;
+    font-size: 1em; font-weight: 600;
     font-variant-numeric: tabular-nums;
     color: var(--dc-accent);
-    letter-spacing: -0.01em;
   }
   .dc-hero .target-block .target-label {
-    font-size: 0.7em; color: var(--dc-muted); font-weight: 500;
+    font-size: 0.65em; color: var(--dc-dim); font-weight: 500;
   }
 
   .dc-narrative {
@@ -964,13 +960,10 @@ const TEMPLATE = `
       <div class="title" data-bind="title-text"></div>
       <div class="subtitle" data-bind="subtitle"></div>
     </div>
-    <div class="head-meta">
-      <span class="dc-state" data-bind="state-badge">
-        <ha-icon icon="mdi:circle-outline" data-bind="state-icon"></ha-icon>
-        <span data-bind="state-label">—</span>
-      </span>
-      <span class="head-regime" data-bind="header-regime"></span>
-    </div>
+    <span class="dc-state" data-bind="state-badge">
+      <ha-icon icon="mdi:circle-outline" data-bind="state-icon"></ha-icon>
+      <span data-bind="state-label">—</span>
+    </span>
   </div>
 
   <!-- ════════════════════════════════════ §1 ÉTAT ACTUEL -->
@@ -1177,7 +1170,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.6.4 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.6.5 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
