@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.5.1
+ * delormej-climate-card  v0.5.2
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -14,15 +14,15 @@
  */
 
 const STATE_META = {
-  idle:        { label: "Inactif",          color: "#6c757d", icon: "mdi:power-sleep" },
-  starting:    { label: "Démarrage",        color: "#fd7e14", icon: "mdi:play-circle" },
-  running:     { label: "Actif",            color: "#28a745", icon: "mdi:fan" },
-  stabilizing: { label: "Stabilisation",    color: "#17a2b8", icon: "mdi:waves" },
-  cooldown:    { label: "Cooldown",         color: "#6f42c1", icon: "mdi:timer-sand" },
-  schedule_off:{ label: "Hors planning",    color: "#495057", icon: "mdi:clock-outline" },
-  manual_override_timed: { label: "Override (timed)", color: "#e83e8c", icon: "mdi:account-clock" },
-  manual_override_free:  { label: "Override libre",   color: "#e83e8c", icon: "mdi:account-edit" },
-  window_open: { label: "Fenêtre ouverte",  color: "#ffc107", icon: "mdi:window-open" },
+  idle:        { label: "Inactif",          color: "#7a8290", icon: "mdi:power-sleep" },
+  starting:    { label: "Démarrage",        color: "#fd9853", icon: "mdi:play-circle" },
+  running:     { label: "Actif",            color: "#43a047", icon: "mdi:fan" },
+  stabilizing: { label: "Stabilisation",    color: "#00bcd4", icon: "mdi:waves" },
+  cooldown:    { label: "Cooldown",         color: "#8e6dc8", icon: "mdi:timer-sand" },
+  schedule_off:{ label: "Hors planning",    color: "#7a8290", icon: "mdi:clock-outline" },
+  manual_override_timed: { label: "Override", color: "#e96f8e", icon: "mdi:account-clock" },
+  manual_override_free:  { label: "Manuel",   color: "#e96f8e", icon: "mdi:account-edit" },
+  window_open: { label: "Fenêtre ouverte",  color: "#fbbf24", icon: "mdi:window-open" },
 };
 
 const REGIME_LABELS = {
@@ -194,7 +194,7 @@ class DelormejClimateCard extends HTMLElement {
     // ─────────────────── HEADER + STATE BADGE
     const stateObj = get(ids.state);
     const stateVal = stateObj?.state ?? "unknown";
-    const meta = STATE_META[stateVal] || { label: stateVal, color: "#6c757d", icon: "mdi:help-circle" };
+    const meta = STATE_META[stateVal] || { label: stateVal, color: "#7a8290", icon: "mdi:help-circle" };
     const badge = $("state-badge");
     badge.style.setProperty("--dc-state-color", meta.color);
     $("state-icon").setAttribute("icon", meta.icon);
@@ -204,6 +204,20 @@ class DelormejClimateCard extends HTMLElement {
     const regimeLabel = REGIME_LABELS[regimeVal] || "—";
     $("header-regime").textContent = regimeLabel;
     $("header-regime").style.display = regimeLabel === "—" ? "none" : "";
+
+    // Header icon bubble — shows current clim mode (snowflake/fire/power)
+    const climObj0 = this._climateEntity ? get(this._climateEntity) : null;
+    const climMode = climObj0?.state || "off";
+    const headIco = $("head-icon");
+    const headIcoSvg = $("head-icon-ico");
+    headIcoSvg.setAttribute("icon", HVAC_ICONS[climMode] || "mdi:air-conditioner");
+    if (climMode === "cool" || climMode === "heat") {
+      headIco.classList.add("active");
+      headIco.style.setProperty("--dc-state-color", HVAC_COLORS[climMode]);
+    } else {
+      headIco.classList.remove("active");
+      headIco.style.removeProperty("--dc-state-color");
+    }
 
     // ─────────────────── SECTION 1: ÉTAT ACTUEL
     $("room-temp").textContent = this._fmtTemp(get(ids.roomTemp)?.state);
@@ -322,11 +336,14 @@ class DelormejClimateCard extends HTMLElement {
       btn.classList.toggle("active", m === current);
       if (m === current) btn.style.setProperty("--hvac-color", HVAC_COLORS[m] || "var(--primary-color)");
       const wrap = document.createElement("div");
+      const iconWrap = document.createElement("div");
+      iconWrap.className = "ha-icon-wrap";
       const ic = document.createElement("ha-icon");
       ic.setAttribute("icon", HVAC_ICONS[m] || "mdi:dots-horizontal");
+      iconWrap.appendChild(ic);
       const lbl = document.createElement("span");
       lbl.textContent = HVAC_LABELS[m] || m;
-      wrap.appendChild(ic);
+      wrap.appendChild(iconWrap);
       wrap.appendChild(lbl);
       btn.appendChild(wrap);
       container.appendChild(btn);
@@ -431,354 +448,379 @@ class DelormejClimateCard extends HTMLElement {
 
 const STYLES = `
   /* ─────────────────────────────────────────────────────────────────
-     Editorial palette: warm-neutral grays + a single champagne accent.
-     The whole card lives in 3 levels of grayscale + 1 sparing accent.
+     Bubble palette : doux gris-bleus + icônes colorées dans des cercles
+     vibrants, à la manière du dashboard bubble-card de l'utilisateur.
      ───────────────────────────────────────────────────────────────── */
   ha-card.dc-card {
-    --dc-pad: 20px;
-    --dc-radius: 14px;
-    --dc-radius-sm: 8px;
+    --dc-pad: 18px;
+    --dc-radius: 18px;
+    --dc-radius-pill: 999px;
+    --dc-radius-sm: 12px;
     --dc-hairline: rgba(255,255,255,0.06);
-    --dc-hairline-strong: rgba(255,255,255,0.12);
-    --dc-muted: rgba(255,255,255,0.50);
-    --dc-dim: rgba(255,255,255,0.30);
-    --dc-fg: rgba(255,255,255,0.92);
-    --dc-bg-elev: rgba(255,255,255,0.025);
-    --dc-bg-deep: rgba(0,0,0,0.18);
-    --dc-accent: #c9a86a;            /* champagne — used VERY sparingly */
-    --dc-accent-soft: rgba(201,168,106,0.12);
-    --dc-cool: #6b9ec0;
-    --dc-heat: #c89a5a;
-    --dc-warn: #d4a04a;
+    --dc-bg-bubble: rgba(255,255,255,0.04);
+    --dc-bg-bubble-strong: rgba(255,255,255,0.07);
+    --dc-bg-inset: rgba(0,0,0,0.18);
+    --dc-fg: rgba(255,255,255,0.95);
+    --dc-muted: rgba(255,255,255,0.62);
+    --dc-dim: rgba(255,255,255,0.42);
+    --dc-cool: #4d8bff;
+    --dc-heat: #ff7043;
+    --dc-warn: #fb9223;
+    --dc-success: #43a047;
+    --dc-danger: #e85e54;
+    --dc-info: #00bcd4;
+    --dc-accent: #fbbf24;       /* doré chaud, plus chaleureux que champagne */
     padding: 0; overflow: hidden;
     border-radius: var(--ha-card-border-radius, var(--dc-radius));
     color: var(--dc-fg);
-    font-feature-settings: "ss01", "cv11";
+    font-size: 0.95em;
   }
 
   /* ============ HEADER ============ */
   .dc-header {
     display: flex; align-items: center; gap: 14px;
-    padding: 22px var(--dc-pad) 18px;
-    border-bottom: 1px solid var(--dc-hairline);
+    padding: 18px var(--dc-pad);
   }
+  .dc-header .head-icon {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--dc-bg-bubble-strong);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    color: var(--dc-state-color, var(--dc-fg));
+    transition: background 0.3s, color 0.3s;
+  }
+  .dc-header .head-icon ha-icon { --mdc-icon-size: 24px; }
+  .dc-header .head-icon.active { background: var(--dc-state-color, var(--dc-bg-bubble-strong)); color: white; }
   .dc-header .title-block { flex: 1; min-width: 0; }
   .dc-header .title {
-    font-size: 1.05em; font-weight: 600; line-height: 1.2;
+    font-size: 1.15em; font-weight: 700; line-height: 1.2;
     letter-spacing: -0.005em;
   }
   .dc-header .subtitle {
-    font-size: 0.7em; color: var(--dc-dim); margin-top: 4px;
-    font-family: ui-monospace, "SF Mono", Consolas, monospace;
-    letter-spacing: 0.02em;
+    font-size: 0.82em; color: var(--dc-muted); margin-top: 3px;
   }
-  .dc-header .head-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .dc-header .head-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
   .dc-state {
-    display: inline-flex; align-items: center; gap: 7px;
-    padding: 4px 11px; border-radius: 4px;
-    font-size: 0.7em; font-weight: 600; letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--dc-state-color, var(--dc-muted));
-    background: transparent;
-    border: 1px solid var(--dc-state-color, var(--dc-hairline-strong));
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: var(--dc-radius-pill);
+    font-size: 0.78em; font-weight: 600;
+    color: white;
+    background: var(--dc-state-color, #7a8290);
     white-space: nowrap;
   }
-  .dc-state ha-icon { --mdc-icon-size: 13px; }
+  .dc-state ha-icon { --mdc-icon-size: 14px; }
   .dc-header .head-regime {
-    font-size: 0.7em; color: var(--dc-dim);
-    text-transform: uppercase; letter-spacing: 0.08em;
+    font-size: 0.75em; color: var(--dc-muted);
     font-weight: 500;
   }
 
   /* ============ SECTIONS ============ */
-  .dc-section {
-    padding: 22px var(--dc-pad);
-    border-bottom: 1px solid var(--dc-hairline);
-  }
-  .dc-section:last-child { border-bottom: none; }
+  .dc-section { padding: 0 var(--dc-pad) var(--dc-pad); }
   .dc-section-head {
     display: flex; align-items: center; gap: 10px;
-    margin-bottom: 18px;
-    color: var(--dc-muted);
+    margin-bottom: 12px;
   }
-  .dc-section-head ha-icon { --mdc-icon-size: 14px; color: var(--dc-dim); }
+  .dc-section-head .head-bubble {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; color: white;
+  }
+  .dc-section-head .head-bubble ha-icon { --mdc-icon-size: 16px; }
   .dc-section-head .lbl {
-    font-size: 0.68em; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.18em;
+    font-size: 1em; font-weight: 700;
+    color: var(--dc-fg);
   }
-  .dc-section-head .rule {
-    flex: 1; height: 1px; background: var(--dc-hairline);
-  }
+  /* per-section accent on the head bubble */
+  .section-status .head-bubble { background: var(--dc-info); }
+  .section-auto   .head-bubble { background: var(--dc-success); }
+  .section-config .head-bubble { background: var(--dc-warn); }
 
   /* ============ §1 ÉTAT ACTUEL ============ */
+  /* Hero bubble — big, friendly, central */
   .dc-hero {
-    display: flex; align-items: baseline; justify-content: center;
-    gap: 28px; margin-bottom: 18px;
+    background: var(--dc-bg-bubble);
+    border-radius: var(--dc-radius-sm);
+    padding: 18px;
+    margin-bottom: 12px;
+  }
+  .dc-hero-row {
+    display: flex; align-items: center; justify-content: center;
+    gap: 18px;
   }
   .dc-hero .room-block { text-align: center; }
   .dc-hero .room {
-    font-size: 3.4em; font-weight: 200; line-height: 1;
+    font-size: 3em; font-weight: 700; line-height: 1;
     font-variant-numeric: tabular-nums;
-    letter-spacing: -0.04em;
+    letter-spacing: -0.02em;
+    color: var(--dc-fg);
   }
   .dc-hero .room .unit {
-    font-size: 0.3em; color: var(--dc-dim); font-weight: 400;
-    margin-left: 4px; letter-spacing: 0;
+    font-size: 0.35em; color: var(--dc-muted); font-weight: 500;
+    margin-left: 3px;
   }
   .dc-hero .room-label {
-    font-size: 0.65em; color: var(--dc-dim); margin-top: 8px;
-    text-transform: uppercase; letter-spacing: 0.16em;
+    font-size: 0.78em; color: var(--dc-muted); margin-top: 6px;
     font-weight: 500;
   }
   .dc-hero .arrow {
-    color: var(--dc-dim); font-size: 1.4em; font-weight: 300;
-    align-self: center;
+    color: var(--dc-muted); font-size: 1.8em; font-weight: 400;
+    width: 36px; height: 36px; border-radius: 50%;
+    background: var(--dc-bg-bubble);
+    display: flex; align-items: center; justify-content: center;
   }
   .dc-hero .target-block {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
   }
   .dc-hero .target-block .target {
-    font-size: 1.4em; font-weight: 400;
+    font-size: 1.5em; font-weight: 700;
     font-variant-numeric: tabular-nums;
     color: var(--dc-accent);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
   }
   .dc-hero .target-block .target-label {
-    font-size: 0.62em; color: var(--dc-dim);
-    text-transform: uppercase; letter-spacing: 0.16em;
-    font-weight: 500;
+    font-size: 0.7em; color: var(--dc-muted); font-weight: 500;
   }
 
   .dc-narrative {
-    text-align: center; margin: 0 0 18px;
-    font-size: 0.92em; line-height: 1.5; color: var(--dc-muted);
-    font-weight: 400; font-style: italic;
+    text-align: center; margin: 14px 0 0;
+    padding-top: 14px; border-top: 1px solid var(--dc-hairline);
+    font-size: 0.95em; line-height: 1.45; color: var(--dc-fg);
+    font-weight: 500;
   }
-  .dc-narrative .target { color: var(--dc-accent); font-weight: 500; font-variant-numeric: tabular-nums; font-style: normal; }
-  .dc-narrative .until { color: var(--dc-dim); font-variant-numeric: tabular-nums; font-style: normal; }
+  .dc-narrative .target { color: var(--dc-accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .dc-narrative .until { color: var(--dc-muted); font-variant-numeric: tabular-nums; font-weight: 600; }
   .dc-narrative.warn { color: var(--dc-warn); }
 
-  .dc-pills { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-bottom: 18px; }
+  /* Status pills */
+  .dc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
   .dc-pill {
-    display: inline-flex; align-items: center; gap: 5px;
-    padding: 3px 9px; border-radius: 3px;
-    font-size: 0.72em; font-weight: 500;
-    color: var(--dc-dim);
-    border: 1px solid var(--dc-hairline);
-    background: transparent;
-    letter-spacing: 0.01em;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 11px; border-radius: var(--dc-radius-pill);
+    font-size: 0.78em; font-weight: 600;
+    background: var(--dc-bg-bubble);
+    color: var(--dc-muted);
   }
-  .dc-pill ha-icon { --mdc-icon-size: 12px; }
-  .dc-pill--ok    { color: var(--dc-muted); }
-  .dc-pill--warn  { color: var(--dc-warn); border-color: rgba(212,160,74,0.3); }
-  .dc-pill--info  { color: var(--dc-muted); }
-  .dc-pill--neutral { /* defaults */ }
+  .dc-pill ha-icon { --mdc-icon-size: 14px; }
+  .dc-pill--ok    { background: rgba(67,160,71,0.15); color: var(--dc-success); }
+  .dc-pill--warn  { background: rgba(251,146,35,0.18); color: var(--dc-warn); }
+  .dc-pill--info  { background: rgba(0,188,212,0.15); color: var(--dc-info); }
+  .dc-pill--neutral { background: var(--dc-bg-bubble); color: var(--dc-muted); }
 
+  /* Metrics — list of rows in a bubble */
   .dc-metrics {
-    display: grid; grid-template-columns: 1fr 1fr;
-    border-top: 1px solid var(--dc-hairline);
-    border-left: 1px solid var(--dc-hairline);
+    background: var(--dc-bg-bubble);
+    border-radius: var(--dc-radius-sm);
+    padding: 6px 4px;
   }
-  .dc-metric {
-    padding: 12px 14px;
-    border-right: 1px solid var(--dc-hairline);
+  .dc-metric-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 12px;
     border-bottom: 1px solid var(--dc-hairline);
-    display: flex; flex-direction: column; gap: 4px;
   }
-  .dc-metric .label {
-    font-size: 0.62em; text-transform: uppercase;
-    letter-spacing: 0.14em; color: var(--dc-dim); font-weight: 500;
+  .dc-metric-row:last-child { border-bottom: none; }
+  .dc-metric-row .label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 0.9em; color: var(--dc-muted); font-weight: 500;
   }
-  .dc-metric .value {
-    font-size: 1.05em; font-weight: 500;
+  .dc-metric-row .label ha-icon { --mdc-icon-size: 16px; color: var(--dc-dim); }
+  .dc-metric-row .value {
+    font-size: 1em; font-weight: 700;
     font-variant-numeric: tabular-nums; color: var(--dc-fg);
   }
   .dc-override-row {
-    margin-top: 14px; padding: 10px 14px;
-    border-left: 2px solid var(--dc-warn);
-    background: rgba(212,160,74,0.05);
+    margin-top: 10px; padding: 12px 14px;
+    background: rgba(233,111,142,0.12);
+    border-radius: var(--dc-radius-sm);
     display: flex; justify-content: space-between; align-items: center;
-    font-size: 0.85em;
+    font-size: 0.9em;
   }
-  .dc-override-row .lbl { color: var(--dc-muted); }
-  .dc-override-row .val { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--dc-warn); }
+  .dc-override-row .lbl { color: #e96f8e; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dc-override-row .val { font-weight: 700; font-variant-numeric: tabular-nums; color: #e96f8e; }
 
   /* ============ §2 AUTOMATISATION ============ */
-  .dc-control { margin-bottom: 18px; }
+  .dc-control { margin-bottom: 14px; }
   .dc-control:last-child { margin-bottom: 0; }
   .dc-control-label {
-    font-size: 0.66em; color: var(--dc-dim); font-weight: 500;
+    font-size: 0.85em; color: var(--dc-muted); font-weight: 600;
     margin-bottom: 8px;
-    text-transform: uppercase; letter-spacing: 0.16em;
   }
   .dc-segmented {
-    display: flex;
-    border: 1px solid var(--dc-hairline);
-    border-radius: 6px; overflow: hidden;
+    display: flex; gap: 6px;
+    background: var(--dc-bg-bubble);
+    border-radius: var(--dc-radius-pill);
+    padding: 5px;
   }
   .dc-segmented button {
-    flex: 1; padding: 10px 12px; border: none; background: transparent;
-    color: var(--dc-muted); font-size: 0.88em; font-weight: 500;
+    flex: 1; padding: 10px 14px; border: none; background: transparent;
+    color: var(--dc-muted); font-size: 0.9em; font-weight: 600;
     cursor: pointer;
-    border-left: 1px solid var(--dc-hairline);
-    transition: background 0.2s, color 0.2s;
-    letter-spacing: 0.01em;
+    border-radius: var(--dc-radius-pill);
+    transition: all 0.2s;
   }
-  .dc-segmented button:first-child { border-left: none; }
-  .dc-segmented button:hover { color: var(--dc-fg); background: var(--dc-bg-elev); }
+  .dc-segmented button:hover { color: var(--dc-fg); }
   .dc-segmented button.active {
-    background: var(--dc-accent-soft);
-    color: var(--dc-accent);
-    font-weight: 600;
+    background: var(--dc-bg-bubble-strong);
+    color: var(--dc-fg);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
   }
   .dc-segmented.tone-warn button.active[data-mode="boost"],
   .dc-segmented.tone-warn button.active[data-aggressivity="agressif"] {
-    background: rgba(212,160,74,0.12); color: var(--dc-warn);
+    background: var(--dc-warn); color: white;
   }
   .dc-segmented.tone-danger button.active[data-mode="off"] {
-    background: rgba(255,255,255,0.04); color: var(--dc-dim);
+    background: var(--dc-danger); color: white;
   }
 
   .dc-quick-actions {
     display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   }
   .dc-quick-actions button {
-    padding: 11px 12px; border-radius: 6px;
-    border: 1px solid var(--dc-hairline); background: transparent;
-    color: var(--dc-muted); cursor: pointer;
-    font-weight: 500; font-size: 0.85em;
+    padding: 12px 14px; border-radius: var(--dc-radius-pill);
+    border: none; background: var(--dc-bg-bubble);
+    color: var(--dc-fg); cursor: pointer;
+    font-weight: 600; font-size: 0.9em;
     display: flex; align-items: center; justify-content: center; gap: 8px;
     transition: all 0.2s;
-    letter-spacing: 0.01em;
   }
-  .dc-quick-actions button ha-icon { --mdc-icon-size: 14px; color: var(--dc-dim); }
+  .dc-quick-actions button ha-icon { --mdc-icon-size: 16px; }
   .dc-quick-actions button:hover:not(:disabled) {
-    color: var(--dc-fg); border-color: var(--dc-hairline-strong);
-    background: var(--dc-bg-elev);
+    background: var(--dc-bg-bubble-strong);
   }
-  .dc-quick-actions button:hover:not(:disabled) ha-icon { color: var(--dc-fg); }
-  .dc-quick-actions button:disabled { opacity: 0.3; cursor: not-allowed; }
+  .dc-quick-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .dc-quick-actions button[data-bind="boost-btn"] {
+    background: rgba(251,146,35,0.15); color: var(--dc-warn);
+  }
   .dc-quick-actions button[data-bind="boost-btn"]:hover:not(:disabled) {
-    color: var(--dc-warn); border-color: rgba(212,160,74,0.4);
+    background: rgba(251,146,35,0.25);
   }
-  .dc-quick-actions button[data-bind="boost-btn"]:hover:not(:disabled) ha-icon { color: var(--dc-warn); }
+  .dc-quick-actions button[data-bind="boost-btn"] ha-icon { color: var(--dc-warn); }
 
   /* ============ §3 CONFIGURATION ============ */
   .dc-subblock {
-    padding-bottom: 18px;
-    margin-bottom: 18px;
-    border-bottom: 1px dashed var(--dc-hairline);
+    background: var(--dc-bg-bubble);
+    border-radius: var(--dc-radius-sm);
+    padding: 14px;
+    margin-bottom: 10px;
   }
-  .dc-subblock:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+  .dc-subblock:last-child { margin-bottom: 0; }
   .dc-subblock-title {
-    font-size: 0.66em; color: var(--dc-dim); font-weight: 500;
-    text-transform: uppercase; letter-spacing: 0.16em;
+    font-size: 0.85em; color: var(--dc-muted); font-weight: 600;
     margin-bottom: 12px;
     display: flex; align-items: center; gap: 8px;
   }
-  .dc-subblock-title ha-icon { --mdc-icon-size: 13px; color: var(--dc-dim); }
+  .dc-subblock-title ha-icon { --mdc-icon-size: 16px; color: var(--dc-dim); }
 
-  /* HVAC chiclets */
+  /* HVAC chiclets — colored circular icons like the user's dashboard */
   .dc-hvac {
-    display: grid; grid-template-columns: repeat(6, 1fr); gap: 0;
-    border: 1px solid var(--dc-hairline); border-radius: 6px; overflow: hidden;
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px;
   }
   .dc-hvac button {
-    padding: 10px 4px; background: transparent;
-    border: none; border-left: 1px solid var(--dc-hairline);
+    padding: 10px 4px; background: var(--dc-bg-inset);
+    border: none; border-radius: var(--dc-radius-sm);
     color: var(--dc-muted); cursor: pointer;
     transition: all 0.2s;
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
   }
-  .dc-hvac button:first-child { border-left: none; }
-  .dc-hvac button > div { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-  .dc-hvac button ha-icon { --mdc-icon-size: 16px; color: var(--dc-dim); }
-  .dc-hvac button span { font-size: 0.6em; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
-  .dc-hvac button:hover { background: var(--dc-bg-elev); color: var(--dc-fg); }
-  .dc-hvac button:hover ha-icon { color: var(--dc-fg); }
-  .dc-hvac button.active {
-    background: var(--dc-bg-deep);
-    color: var(--hvac-color, var(--dc-accent));
+  .dc-hvac button > div { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 100%; }
+  .dc-hvac button .ha-icon-wrap {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--dc-bg-bubble-strong);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--dc-muted);
+    transition: all 0.2s;
   }
-  .dc-hvac button.active ha-icon { color: var(--hvac-color, var(--dc-accent)); }
+  .dc-hvac button ha-icon { --mdc-icon-size: 16px; }
+  .dc-hvac button span { font-size: 0.7em; font-weight: 600; }
+  .dc-hvac button:hover { background: var(--dc-bg-bubble); }
+  .dc-hvac button:hover .ha-icon-wrap { background: var(--dc-bg-bubble); color: var(--dc-fg); }
+  .dc-hvac button.active { background: var(--dc-bg-bubble); }
+  .dc-hvac button.active .ha-icon-wrap {
+    background: var(--hvac-color, var(--dc-accent));
+    color: white;
+  }
+  .dc-hvac button.active span { color: var(--dc-fg); }
 
   /* Setpoint */
   .dc-setpoint {
-    display: flex; align-items: center; justify-content: center; gap: 24px;
-    margin-top: 18px; margin-bottom: 4px;
+    display: flex; align-items: center; justify-content: center; gap: 22px;
+    margin-top: 14px;
   }
   .dc-setpoint .sp-val {
-    font-size: 2em; font-weight: 200;
+    font-size: 2.2em; font-weight: 700;
     font-variant-numeric: tabular-nums;
-    min-width: 90px; text-align: center;
-    letter-spacing: -0.03em;
+    min-width: 100px; text-align: center;
+    letter-spacing: -0.02em;
+    color: var(--dc-fg);
   }
-  .dc-setpoint .sp-unit { font-size: 0.45em; color: var(--dc-dim); font-weight: 400; margin-left: 2px; }
+  .dc-setpoint .sp-unit { font-size: 0.45em; color: var(--dc-muted); font-weight: 600; margin-left: 3px; }
   .dc-setpoint button {
-    width: 38px; height: 38px; border-radius: 50%;
-    background: transparent;
-    border: 1px solid var(--dc-hairline);
-    color: var(--dc-muted); font-size: 1.1em; font-weight: 400;
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--dc-bg-bubble-strong);
+    border: none;
+    color: var(--dc-fg); font-size: 1.4em; font-weight: 600;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
     transition: all 0.2s;
   }
   .dc-setpoint button:hover {
-    border-color: var(--dc-accent); color: var(--dc-accent);
+    background: var(--dc-cool); color: white;
   }
 
   /* Fan + swing */
-  .dc-fanswing { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  .dc-fanswing { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
   .dc-fanswing .field { display: flex; flex-direction: column; gap: 6px; }
   .dc-fanswing label {
-    font-size: 0.62em; color: var(--dc-dim); font-weight: 500;
-    text-transform: uppercase; letter-spacing: 0.14em;
+    font-size: 0.8em; color: var(--dc-muted); font-weight: 600;
   }
   .dc-fanswing select {
-    background: transparent;
-    border: 1px solid var(--dc-hairline);
-    border-radius: 6px; color: var(--dc-fg); padding: 9px 10px;
-    font-size: 0.88em; font-weight: 400;
+    background: var(--dc-bg-inset);
+    border: none;
+    border-radius: var(--dc-radius-sm); color: var(--dc-fg); padding: 11px 12px;
+    font-size: 0.9em; font-weight: 600;
     appearance: none; -webkit-appearance: none;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(255,255,255,0.4)' d='M0 0l5 6 5-6z'/></svg>");
-    background-repeat: no-repeat; background-position: right 10px center;
-    padding-right: 30px;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(255,255,255,0.5)' d='M0 0l5 6 5-6z'/></svg>");
+    background-repeat: no-repeat; background-position: right 12px center;
+    padding-right: 32px;
+    cursor: pointer;
   }
-  .dc-fanswing select:focus { outline: none; border-color: var(--dc-accent); }
+  .dc-fanswing select:focus { outline: 2px solid var(--dc-cool); outline-offset: -2px; }
 
   /* Threshold pairs (start/stop side by side) */
-  .dc-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .dc-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .dc-field { display: flex; flex-direction: column; gap: 6px; }
   .dc-field label {
-    font-size: 0.62em; color: var(--dc-dim); font-weight: 500;
-    text-transform: uppercase; letter-spacing: 0.14em;
+    font-size: 0.8em; color: var(--dc-muted); font-weight: 600;
   }
   .dc-input-wrap {
     display: flex; align-items: center; gap: 6px;
-    background: transparent;
-    border: 1px solid var(--dc-hairline); border-radius: 6px; padding: 0 12px;
-    transition: border-color 0.2s;
+    background: var(--dc-bg-inset);
+    border-radius: var(--dc-radius-sm); padding: 0 14px;
+    transition: outline 0.2s;
   }
-  .dc-input-wrap:focus-within { border-color: var(--dc-accent); }
+  .dc-input-wrap:focus-within { outline: 2px solid var(--dc-cool); outline-offset: -2px; }
   .dc-input-wrap input {
-    flex: 1; min-width: 0; padding: 9px 0; background: transparent; border: none;
-    color: var(--dc-fg); font-size: 0.95em; font-weight: 400;
+    flex: 1; min-width: 0; padding: 11px 0; background: transparent; border: none;
+    color: var(--dc-fg); font-size: 1em; font-weight: 700;
     font-variant-numeric: tabular-nums; text-align: right;
   }
   .dc-input-wrap input:focus { outline: none; }
-  .dc-input-wrap .unit { font-size: 0.72em; color: var(--dc-dim); letter-spacing: 0.04em; }
+  .dc-input-wrap .unit { font-size: 0.82em; color: var(--dc-muted); font-weight: 600; }
 
-  .dc-triple { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .dc-triple { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 
   .dc-err {
-    margin: 12px var(--dc-pad); padding: 10px 12px;
-    border-left: 2px solid #c87674;
-    background: rgba(200,118,116,0.06);
-    color: #c87674; font-size: 0.85em;
+    margin: 10px var(--dc-pad); padding: 12px 14px;
+    border-radius: var(--dc-radius-sm);
+    background: rgba(232,94,84,0.15);
+    color: var(--dc-danger); font-size: 0.9em; font-weight: 600;
   }
   .dc-err:empty { display: none; }
 `;
 
 const TEMPLATE = `
   <div class="dc-header">
+    <div class="head-icon" data-bind="head-icon">
+      <ha-icon icon="mdi:air-conditioner" data-bind="head-icon-ico"></ha-icon>
+    </div>
     <div class="title-block">
       <div class="title" data-bind="title-text"></div>
       <div class="subtitle" data-bind="subtitle"></div>
@@ -795,47 +837,48 @@ const TEMPLATE = `
   <!-- ════════════════════════════════════ §1 ÉTAT ACTUEL -->
   <section class="dc-section section-status">
     <div class="dc-section-head">
-      <ha-icon icon="mdi:radar"></ha-icon>
+      <div class="head-bubble"><ha-icon icon="mdi:radar"></ha-icon></div>
       <span class="lbl">État actuel</span>
     </div>
 
     <div class="dc-hero">
-      <div class="room-block">
-        <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
-        <div class="room-label">T° zone</div>
+      <div class="dc-hero-row">
+        <div class="room-block">
+          <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
+          <div class="room-label">T° zone</div>
+        </div>
+        <span class="arrow" data-bind="target-arrow">→</span>
+        <div class="target-block" data-bind="target-block">
+          <span class="target"><span data-bind="target-temp">—</span> °C</span>
+          <span class="target-label">cible</span>
+        </div>
       </div>
-      <span class="arrow" data-bind="target-arrow">→</span>
-      <div class="target-block" data-bind="target-block">
-        <span class="target"><span data-bind="target-temp">—</span> °C</span>
-        <span class="target-label">cible</span>
-      </div>
+      <div class="dc-narrative" data-bind="narrative"></div>
     </div>
-
-    <div class="dc-narrative" data-bind="narrative"></div>
 
     <div class="dc-pills" data-bind="status-pills"></div>
 
     <div class="dc-metrics">
-      <div class="dc-metric">
-        <span class="label">Consigne envoyée</span>
+      <div class="dc-metric-row">
+        <span class="label"><ha-icon icon="mdi:send"></ha-icon>Consigne envoyée</span>
         <span class="value" data-bind="metric-setpoint-sent">—</span>
       </div>
-      <div class="dc-metric">
-        <span class="label">Consigne clim</span>
+      <div class="dc-metric-row">
+        <span class="label"><ha-icon icon="mdi:thermostat"></ha-icon>Consigne clim</span>
         <span class="value" data-bind="metric-clim-setpoint">—</span>
       </div>
-      <div class="dc-metric">
-        <span class="label">Sonde clim</span>
+      <div class="dc-metric-row">
+        <span class="label"><ha-icon icon="mdi:thermometer"></ha-icon>Sonde clim</span>
         <span class="value" data-bind="metric-clim-sonde">—</span>
       </div>
-      <div class="dc-metric">
-        <span class="label">Régime</span>
+      <div class="dc-metric-row">
+        <span class="label"><ha-icon icon="mdi:gauge"></ha-icon>Régime</span>
         <span class="value" data-bind="metric-regime">—</span>
       </div>
     </div>
 
     <div class="dc-override-row" data-bind="override-row" style="display:none">
-      <span class="lbl">⏱ Override actif jusqu'à</span>
+      <span class="lbl"><ha-icon icon="mdi:account-clock"></ha-icon>Override jusqu'à</span>
       <span class="val" data-bind="override-until-val">—</span>
     </div>
   </section>
@@ -843,7 +886,7 @@ const TEMPLATE = `
   <!-- ════════════════════════════════════ §2 AUTOMATISATION -->
   <section class="dc-section section-auto">
     <div class="dc-section-head">
-      <ha-icon icon="mdi:robot"></ha-icon>
+      <div class="head-bubble"><ha-icon icon="mdi:robot"></ha-icon></div>
       <span class="lbl">Automatisation</span>
     </div>
 
@@ -877,7 +920,7 @@ const TEMPLATE = `
   <!-- ════════════════════════════════════ §3 CONFIGURATION -->
   <section class="dc-section section-config">
     <div class="dc-section-head">
-      <ha-icon icon="mdi:cog"></ha-icon>
+      <div class="head-bubble"><ha-icon icon="mdi:cog"></ha-icon></div>
       <span class="lbl">Configuration</span>
     </div>
 
@@ -972,7 +1015,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.5.1 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.5.2 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
