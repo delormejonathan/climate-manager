@@ -1,28 +1,45 @@
 /**
- * delormej-climate-card
+ * delormej-climate-card  v0.2
  *
  * Lovelace card for one zone of the delormej_climate integration.
  *
  * Usage:
  *   type: custom:delormej-climate-card
- *   zone: rdc                            # required — the zone id (the entity slug after "delormej_climate_")
+ *   zone: rdc                            # required
  *   title: Salon                         # optional — header label override
- *   climate_entity: climate.salon        # optional — to show the underlying AC's current setpoint
- *
- * No build step. Drop this file into /config/www/delormej-climate-card.js
- * and register it as a resource at /local/delormej-climate-card.js (module).
+ *   climate_entity: climate.salon        # optional — underlying AC for live readouts
  */
 
-class DelormejClimateCard extends HTMLElement {
-  /* ------------------------------------------------------------------ config */
+const STATE_LABELS = {
+  idle: { label: "Inactif", color: "var(--state-inactive-color, #6c757d)", icon: "mdi:power-sleep" },
+  starting: { label: "Démarrage", color: "#fd7e14", icon: "mdi:play-circle" },
+  running: { label: "Actif", color: "var(--success-color, #28a745)", icon: "mdi:fan" },
+  stabilizing: { label: "Stabilisation", color: "#17a2b8", icon: "mdi:waves" },
+  cooldown: { label: "Cooldown", color: "#6f42c1", icon: "mdi:timer-sand" },
+  schedule_off: { label: "Hors planning", color: "#495057", icon: "mdi:clock-outline" },
+  manual_override_timed: { label: "Override (timed)", color: "#e83e8c", icon: "mdi:account-clock" },
+  manual_override_free: { label: "Override libre", color: "#e83e8c", icon: "mdi:account-edit" },
+  window_open: { label: "Fenêtre ouverte", color: "var(--warning-color, #ffc107)", icon: "mdi:window-open" },
+};
 
+const REGIME_LABELS = {
+  none: "—",
+  attaque: "Attaque",
+  croisiere: "Croisière",
+  approche: "Approche",
+  stabilisation: "Stabilisation",
+  boost: "Boost",
+};
+
+
+class DelormejClimateCard extends HTMLElement {
   setConfig(config) {
     if (!config?.zone) {
       throw new Error("Required: `zone` (the zone id, e.g. 'rdc')");
     }
     this._config = config;
     this._zone = config.zone;
-    this._title = config.title || config.zone;
+    this._title = config.title || this._capitalize(config.zone);
     this._climateEntity = config.climate_entity;
     this._rendered = false;
   }
@@ -30,16 +47,12 @@ class DelormejClimateCard extends HTMLElement {
   static getConfigElement() {
     return document.createElement("hui-generic-entity-row");
   }
-
   static getStubConfig() {
     return { type: "custom:delormej-climate-card", zone: "rdc" };
   }
-
   getCardSize() {
-    return 6;
+    return 7;
   }
-
-  /* ----------------------------------------------------------------- entity ids */
 
   _ent(kind, suffix) {
     return `${kind}.delormej_climate_${this._zone}_${suffix}`;
@@ -66,129 +79,272 @@ class DelormejClimateCard extends HTMLElement {
     };
   }
 
-  /* ------------------------------------------------------------------ render */
-
   set hass(hass) {
     this._hass = hass;
     if (!this._rendered) {
       this._render();
       this._rendered = true;
-    } else {
-      this._update();
     }
+    this._update();
   }
+
+  /* ============================================================== render */
 
   _render() {
     const root = document.createElement("ha-card");
-    root.classList.add("delormej-climate-card");
+    root.classList.add("dc-card");
 
     const style = document.createElement("style");
     style.textContent = `
-      ha-card.delormej-climate-card { padding: 16px; }
-      .header { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
-      .header .name { font-size: 1.2em; font-weight: 600; flex: 1; }
-      .badge {
-        display: inline-block; padding: 2px 8px; border-radius: 999px;
-        font-size: 0.8em; font-weight: 600; text-transform: capitalize;
-        background: var(--state-icon-color, #888); color: white;
+      ha-card.dc-card {
+        --dc-pad: 16px;
+        --dc-gap: 12px;
+        --dc-radius: 10px;
+        --dc-divider: var(--divider-color, rgba(255,255,255,0.08));
+        --dc-muted: var(--secondary-text-color, #8a8a8a);
+        --dc-fg: var(--primary-text-color, #fff);
+        padding: 0;
+        overflow: hidden;
       }
-      .badge.idle { background: #6c757d; }
-      .badge.starting { background: #fd7e14; }
-      .badge.running { background: #28a745; }
-      .badge.stabilizing { background: #17a2b8; }
-      .badge.cooldown { background: #6f42c1; }
-      .badge.schedule_off { background: #495057; }
-      .badge.manual_override_timed, .badge.manual_override_free { background: #e83e8c; }
-      .badge.window_open { background: #ffc107; color: #212529; }
-      .row { display: flex; align-items: baseline; gap: 12px; margin: 6px 0; }
-      .row .label { color: var(--secondary-text-color); flex: 1; }
-      .row .val { font-variant-numeric: tabular-nums; font-weight: 500; }
-      .hero { display: flex; align-items: baseline; gap: 14px; margin: 12px 0 14px 0; }
-      .hero .temp { font-size: 2.6em; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
-      .hero .unit { font-size: 1.2em; color: var(--secondary-text-color); }
-      .hero .regime { margin-left: auto; font-size: 0.9em; color: var(--secondary-text-color); }
-      .ctx-icons { display: flex; gap: 8px; align-items: center; font-size: 0.85em; color: var(--secondary-text-color); margin: 6px 0 10px 0; }
-      .ctx-icons .pill {
-        display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
-        border-radius: 999px; background: var(--secondary-background-color, #2a2a2a);
-      }
-      .ctx-icons .pill.warn { background: #ffc10733; color: #ffc107; }
-      .controls { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-      .controls button {
-        flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--divider-color, #444);
-        background: var(--card-background-color, transparent); color: inherit; cursor: pointer;
-        font-weight: 500;
-      }
-      .controls button:hover { background: var(--secondary-background-color); }
-      .controls button.primary { background: var(--primary-color); color: var(--text-primary-color, white); border-color: transparent; }
-      .controls button:disabled { opacity: 0.4; cursor: not-allowed; }
-      .mode-select { padding: 4px 8px; border-radius: 6px; background: var(--secondary-background-color); color: inherit; border: 1px solid var(--divider-color); }
-      details.thresholds { margin-top: 14px; border-top: 1px solid var(--divider-color, #333); padding-top: 8px; }
-      details.thresholds summary { cursor: pointer; color: var(--secondary-text-color); font-size: 0.9em; }
-      .slider-row { display: grid; grid-template-columns: 1fr 60px 24px; gap: 6px; align-items: center; margin: 6px 0; font-size: 0.9em; }
-      .slider-row .lbl { color: var(--secondary-text-color); }
-      .slider-row input[type=number] { width: 100%; padding: 4px; border-radius: 4px; border: 1px solid var(--divider-color); background: transparent; color: inherit; }
-      .err { color: #dc3545; font-size: 0.85em; margin-top: 6px; }
-    `;
 
+      .dc-header {
+        display: flex; align-items: center; gap: 10px;
+        padding: var(--dc-pad);
+      }
+      .dc-header .title-block { flex: 1; min-width: 0; }
+      .dc-header .title { font-size: 1.05em; font-weight: 600; line-height: 1.15; }
+      .dc-header .subtitle { font-size: 0.8em; color: var(--dc-muted); margin-top: 2px; }
+      .dc-state {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 4px 10px; border-radius: 999px;
+        font-size: 0.78em; font-weight: 600; color: white;
+        background: var(--dc-state-color, #6c757d);
+        white-space: nowrap;
+      }
+      .dc-state ha-icon { --mdc-icon-size: 14px; }
+
+      .dc-hero {
+        display: grid; grid-template-columns: 1fr auto;
+        gap: var(--dc-gap); padding: 0 var(--dc-pad) var(--dc-pad);
+        border-bottom: 1px solid var(--dc-divider);
+      }
+      .dc-hero .temp {
+        font-size: 2.4em; font-weight: 700; line-height: 1;
+        font-variant-numeric: tabular-nums;
+        display: flex; align-items: baseline; gap: 4px;
+      }
+      .dc-hero .temp .unit { font-size: 0.5em; color: var(--dc-muted); font-weight: 400; }
+      .dc-hero .temp-label { font-size: 0.78em; color: var(--dc-muted); margin-top: 4px; }
+      .dc-hero .regime { text-align: right; align-self: end; font-size: 0.85em; color: var(--dc-muted); }
+      .dc-hero .regime-val { font-weight: 600; color: var(--dc-fg); display: block; }
+
+      .dc-ctx { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px var(--dc-pad); }
+      .dc-ctx:empty { display: none; }
+      .dc-chip {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 3px 8px; border-radius: 999px;
+        font-size: 0.78em;
+        background: var(--secondary-background-color, rgba(255,255,255,0.05));
+        color: var(--dc-muted);
+      }
+      .dc-chip ha-icon { --mdc-icon-size: 14px; }
+      .dc-chip.warn { background: rgba(255,193,7,0.15); color: var(--warning-color, #ffc107); }
+      .dc-chip.info { background: rgba(13,110,253,0.12); color: var(--info-color, #5e9eff); }
+
+      .dc-metrics {
+        display: grid; grid-template-columns: 1fr 1fr;
+        gap: 1px;
+        background: var(--dc-divider);
+      }
+      .dc-metric {
+        background: var(--card-background-color, #1a1a1a);
+        padding: 10px var(--dc-pad);
+        display: flex; flex-direction: column; gap: 2px;
+      }
+      .dc-metric .label {
+        font-size: 0.72em; text-transform: uppercase;
+        letter-spacing: 0.04em; color: var(--dc-muted);
+      }
+      .dc-metric .value {
+        font-size: 1.1em; font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .dc-metric .value.dim { color: var(--dc-muted); }
+
+      .dc-section { padding: var(--dc-pad); }
+      .dc-section + .dc-section { border-top: 1px solid var(--dc-divider); }
+
+      .dc-mode { display: flex; background: var(--secondary-background-color); border-radius: var(--dc-radius); padding: 3px; }
+      .dc-mode button {
+        flex: 1; padding: 8px; border: none; background: transparent; color: var(--dc-muted);
+        font-size: 0.9em; font-weight: 500; cursor: pointer; border-radius: 8px;
+        transition: background 0.15s, color 0.15s;
+      }
+      .dc-mode button:hover { color: var(--dc-fg); }
+      .dc-mode button.active {
+        background: var(--card-background-color, #1a1a1a);
+        color: var(--dc-fg);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+      }
+      .dc-mode button.active[data-mode="boost"] { color: var(--warning-color, #ffc107); }
+      .dc-mode button.active[data-mode="off"] { color: var(--error-color, #dc3545); }
+
+      .dc-actions { display: flex; gap: 8px; margin-top: 10px; }
+      .dc-actions button {
+        flex: 1; padding: 9px 12px; border-radius: var(--dc-radius);
+        border: 1px solid var(--dc-divider); background: transparent;
+        color: var(--dc-fg); cursor: pointer; font-weight: 500; font-size: 0.9em;
+        display: flex; align-items: center; justify-content: center; gap: 6px;
+        transition: background 0.15s;
+      }
+      .dc-actions button ha-icon { --mdc-icon-size: 16px; }
+      .dc-actions button:hover { background: var(--secondary-background-color); }
+      .dc-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+      details.dc-config { padding: 0; }
+      details.dc-config > summary {
+        padding: 12px var(--dc-pad); cursor: pointer;
+        font-size: 0.9em; color: var(--dc-muted);
+        display: flex; align-items: center; gap: 8px;
+        list-style: none;
+      }
+      details.dc-config > summary::-webkit-details-marker { display: none; }
+      details.dc-config > summary ha-icon { transition: transform 0.2s; --mdc-icon-size: 18px; }
+      details.dc-config[open] > summary ha-icon.chevron { transform: rotate(90deg); }
+      details.dc-config > summary:hover { color: var(--dc-fg); }
+      .dc-config-body { padding: 4px var(--dc-pad) var(--dc-pad); }
+      .dc-config-group { margin-bottom: 14px; }
+      .dc-config-group:last-child { margin-bottom: 0; }
+      .dc-config-group .group-title {
+        font-size: 0.72em; text-transform: uppercase;
+        letter-spacing: 0.04em; color: var(--dc-muted);
+        margin-bottom: 6px;
+      }
+      .dc-field { display: grid; grid-template-columns: 1fr 80px 28px; gap: 8px; align-items: center; margin: 5px 0; font-size: 0.9em; }
+      .dc-field .lbl { color: var(--dc-muted); }
+      .dc-field .unit { color: var(--dc-muted); font-size: 0.85em; text-align: left; }
+      .dc-field input[type=number] {
+        width: 100%; padding: 6px 8px; border-radius: 6px;
+        border: 1px solid var(--dc-divider);
+        background: var(--secondary-background-color);
+        color: var(--dc-fg); font-size: inherit; font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
+      .dc-field input[type=number]:focus {
+        outline: none; border-color: var(--primary-color);
+      }
+      .dc-err {
+        margin: 8px var(--dc-pad); padding: 8px;
+        border-radius: 6px; background: rgba(220,53,69,0.15);
+        color: var(--error-color, #dc3545); font-size: 0.85em;
+      }
+      .dc-err:empty { display: none; }
+    `;
     root.appendChild(style);
 
     const body = document.createElement("div");
-    body.classList.add("body");
     body.innerHTML = `
-      <div class="header">
-        <div class="name">${this._title}</div>
-        <span class="badge" data-bind="state-badge">—</span>
-      </div>
-      <div class="hero">
-        <div class="temp" data-bind="room-temp">—</div>
-        <div class="unit">°C</div>
-        <div class="regime" data-bind="regime">—</div>
-      </div>
-      <div class="ctx-icons" data-bind="ctx-icons"></div>
-
-      <div class="row"><div class="label">Consigne envoyée</div><div class="val" data-bind="setpoint-sent">—</div></div>
-      <div class="row"><div class="label">T° interne clim</div><div class="val" data-bind="climate-internal">—</div></div>
-      <div class="row"><div class="label">Consigne actuelle clim</div><div class="val" data-bind="climate-setpoint">—</div></div>
-      <div class="row" data-bind="override-row" style="display:none">
-        <div class="label">Override jusqu'à</div><div class="val" data-bind="override-until">—</div>
+      <div class="dc-header">
+        <div class="title-block">
+          <div class="title">${this._escapeHTML(this._title)}</div>
+          <div class="subtitle" data-bind="subtitle"></div>
+        </div>
+        <span class="dc-state" data-bind="state-badge">
+          <ha-icon icon="mdi:circle-outline" data-bind="state-icon"></ha-icon>
+          <span data-bind="state-label">—</span>
+        </span>
       </div>
 
-      <div class="controls">
-        <select class="mode-select" data-bind="mode-select">
-          <option value="auto">Auto</option>
-          <option value="off">Off</option>
-          <option value="boost">Boost</option>
-        </select>
-        <button class="primary" data-bind="boost-btn" title="Active le boost pour 15 minutes puis retour auto">⚡ Activer Boost 15 min</button>
-        <button data-bind="resume-btn" title="Annule l'override manuel en cours">↺ Reprendre auto</button>
+      <div class="dc-hero">
+        <div>
+          <div class="temp"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
+          <div class="temp-label">T° pièce (moyenne)</div>
+        </div>
+        <div class="regime">
+          Régime
+          <span class="regime-val" data-bind="regime">—</span>
+        </div>
       </div>
 
-      <details class="thresholds">
-        <summary>Seuils & durées</summary>
-        <div class="slider-row"><span class="lbl">Début chauffage</span><input type="number" step="0.5" data-bind="num-heatStart"><span>°C</span></div>
-        <div class="slider-row"><span class="lbl">Fin chauffage</span><input type="number" step="0.5" data-bind="num-heatStop"><span>°C</span></div>
-        <div class="slider-row"><span class="lbl">Début refroidissement</span><input type="number" step="0.5" data-bind="num-coolStart"><span>°C</span></div>
-        <div class="slider-row"><span class="lbl">Fin refroidissement</span><input type="number" step="0.5" data-bind="num-coolStop"><span>°C</span></div>
-        <div class="slider-row"><span class="lbl">Stabilisation</span><input type="number" step="1" data-bind="num-stabDuration"><span>min</span></div>
-        <div class="slider-row"><span class="lbl">Cooldown</span><input type="number" step="1" data-bind="num-cooldownDuration"><span>min</span></div>
-        <div class="slider-row"><span class="lbl">Override max</span><input type="number" step="1" data-bind="num-overrideDuration"><span>min</span></div>
+      <div class="dc-ctx" data-bind="ctx"></div>
+
+      <div class="dc-metrics">
+        <div class="dc-metric">
+          <span class="label">Consigne envoyée</span>
+          <span class="value" data-bind="setpoint-sent">—</span>
+        </div>
+        <div class="dc-metric">
+          <span class="label">Consigne clim</span>
+          <span class="value" data-bind="climate-setpoint">—</span>
+        </div>
+        <div class="dc-metric">
+          <span class="label">Sonde clim</span>
+          <span class="value dim" data-bind="climate-internal">—</span>
+        </div>
+        <div class="dc-metric" data-bind="override-metric" style="display:none">
+          <span class="label">Override jusqu'à</span>
+          <span class="value" data-bind="override-until">—</span>
+        </div>
+      </div>
+
+      <div class="dc-section">
+        <div class="dc-mode" data-bind="mode">
+          <button data-mode="auto">Auto</button>
+          <button data-mode="off">Off</button>
+          <button data-mode="boost">Boost</button>
+        </div>
+        <div class="dc-actions">
+          <button data-bind="boost-btn" title="Active le boost pour 15 minutes puis retour auto">
+            <ha-icon icon="mdi:rocket-launch"></ha-icon> Activer Boost 15 min
+          </button>
+          <button data-bind="resume-btn" title="Annule l'override manuel en cours">
+            <ha-icon icon="mdi:restore"></ha-icon> Reprendre auto
+          </button>
+        </div>
+      </div>
+
+      <details class="dc-config">
+        <summary>
+          <ha-icon icon="mdi:chevron-right" class="chevron"></ha-icon>
+          <ha-icon icon="mdi:tune"></ha-icon>
+          <span>Configuration</span>
+        </summary>
+        <div class="dc-config-body">
+          <div class="dc-config-group">
+            <div class="group-title">Chauffage</div>
+            <div class="dc-field"><span class="lbl">Démarrage</span><input type="number" step="0.5" data-bind="num-heatStart"><span class="unit">°C</span></div>
+            <div class="dc-field"><span class="lbl">Arrêt</span><input type="number" step="0.5" data-bind="num-heatStop"><span class="unit">°C</span></div>
+          </div>
+          <div class="dc-config-group">
+            <div class="group-title">Refroidissement</div>
+            <div class="dc-field"><span class="lbl">Démarrage</span><input type="number" step="0.5" data-bind="num-coolStart"><span class="unit">°C</span></div>
+            <div class="dc-field"><span class="lbl">Arrêt</span><input type="number" step="0.5" data-bind="num-coolStop"><span class="unit">°C</span></div>
+          </div>
+          <div class="dc-config-group">
+            <div class="group-title">Temporisations</div>
+            <div class="dc-field"><span class="lbl">Stabilisation</span><input type="number" step="1" data-bind="num-stabDuration"><span class="unit">min</span></div>
+            <div class="dc-field"><span class="lbl">Cooldown</span><input type="number" step="1" data-bind="num-cooldownDuration"><span class="unit">min</span></div>
+            <div class="dc-field"><span class="lbl">Override max</span><input type="number" step="1" data-bind="num-overrideDuration"><span class="unit">min</span></div>
+          </div>
+        </div>
       </details>
-      <div class="err" data-bind="error" style="display:none"></div>
+
+      <div class="dc-err" data-bind="error"></div>
     `;
     root.appendChild(body);
     this.appendChild(root);
 
     this._wireUp();
-    this._update();
   }
 
   _wireUp() {
     const ids = this._entityIds();
     const $ = (sel) => this.querySelector(`[data-bind="${sel}"]`);
 
-    $("mode-select").addEventListener("change", (e) => {
-      this._call("select", "select_option", { entity_id: ids.modeSelect, option: e.target.value });
+    $("mode").querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._call("select", "select_option", { entity_id: ids.modeSelect, option: btn.dataset.mode });
+      });
     });
     $("boost-btn").addEventListener("click", () => {
       this._call("button", "press", { entity_id: ids.boostBtn });
@@ -213,82 +369,69 @@ class DelormejClimateCard extends HTMLElement {
     }
   }
 
-  _call(domain, service, data) {
-    if (!this._hass) return;
-    this._hass.callService(domain, service, data).catch((e) => {
-      const errEl = this.querySelector('[data-bind="error"]');
-      if (errEl) {
-        errEl.textContent = `${domain}.${service} failed: ${e?.message || e}`;
-        errEl.style.display = "block";
-        setTimeout(() => (errEl.style.display = "none"), 4000);
-      }
-    });
-  }
+  /* ============================================================== update */
 
   _update() {
     if (!this._hass) return;
+    const $ = (sel) => this.querySelector(`[data-bind="${sel}"]`);
     const states = this._hass.states;
     const ids = this._entityIds();
-    const $ = (sel) => this.querySelector(`[data-bind="${sel}"]`);
     const get = (eid) => states[eid];
 
-    // State badge
+    // --- State ---
     const stateObj = get(ids.state);
     const stateVal = stateObj?.state ?? "unknown";
+    const stateMeta = STATE_LABELS[stateVal] || { label: stateVal, color: "#6c757d", icon: "mdi:help-circle" };
     const badge = $("state-badge");
-    badge.textContent = this._labelState(stateVal);
-    badge.className = `badge ${stateVal}`;
+    badge.style.setProperty("--dc-state-color", stateMeta.color);
+    $("state-icon").setAttribute("icon", stateMeta.icon);
+    $("state-label").textContent = stateMeta.label;
 
-    // Hero
-    const roomObj = get(ids.roomTemp);
-    $("room-temp").textContent = this._fmtTemp(roomObj?.state);
-    $("regime").textContent = this._labelRegime(get(ids.regime)?.state);
-
-    // Context icons (presence, schedule, window)
+    // Subtitle: e.g. "climate.salon · planning ouvert"
+    const ent = this._climateEntity || "";
     const attrs = stateObj?.attributes || {};
-    const ctxEl = $("ctx-icons");
-    ctxEl.innerHTML = "";
-    const addPill = (icon, txt, warn) => {
-      const p = document.createElement("span");
-      p.className = "pill" + (warn ? " warn" : "");
-      p.textContent = `${icon} ${txt}`;
-      ctxEl.appendChild(p);
-    };
-    if (attrs.schedule_on === false) addPill("⏰", "Hors planning", true);
-    if (attrs.house_is_absent === true) addPill("🏃", "Maison absente");
-    if (attrs.any_window_open === true) addPill("🪟", "Fenêtre ouverte", true);
-    if (attrs.in_override === true) addPill("✋", "Override manuel", true);
+    $("subtitle").textContent = ent || "";
 
-    $("setpoint-sent").textContent = this._fmtTemp(get(ids.setpointSent)?.state);
+    // --- Hero ---
+    $("room-temp").textContent = this._fmtTemp(get(ids.roomTemp)?.state);
+    $("regime").textContent = REGIME_LABELS[get(ids.regime)?.state] ?? "—";
+
+    // --- Context chips ---
+    const ctx = $("ctx");
+    ctx.innerHTML = "";
+    if (attrs.schedule_on === false) ctx.appendChild(this._chip("mdi:clock-outline", "Hors planning", "warn"));
+    if (attrs.any_window_open === true) ctx.appendChild(this._chip("mdi:window-open", "Fenêtre ouverte", "warn"));
+    if (attrs.house_is_absent === true) ctx.appendChild(this._chip("mdi:home-export-outline", "Maison absente", "info"));
+    if (attrs.in_override === true) ctx.appendChild(this._chip("mdi:account-edit", "Override manuel", "warn"));
+
+    // --- Metrics ---
+    $("setpoint-sent").textContent = this._fmtTempUnit(get(ids.setpointSent)?.state);
 
     if (this._climateEntity) {
       const clim = get(this._climateEntity);
-      $("climate-internal").textContent = this._fmtTemp(clim?.attributes?.current_temperature);
-      $("climate-setpoint").textContent = this._fmtTemp(clim?.attributes?.temperature);
+      $("climate-internal").textContent = this._fmtTempUnit(clim?.attributes?.current_temperature);
+      $("climate-setpoint").textContent = this._fmtTempUnit(clim?.attributes?.temperature);
     } else {
-      // Best effort: discover the underlying climate entity from the zone's coordinator
-      // by looking at sensor.delormej_climate_<zone>_setpoint_sent attributes (none exposed)
       $("climate-internal").textContent = "—";
       $("climate-setpoint").textContent = "—";
     }
 
-    // Override row
     const overrideUntil = get(ids.overrideUntil);
     if (overrideUntil && overrideUntil.state !== "unknown" && overrideUntil.state !== "unavailable") {
-      $("override-row").style.display = "";
-      $("override-until").textContent = this._fmtDateTime(overrideUntil.state);
+      $("override-metric").style.display = "";
+      $("override-until").textContent = this._fmtTime(overrideUntil.state);
     } else {
-      $("override-row").style.display = "none";
+      $("override-metric").style.display = "none";
     }
 
-    // Mode select
-    const modeObj = get(ids.modeSelect);
-    if (modeObj) {
-      const sel = $("mode-select");
-      if (sel.value !== modeObj.state) sel.value = modeObj.state;
-    }
+    // --- Mode segmented control ---
+    const currentMode = get(ids.modeSelect)?.state;
+    $("mode").querySelectorAll("button").forEach((b) => {
+      if (b.dataset.mode === currentMode) b.classList.add("active");
+      else b.classList.remove("active");
+    });
 
-    // Number fields
+    // --- Config inputs ---
     const numMap = {
       heatStart: ids.heatStart, heatStop: ids.heatStop,
       coolStart: ids.coolStart, coolStop: ids.coolStop,
@@ -304,45 +447,44 @@ class DelormejClimateCard extends HTMLElement {
     }
   }
 
-  /* ------------------------------------------------------------------ helpers */
+  /* ============================================================== helpers */
+
+  _chip(icon, text, cls = "") {
+    const div = document.createElement("div");
+    div.className = `dc-chip ${cls}`;
+    div.innerHTML = `<ha-icon icon="${icon}"></ha-icon><span>${this._escapeHTML(text)}</span>`;
+    return div;
+  }
+
+  _call(domain, service, data) {
+    if (!this._hass) return;
+    const errEl = this.querySelector('[data-bind="error"]');
+    errEl.textContent = "";
+    this._hass.callService(domain, service, data).catch((e) => {
+      errEl.textContent = `${domain}.${service} a échoué : ${e?.message || e}`;
+      setTimeout(() => (errEl.textContent = ""), 4500);
+    });
+  }
 
   _fmtTemp(v) {
-    if (v === undefined || v === null || v === "unknown" || v === "unavailable") return "—";
+    if (v == null || v === "unknown" || v === "unavailable") return "—";
     const f = parseFloat(v);
-    if (Number.isNaN(f)) return "—";
-    return f.toFixed(1);
+    return Number.isNaN(f) ? "—" : f.toFixed(1);
   }
-
-  _fmtDateTime(iso) {
+  _fmtTempUnit(v) {
+    const t = this._fmtTemp(v);
+    return t === "—" ? "—" : `${t} °C`;
+  }
+  _fmtTime(iso) {
     try {
-      const d = new Date(iso);
-      return d.toLocaleString("fr-FR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
+      return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
     } catch { return iso; }
   }
-
-  _labelState(s) {
-    return ({
-      idle: "Inactif",
-      starting: "Démarrage",
-      running: "Actif",
-      stabilizing: "Stabilisation",
-      cooldown: "Cooldown",
-      schedule_off: "Hors planning",
-      manual_override_timed: "Override (timed)",
-      manual_override_free: "Override (libre)",
-      window_open: "Fenêtre ouverte",
-    })[s] || s;
+  _escapeHTML(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
-
-  _labelRegime(r) {
-    return ({
-      none: "—",
-      attaque: "Attaque",
-      croisiere: "Croisière",
-      approche: "Approche",
-      stabilisation: "Stabilisation",
-      boost: "Boost",
-    })[r] || r || "—";
+  _capitalize(s) {
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
   }
 }
 
@@ -357,7 +499,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.1.0 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.2.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
