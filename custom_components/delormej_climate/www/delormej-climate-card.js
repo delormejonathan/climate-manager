@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.6.2
+ * delormej-climate-card  v0.6.3
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -613,6 +613,7 @@ const STYLES = `
   /* per-section accent on the head bubble */
   .section-status .head-bubble { background: var(--dc-info); }
   .section-auto   .head-bubble { background: var(--dc-success); }
+  .section-manual .head-bubble { background: var(--dc-cool); }
   .section-config .head-bubble { background: var(--dc-warn); }
 
   /* ============ §1 ÉTAT ACTUEL ============ */
@@ -1033,6 +1034,14 @@ const TEMPLATE = `
         </button>
       </div>
     </div>
+  </section>
+
+  <!-- ════════════════════════════════════ §3 CONTRÔLE MANUEL -->
+  <section class="dc-section section-manual">
+    <div class="dc-section-head">
+      <div class="head-bubble"><ha-icon icon="mdi:hand-back-right"></ha-icon></div>
+      <span class="lbl">Contrôle manuel</span>
+    </div>
 
     <div class="dc-control">
       <div class="dc-control-label">Actions rapides</div>
@@ -1040,14 +1049,6 @@ const TEMPLATE = `
         <button data-bind="boost-btn"><ha-icon icon="mdi:rocket-launch"></ha-icon> Boost 15 min</button>
         <button data-bind="resume-btn"><ha-icon icon="mdi:restore"></ha-icon> Reprendre auto</button>
       </div>
-    </div>
-  </section>
-
-  <!-- ════════════════════════════════════ §3 CONFIGURATION -->
-  <section class="dc-section section-config">
-    <div class="dc-section-head">
-      <div class="head-bubble"><ha-icon icon="mdi:cog"></ha-icon></div>
-      <span class="lbl">Configuration</span>
     </div>
 
     <div class="dc-subblock" data-bind="manual-clim-block">
@@ -1072,6 +1073,14 @@ const TEMPLATE = `
           <select data-bind="swing-select"></select>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════ §4 CONFIGURATION -->
+  <section class="dc-section section-config">
+    <div class="dc-section-head">
+      <div class="head-bubble"><ha-icon icon="mdi:cog"></ha-icon></div>
+      <span class="lbl">Configuration</span>
     </div>
 
     <div class="dc-subblock">
@@ -1141,7 +1150,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.6.2 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.6.3 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

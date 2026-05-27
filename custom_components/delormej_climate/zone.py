@@ -217,9 +217,27 @@ class Zone:
         elif mode == ZoneMode.AUTO:
             self.state.boost_until_ts = None
 
-    def trigger_boost(self, now_ts: float) -> None:
-        """Activate boost régime for BOOST_DURATION_MIN."""
+    def trigger_boost(self, now_ts: float, direction: str | None = None) -> None:
+        """Activate boost régime for BOOST_DURATION_MIN.
+
+        If `direction` is given (cool/heat), it is forced — useful when the
+        zone is idle and the temperature is in the dead band (between heat
+        and cool thresholds): without a forced direction `_pilot_boost` has
+        nothing to drive and silently no-ops, which used to look like a
+        broken button.
+        """
         self.state.boost_until_ts = now_ts + BOOST_DURATION_MIN * 60
+        if direction in (HVACMode.COOL, HVACMode.HEAT):
+            self.state.forced_direction = direction
+            # If we were not running, transition into the active flow so the
+            # next tick's _pilot_boost has a state.state to update commands on.
+            if self.state.state in (
+                ZoneState.IDLE,
+                ZoneState.COOLDOWN,
+                ZoneState.WINDOW_OPEN,
+                ZoneState.SCHEDULE_OFF,
+            ):
+                self._transition(ZoneState.STARTING, now_ts)
 
     def force_start(self, direction: str, now_ts: float, *, supports: dict | None = None) -> None:
         """Force a cycle to start right now, in the given direction.

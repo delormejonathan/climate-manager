@@ -222,7 +222,11 @@ def _register_services(hass: HomeAssistant) -> None:
         coord, zone = _find_zone(hass, call.data["zone_id"])
         if zone is None:
             return
-        zone.trigger_boost(utc_now_ts())
+        # Mirror the button's inference so service calls feel the same
+        from .button import _infer_boost_direction
+        zd = coord.data.get("zones", {}).get(zone.config.zone_id, {}) if coord.data else {}
+        direction = _infer_boost_direction(zone, zd)
+        zone.trigger_boost(utc_now_ts(), direction=direction)
         await coord.async_tick_now()
 
     async def _force_start(call: ServiceCall) -> None:

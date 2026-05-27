@@ -10,7 +10,36 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .coordinator import DelormejClimateCoordinator
 from .entity_base import DelormejClimateZoneEntity
-from .zone import utc_now_ts
+from .zone import Zone, utc_now_ts
+
+
+def _infer_boost_direction(zone: Zone, zone_data: dict) -> str | None:
+    """Pick a boost direction (cool/heat) for a zone when the user clicks the
+    Boost button. Prefers a clear signal, falls back to a heuristic:
+      1. If the integration already has a direction set (zone running or
+         force-started), use it.
+      2. If the clim is already heating/cooling, follow that.
+      3. If only one side is supported (heat-only or cool-only), use it.
+      4. Otherwise compare room temp to thresholds: the side whose start
+         threshold is closer wins. Tie → cool (summer is the common case).
+    Returns None only when the zone is completely undetermined (no room
+    temp, no capabilities) — caller should treat that as 'don't change'.
+    """
+    if zone_data.get("direction") in ("cool", "heat"):
+        return zone_data["direction"]
+    supports_cool = zone_data.get("supports_cool", True)
+    supports_heat = zone_data.get("supports_heat", True)
+    if supports_cool and not supports_heat:
+        return "cool"
+    if supports_heat and not supports_cool:
+        return "heat"
+    room = zone_data.get("room_temperature")
+    if room is None:
+        return None
+    cfg = zone.config
+    d_cool = cfg.seuil_debut_refroidissement - room
+    d_heat = room - cfg.seuil_debut_chauffage
+    return "cool" if d_cool <= d_heat else "heat"
 
 
 async def async_setup_entry(
@@ -39,7 +68,8 @@ class ZoneBoostButton(DelormejClimateZoneEntity, ButtonEntity):
         zone = self.coordinator.zone(self._zone_id)
         if not zone:
             return
-        zone.trigger_boost(utc_now_ts())
+        direction = _infer_boost_direction(zone, self._zone_data or {})
+        zone.trigger_boost(utc_now_ts(), direction=direction)
         await self.coordinator.async_tick_now()
 
 
