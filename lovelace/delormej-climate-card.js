@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.5.3
+ * delormej-climate-card  v0.5.4
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -382,16 +382,21 @@ class DelormejClimateCard extends HTMLElement {
       const heatStart = parseFloat(get(ids.heatStart)?.state);
       const coolStart = parseFloat(get(ids.coolStart)?.state);
       const room = parseFloat(get(ids.roomTemp)?.state);
-      let parts = [];
-      if (!Number.isNaN(coolStart)) parts.push(`refroidira > ${coolStart}°C`);
-      if (!Number.isNaN(heatStart)) parts.push(`chauffera < ${heatStart}°C`);
+      const parts = [];
+      if (!Number.isNaN(coolStart)) parts.push(`refroidissement à ${coolStart}°C`);
+      if (!Number.isNaN(heatStart)) parts.push(`chauffage à ${heatStart}°C`);
       let hint = "";
       if (!Number.isNaN(room) && !Number.isNaN(coolStart) && !Number.isNaN(heatStart)) {
         const dToCool = coolStart - room, dToHeat = room - heatStart;
-        if (dToCool > 0 && dToCool < dToHeat) hint = ` · <span class="until">${dToCool.toFixed(1)}°C avant cool</span>`;
-        else if (dToHeat > 0 && dToHeat < dToCool) hint = ` · <span class="until">${dToHeat.toFixed(1)}°C avant heat</span>`;
+        if (dToCool > 0 && dToCool < dToHeat) hint = ` <span class="until">(encore ${dToCool.toFixed(1)}°C avant refroidissement)</span>`;
+        else if (dToHeat > 0 && dToHeat < dToCool) hint = ` <span class="until">(encore ${dToHeat.toFixed(1)}°C avant chauffage)</span>`;
       }
-      return { html: `En attente. ${parts.join(" / ")}${hint}.`, warn: false };
+      const lead = parts.length === 2
+        ? `Démarre le ${parts[0]} ou le ${parts[1]}`
+        : parts.length === 1
+          ? `Démarre le ${parts[0]}`
+          : "Pas de seuil configuré";
+      return { html: `En veille. ${lead}.${hint}`, warn: false };
     }
     if (state === "starting")
       return { html: `Démarrage ${dir === "heat" ? "chauffage" : "refroidissement"} vers ${targetSpan(target)}.`, warn: false };
@@ -1039,7 +1044,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.5.3 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.5.4 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
