@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.2
+ * delormej-climate-card  v0.3.2
  *
  * Lovelace card for one zone of the delormej_climate integration.
  *
@@ -598,7 +598,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.2.0 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.3.2 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

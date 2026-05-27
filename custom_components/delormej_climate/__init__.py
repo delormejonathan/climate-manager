@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN, PLATFORMS, ZoneMode
+from .const import CONF_ZONES, DOMAIN, PLATFORMS, ZoneMode
 from .coordinator import DelormejClimateCoordinator
 from .zone import utc_now_ts
 
@@ -116,14 +116,27 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Called when entry data/options change (e.g. zone added/removed).
+    """Called when entry data/options change.
 
-    We reload the entire entry so platforms get a chance to add/remove their
-    per-zone entities. async_reload_zones() only rebuilds the in-memory zone
-    map — it doesn't notify sensor.py / switch.py / etc., so newly-added zones
-    would have no entities visible in the UI.
+    A full async_reload tears down and recreates the coordinator, which loses
+    all runtime state (state machine, regime, timers). That's only acceptable
+    when the SET of zones changed (zone added or removed) — then platforms
+    need re-setup to add/remove entities. For an in-place edit (someone moved
+    a threshold slider, changed a duration, etc.) we just update the in-memory
+    zone configs and keep the state machine running.
+
+    Pre-v0.3.2 we did async_reload unconditionally, which caused a running
+    cooling cycle to stop the moment the user nudged any number.
     """
-    await hass.config_entries.async_reload(entry.entry_id)
+    coordinator: DelormejClimateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    current_zone_ids = set(coordinator.zones.keys())
+    new_zone_ids = {z.get("id") for z in entry.options.get(CONF_ZONES, [])}
+    if current_zone_ids == new_zone_ids:
+        # Same zone set → just refresh configs in place (preserves runtime state).
+        await coordinator.async_reload_zones()
+    else:
+        # Zones added/removed → platforms need re-setup.
+        await hass.config_entries.async_reload(entry.entry_id)
 
 
 # === Services ===
