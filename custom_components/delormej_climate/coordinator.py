@@ -328,6 +328,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "cooldown_ends_ts": cooldown_ends_ts,
                 "direction": direction,
                 "target_temperature": target_temperature,
+                "aggressivity": zone.config.aggressivity,
             }
         return out
 

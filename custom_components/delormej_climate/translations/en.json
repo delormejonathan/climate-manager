@@ -138,6 +138,14 @@
           "off": "Off",
           "boost": "Boost"
         }
+      },
+      "zone_aggressivity": {
+        "name": "Aggressivity",
+        "state": {
+          "doux": "Gentle",
+          "normal": "Normal",
+          "agressif": "Aggressive"
+        }
       }
     },
     "number": {

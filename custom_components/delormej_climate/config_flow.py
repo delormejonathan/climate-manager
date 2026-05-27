@@ -12,6 +12,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_AGGRESSIVE_WHEN_ABSENT,
+    CONF_AGGRESSIVITY,
     CONF_CLIMATE_ENTITY,
     CONF_DUREE_COOLDOWN_MIN,
     CONF_DUREE_STABILISATION_MIN,
@@ -28,6 +29,7 @@ from .const import (
     CONF_ZONE_ID,
     CONF_ZONE_NAME,
     CONF_ZONES,
+    DEFAULT_AGGRESSIVITY,
     DEFAULT_DUREE_COOLDOWN_MIN,
     DEFAULT_DUREE_STABILISATION_MIN,
     DEFAULT_OVERRIDE_DUREE_MIN,
@@ -42,6 +44,7 @@ from .const import (
     MIN_DUREE_MIN,
     MIN_OVERRIDE_DUREE_MIN,
     MIN_SEUIL,
+    Aggressivity,
 )
 
 # States typically considered "absent" for an alarm_control_panel
@@ -179,6 +182,16 @@ def _zone_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 CONF_AGGRESSIVE_WHEN_ABSENT,
                 default=defaults.get(CONF_AGGRESSIVE_WHEN_ABSENT, True),
             ): bool,
+            vol.Optional(
+                CONF_AGGRESSIVITY,
+                default=defaults.get(CONF_AGGRESSIVITY, DEFAULT_AGGRESSIVITY),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=Aggressivity.ALL,
+                    mode=selector.SelectSelectorMode.LIST,
+                    translation_key="aggressivity",
+                )
+            ),
         }
     )
 

@@ -56,6 +56,7 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             "in_override": d.get("in_override"),
             "direction": d.get("direction"),
             "target_temperature": d.get("target_temperature"),
+            "aggressivity": d.get("aggressivity"),
         }
         for ts_key in ("state_entered_ts", "stabilization_ends_ts", "cooldown_ends_ts"):
             ts = d.get(ts_key)

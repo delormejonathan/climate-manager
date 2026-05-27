@@ -27,11 +27,13 @@ from homeassistant.components.climate import (
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
 
 from .const import (
+    AGGRESSIVITY_PROFILES,
     BOOST_DURATION_MIN,
     BOOST_FAN_MODE,
     BOOST_OFFSET,
     CLIM_MAX_SETPOINT,
     CLIM_MIN_SETPOINT,
+    DEFAULT_AGGRESSIVITY,
     DEFAULT_DUREE_COOLDOWN_MIN,
     DEFAULT_DUREE_STABILISATION_MIN,
     DEFAULT_OVERRIDE_DUREE_MIN,
@@ -42,9 +44,6 @@ from .const import (
     DEFAULT_SWING_MODE,
     ECART_APPROCHE_THRESHOLD,
     ECART_ATTAQUE_THRESHOLD,
-    OFFSET_APPROCHE,
-    OFFSET_ATTAQUE,
-    OFFSET_CROISIERE,
     RATE_LIMIT_SECONDS,
     SETPOINT_NOOP_DELTA,
     Regime,
@@ -120,6 +119,7 @@ class ZoneConfig:
     duree_cooldown_min: int = DEFAULT_DUREE_COOLDOWN_MIN
     override_duree_min: int = DEFAULT_OVERRIDE_DUREE_MIN
     aggressive_when_absent: bool = True
+    aggressivity: str = DEFAULT_AGGRESSIVITY
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ZoneConfig:
@@ -147,6 +147,7 @@ class ZoneConfig:
             duree_cooldown_min=int(d.get("duree_cooldown_min", DEFAULT_DUREE_COOLDOWN_MIN)),
             override_duree_min=int(d.get("override_duree_min", DEFAULT_OVERRIDE_DUREE_MIN)),
             aggressive_when_absent=bool(d.get("aggressive_when_absent", True)),
+            aggressivity=str(d.get("aggressivity", DEFAULT_AGGRESSIVITY)),
         )
 
 
@@ -421,20 +422,23 @@ class Zone:
             return []
 
         cmds: list[Command] = []
+        profile = AGGRESSIVITY_PROFILES.get(
+            self.config.aggressivity, AGGRESSIVITY_PROFILES[DEFAULT_AGGRESSIVITY]
+        )
 
         # HVAC mode
         if force_hvac or inp.clim_current_hvac_mode != target_mode:
             cmds.append(self._cmd_set_hvac_mode(target_mode))
 
         # Setpoint
-        offset = _offset_for_regime(regime)
+        offset = _offset_for_regime(regime, profile)
         setpoint = self._setpoint_for_offset(inp, offset, target_mode)
         if setpoint is not None and self._setpoint_should_send(setpoint, inp):
             cmds.append(self._cmd_set_temperature(setpoint))
             self.state.last_setpoint_sent = setpoint
 
         # Fan
-        target_fan = _fan_for_regime(regime)
+        target_fan = _fan_for_regime(regime, profile)
         if target_fan and inp.clim_current_fan_mode != target_fan:
             cmds.append(self._cmd_set_fan_mode(target_fan))
             self.state.last_fan_sent = target_fan
@@ -517,13 +521,13 @@ class Zone:
         )
 
 
-def _offset_for_regime(regime: str) -> float:
+def _offset_for_regime(regime: str, profile: dict) -> float:
     if regime == Regime.ATTAQUE:
-        return OFFSET_ATTAQUE
+        return profile["offset_attaque"]
     if regime == Regime.CROISIERE:
-        return OFFSET_CROISIERE
+        return profile["offset_croisiere"]
     if regime == Regime.APPROCHE:
-        return OFFSET_APPROCHE
+        return profile["offset_approche"]
     if regime == Regime.STABILISATION:
         return 0.0
     if regime == Regime.BOOST:
@@ -531,15 +535,15 @@ def _offset_for_regime(regime: str) -> float:
     return 0.0
 
 
-def _fan_for_regime(regime: str) -> str | None:
+def _fan_for_regime(regime: str, profile: dict) -> str | None:
     if regime == Regime.ATTAQUE:
-        return "auto"
+        return profile["fan_attaque"]
     if regime == Regime.CROISIERE:
-        return "auto"
+        return profile["fan_croisiere"]
     if regime == Regime.APPROCHE:
-        return "quiet"
+        return profile["fan_approche"]
     if regime == Regime.STABILISATION:
-        return "quiet"
+        return "quiet"  # always quiet during stabilization — pendulum at neutral
     if regime == Regime.BOOST:
         return BOOST_FAN_MODE
     return None

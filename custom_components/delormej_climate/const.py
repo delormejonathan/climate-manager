@@ -38,6 +38,9 @@ CONF_DUREE_STABILISATION_MIN = "duree_stabilisation_min"
 CONF_DUREE_COOLDOWN_MIN = "duree_cooldown_min"
 CONF_OVERRIDE_DUREE_MIN = "override_duree_min"
 CONF_AGGRESSIVE_WHEN_ABSENT = "aggressive_when_absent"
+CONF_AGGRESSIVITY = "aggressivity"
+
+DEFAULT_AGGRESSIVITY = "normal"
 
 # Defaults
 DEFAULT_SEUIL_DEBUT_CHAUFFAGE = 19.5
@@ -128,3 +131,44 @@ class ZoneMode:
     BOOST = "boost"
 
     ALL: ClassVar[list[str]] = [AUTO, OFF, BOOST]
+
+
+class Aggressivity:
+    """Profil de pilotage : combinaison d'offsets + ventilation par régime."""
+
+    DOUX = "doux"
+    NORMAL = "normal"
+    AGRESSIF = "agressif"
+
+    ALL: ClassVar[list[str]] = [DOUX, NORMAL, AGRESSIF]
+
+
+# Per-aggressivity tuning. Offsets en °C (toujours positifs ; le signe est appliqué
+# dans le pilotage selon hvac_mode). Doux = silence prioritaire, Agressif = vitesse
+# de refroidissement/chauffage maximale au prix du bruit.
+AGGRESSIVITY_PROFILES: dict[str, dict] = {
+    "doux": {
+        "offset_attaque": 3.0,
+        "offset_croisiere": 1.0,
+        "offset_approche": 0.5,
+        "fan_attaque": "quiet",
+        "fan_croisiere": "quiet",
+        "fan_approche": "quiet",
+    },
+    "normal": {
+        "offset_attaque": 5.0,
+        "offset_croisiere": 2.0,
+        "offset_approche": 1.0,
+        "fan_attaque": "auto",
+        "fan_croisiere": "auto",
+        "fan_approche": "quiet",
+    },
+    "agressif": {
+        "offset_attaque": 7.0,
+        "offset_croisiere": 3.0,
+        "offset_approche": 1.5,
+        "fan_attaque": "5",
+        "fan_croisiere": "4",
+        "fan_approche": "auto",
+    },
+}
