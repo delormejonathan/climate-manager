@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from homeassistant.const import Platform
 
 DOMAIN = "delormej_climate"
@@ -99,7 +101,7 @@ class ZoneState:
     MANUAL_OVERRIDE_FREE = "manual_override_free"
     WINDOW_OPEN = "window_open"
 
-    ALL = [
+    ALL: ClassVar[list[str]] = [
         IDLE, STARTING, RUNNING, STABILIZING, COOLDOWN,
         SCHEDULE_OFF, MANUAL_OVERRIDE_TIMED, MANUAL_OVERRIDE_FREE, WINDOW_OPEN,
     ]
@@ -115,7 +117,7 @@ class Regime:
     STABILISATION = "stabilisation"
     BOOST = "boost"
 
-    ALL = [NONE, ATTAQUE, CROISIERE, APPROCHE, STABILISATION, BOOST]
+    ALL: ClassVar[list[str]] = [NONE, ATTAQUE, CROISIERE, APPROCHE, STABILISATION, BOOST]
 
 
 class ZoneMode:
@@ -125,4 +127,4 @@ class ZoneMode:
     OFF = "off"
     BOOST = "boost"
 
-    ALL = [AUTO, OFF, BOOST]
+    ALL: ClassVar[list[str]] = [AUTO, OFF, BOOST]

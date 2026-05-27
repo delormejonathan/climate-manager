@@ -152,7 +152,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             await self.hass.services.async_call(
                 cmd.domain, cmd.service, cmd.data, blocking=False, context=ctx
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.exception("Failed to call %s.%s with %s", cmd.domain, cmd.service, cmd.data)
 
     # === Inputs gathering ===

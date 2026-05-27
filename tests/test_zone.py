@@ -26,9 +26,7 @@ from custom_components.delormej_climate.zone import (
     Zone,
     ZoneConfig,
     ZoneInputs,
-    ZoneRuntimeState,
 )
-
 
 # Defer importing HVACMode (it lives in HA) — pytest will pick it via the
 # project's requirements-dev.txt (homeassistant). Until HA is installed,
@@ -194,6 +192,7 @@ def test_stabilisation_uses_pendulum_neutral():
         clim_current_hvac_mode=HVAC_COOL,
     )
     zone.state.state = ZoneState.STABILIZING
+    zone.state.last_state_transition_ts = inp.now_ts  # just entered STABILIZING
     cmds = zone.tick(inp)
     sp = _find_setpoint(cmds)
     expected = 24.8  # pendulum: setpoint = internal
