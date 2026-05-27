@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
@@ -13,6 +15,9 @@ from homeassistant.helpers import config_validation as cv
 from .const import DOMAIN, PLATFORMS, ZoneMode
 from .coordinator import DelormejClimateCoordinator
 from .zone import utc_now_ts
+
+CARD_URL_PATH = f"/{DOMAIN}/delormej-climate-card.js"
+CARD_FILENAME = "delormej-climate-card.js"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +45,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     _register_services(hass)
+    await _register_lovelace_card(hass)
     return True
+
+
+_CARD_PATH_REGISTERED = "_card_path_registered"
+
+
+async def _register_lovelace_card(hass: HomeAssistant) -> None:
+    """Serve the Lovelace card from `custom_components/<domain>/www/` at
+    `CARD_URL_PATH`, and register it as a Lovelace resource so the user
+    just has to add the card to a dashboard.
+    """
+    if hass.data.get(DOMAIN, {}).get(_CARD_PATH_REGISTERED):
+        return  # already done in this HA lifetime (static paths cannot be unregistered)
+
+    card_path = Path(__file__).parent / "www" / CARD_FILENAME
+    if not card_path.is_file():
+        _LOGGER.warning("Lovelace card file not found at %s", card_path)
+        return
+
+    try:
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(CARD_URL_PATH, str(card_path), cache_headers=False)]
+        )
+        hass.data.setdefault(DOMAIN, {})[_CARD_PATH_REGISTERED] = True
+        _LOGGER.info("Serving Lovelace card at %s", CARD_URL_PATH)
+    except Exception:
+        _LOGGER.exception("Failed to register static path for Lovelace card")
+        return
+
+    # Best-effort Lovelace resource auto-registration. The storage-mode
+    # Lovelace dashboard keeps its list of resource URLs in
+    # `hass.data["lovelace"].resources` since HA 2023.4. If we can find it,
+    # we add ourselves so the user doesn't have to. If Lovelace is in YAML
+    # mode (rare), this no-ops and the user adds the URL manually.
+    try:
+        lovelace = hass.data.get("lovelace")
+        resources = getattr(lovelace, "resources", None) if lovelace else None
+        if resources is None:
+            _LOGGER.info(
+                "Lovelace resource auto-register skipped. Add manually via "
+                "Paramètres → Tableaux de bord → Ressources → URL: %s (type: module)",
+                CARD_URL_PATH,
+            )
+            return
+        if hasattr(resources, "async_load") and not getattr(resources, "loaded", False):
+            await resources.async_load()
+        items = list(resources.async_items()) if hasattr(resources, "async_items") else []
+        if any((it.get("url") or "").split("?")[0] == CARD_URL_PATH for it in items):
+            return
+        if hasattr(resources, "async_create_item"):
+            await resources.async_create_item({"res_type": "module", "url": CARD_URL_PATH})
+            _LOGGER.info("Auto-registered Lovelace resource %s", CARD_URL_PATH)
+    except Exception:
+        _LOGGER.warning(
+            "Could not auto-register Lovelace resource. Add manually via "
+            "Paramètres → Tableaux de bord → Ressources → URL: %s (type: module)",
+            CARD_URL_PATH,
+        )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

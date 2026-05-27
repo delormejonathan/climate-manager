@@ -108,7 +108,11 @@ def _zone_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 CONF_WINDOW_SENSORS, default=defaults.get(CONF_WINDOW_SENSORS, [])
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(
-                    domain="binary_sensor", device_class="window", multiple=True
+                    domain="binary_sensor",
+                    # `opening` covers Ajax window sensors (which don't use the
+                    # narrower "window" device_class) as well as generic openings.
+                    device_class=["window", "opening", "door"],
+                    multiple=True,
                 )
             ),
             vol.Required(
