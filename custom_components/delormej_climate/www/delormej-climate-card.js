@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.6.1
+ * delormej-climate-card  v0.6.2
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -212,16 +212,24 @@ class DelormejClimateCard extends HTMLElement {
     $("header-regime").textContent = regimeLabel;
     $("header-regime").style.display = regimeLabel === "—" ? "none" : "";
 
-    // Header icon bubble — shows current clim mode (snowflake/fire/power)
+    // Header icon bubble — represents the AC device.
+    // Active (cool/heat): colored bubble with snowflake/fire icon.
+    // Otherwise (off/fan/dry/unknown): neutral bubble with a generic AC icon.
     const climObj0 = this._climateEntity ? get(this._climateEntity) : null;
     const climMode = climObj0?.state || "off";
     const headIco = $("head-icon");
     const headIcoSvg = $("head-icon-ico");
-    headIcoSvg.setAttribute("icon", HVAC_ICONS[climMode] || "mdi:air-conditioner");
-    if (climMode === "cool" || climMode === "heat") {
+    if (climMode === "cool") {
+      headIcoSvg.setAttribute("icon", "mdi:snowflake");
       headIco.classList.add("active");
-      headIco.style.setProperty("--dc-state-color", HVAC_COLORS[climMode]);
+      headIco.style.setProperty("--dc-state-color", HVAC_COLORS.cool);
+    } else if (climMode === "heat") {
+      headIcoSvg.setAttribute("icon", "mdi:fire");
+      headIco.classList.add("active");
+      headIco.style.setProperty("--dc-state-color", HVAC_COLORS.heat);
     } else {
+      // Idle / off / fan_only / dry — show the device, not an action button
+      headIcoSvg.setAttribute("icon", "mdi:air-conditioner");
       headIco.classList.remove("active");
       headIco.style.removeProperty("--dc-state-color");
     }
@@ -259,18 +267,49 @@ class DelormejClimateCard extends HTMLElement {
     // Status pills — always show, color-coded by state
     const pills = $("status-pills");
     pills.innerHTML = "";
-    pills.appendChild(this._pill(
-      attrs.schedule_on === false ? "mdi:clock-remove" : "mdi:clock-check",
-      attrs.schedule_on === false ? "Hors planning" : "Planning ouvert",
-      attrs.schedule_on === false ? "warn" : "ok"));
+
+    // Pilotage (schedule) — with next transition time when available
+    const nextEvt = attrs.schedule_next_event;
+    const nextEvtTxt = nextEvt ? this._fmtTime(nextEvt) : null;
+    if (attrs.schedule_on === false) {
+      pills.appendChild(this._pill(
+        "mdi:pause-circle-outline",
+        nextEvtTxt ? `Pilotage en pause · reprise à ${nextEvtTxt}` : "Pilotage en pause",
+        "warn",
+      ));
+    } else {
+      pills.appendChild(this._pill(
+        "mdi:play-circle-outline",
+        nextEvtTxt ? `Pilotage actif jusqu'à ${nextEvtTxt}` : "Pilotage actif",
+        "ok",
+      ));
+    }
+
+    // Présence maison
     pills.appendChild(this._pill(
       attrs.house_is_absent === true ? "mdi:home-export-outline" : "mdi:home",
       attrs.house_is_absent === true ? "Maison absente" : "Maison présente",
       attrs.house_is_absent === true ? "info" : "neutral"));
-    pills.appendChild(this._pill(
-      attrs.any_window_open === true ? "mdi:window-open" : "mdi:window-closed",
-      attrs.any_window_open === true ? "Fenêtre ouverte" : "Fenêtres OK",
-      attrs.any_window_open === true ? "warn" : "ok"));
+
+    // Fenêtres — counted + plural agreement
+    const wOpen = attrs.windows_open;
+    const wTotal = attrs.windows_total;
+    if (typeof wTotal === "number" && wTotal > 0) {
+      if (wOpen === 0) {
+        pills.appendChild(this._pill(
+          "mdi:window-closed-variant",
+          `${wTotal}/${wTotal} fenêtre${wTotal > 1 ? "s" : ""} fermée${wTotal > 1 ? "s" : ""}`,
+          "ok",
+        ));
+      } else {
+        pills.appendChild(this._pill(
+          "mdi:window-open",
+          `${wOpen}/${wTotal} fenêtre${wOpen > 1 ? "s" : ""} ouverte${wOpen > 1 ? "s" : ""}`,
+          "warn",
+        ));
+      }
+    }
+
     if (attrs.in_override === true) {
       pills.appendChild(this._pill("mdi:account-edit", "Override actif", "warn"));
     }
@@ -1102,7 +1141,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.6.1 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.6.2 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

@@ -256,12 +256,33 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             return True  # fail-open: don't lock the zone if schedule entity missing
         return st.state == STATE_ON
 
+    def _schedule_next_event(self, zone: Zone) -> str | None:
+        """ISO timestamp of the next schedule transition, or None."""
+        ent = zone.config.schedule_entity
+        if not ent:
+            return None
+        st = self.hass.states.get(ent)
+        if not st:
+            return None
+        nxt = st.attributes.get("next_event")
+        return str(nxt) if nxt else None
+
     def _any_window_open(self, zone: Zone) -> bool:
         for ent in zone.config.window_sensors:
             st = self.hass.states.get(ent)
             if st and st.state == STATE_ON:
                 return True
         return False
+
+    def _window_counts(self, zone: Zone) -> tuple[int, int]:
+        """Return (open_count, total_count) for the zone's window sensors."""
+        total = len(zone.config.window_sensors)
+        open_n = 0
+        for ent in zone.config.window_sensors:
+            st = self.hass.states.get(ent)
+            if st and st.state == STATE_ON:
+                open_n += 1
+        return open_n, total
 
     def _house_is_absent(self) -> bool:
         ent = self.entry.data.get(CONF_PRESENCE_ENTITY)
@@ -349,6 +370,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "supports_heat": inputs.supports_heat,
                 "supports_fan_mode": inputs.supports_fan_mode,
                 "supports_windnice": inputs.supports_windnice,
+                "schedule_next_event": self._schedule_next_event(zone),
+                "windows_open": self._window_counts(zone)[0],
+                "windows_total": self._window_counts(zone)[1],
             }
         return out
 

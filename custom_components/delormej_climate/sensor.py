@@ -59,6 +59,9 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             "aggressivity": d.get("aggressivity"),
             "supports_cool": d.get("supports_cool", True),
             "supports_heat": d.get("supports_heat", True),
+            "schedule_next_event": d.get("schedule_next_event"),
+            "windows_open": d.get("windows_open"),
+            "windows_total": d.get("windows_total"),
         }
         for ts_key in ("state_entered_ts", "stabilization_ends_ts", "cooldown_ends_ts"):
             ts = d.get(ts_key)
