@@ -26,11 +26,15 @@ SERVICE_SET_MODE = "set_mode"
 SERVICE_FORCE_OFF = "force_off"
 SERVICE_RESET_OVERRIDE = "reset_override"
 SERVICE_BOOST = "boost"
+SERVICE_FORCE_START = "force_start"
 SERVICE_RELOAD_ZONES = "reload_zones"
 
 SCHEMA_ZONE_ID = vol.Schema({vol.Required("zone_id"): cv.string})
 SCHEMA_SET_MODE = vol.Schema(
     {vol.Required("zone_id"): cv.string, vol.Required("mode"): vol.In(ZoneMode.ALL)}
+)
+SCHEMA_FORCE_START = vol.Schema(
+    {vol.Required("zone_id"): cv.string, vol.Required("direction"): vol.In(["cool", "heat"])}
 )
 
 
@@ -221,6 +225,13 @@ def _register_services(hass: HomeAssistant) -> None:
         zone.trigger_boost(utc_now_ts())
         await coord.async_tick_now()
 
+    async def _force_start(call: ServiceCall) -> None:
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            return
+        zone.force_start(call.data["direction"], utc_now_ts())
+        await coord.async_tick_now()
+
     async def _reload(_: ServiceCall) -> None:
         for coord in _all_coordinators(hass):
             await coord.async_reload_zones()
@@ -231,13 +242,16 @@ def _register_services(hass: HomeAssistant) -> None:
         DOMAIN, SERVICE_RESET_OVERRIDE, _reset_override, schema=SCHEMA_ZONE_ID
     )
     hass.services.async_register(DOMAIN, SERVICE_BOOST, _boost, schema=SCHEMA_ZONE_ID)
+    hass.services.async_register(
+        DOMAIN, SERVICE_FORCE_START, _force_start, schema=SCHEMA_FORCE_START
+    )
     hass.services.async_register(DOMAIN, SERVICE_RELOAD_ZONES, _reload)
 
 
 def _unregister_services(hass: HomeAssistant) -> None:
     for service in (
         SERVICE_SET_MODE, SERVICE_FORCE_OFF, SERVICE_RESET_OVERRIDE,
-        SERVICE_BOOST, SERVICE_RELOAD_ZONES,
+        SERVICE_BOOST, SERVICE_FORCE_START, SERVICE_RELOAD_ZONES,
     ):
         hass.services.async_remove(DOMAIN, service)
 

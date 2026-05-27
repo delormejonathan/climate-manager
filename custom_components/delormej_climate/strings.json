@@ -177,6 +177,12 @@
       },
       "zone_reset_override": {
         "name": "Reprendre auto"
+      },
+      "zone_force_start_cool": {
+        "name": "Démarrer refroidissement"
+      },
+      "zone_force_start_heat": {
+        "name": "Démarrer chauffage"
       }
     }
   },

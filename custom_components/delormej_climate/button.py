@@ -22,6 +22,8 @@ async def async_setup_entry(
         entities += [
             ZoneBoostButton(coord, zid),
             ZoneResetOverrideButton(coord, zid),
+            ZoneForceStartCoolButton(coord, zid),
+            ZoneForceStartHeatButton(coord, zid),
         ]
     async_add_entities(entities)
 
@@ -53,4 +55,34 @@ class ZoneResetOverrideButton(DelormejClimateZoneEntity, ButtonEntity):
         if not zone:
             return
         zone.reset_override(utc_now_ts())
+        await self.coordinator.async_tick_now()
+
+
+class ZoneForceStartCoolButton(DelormejClimateZoneEntity, ButtonEntity):
+    _attr_translation_key = "zone_force_start_cool"
+    _attr_icon = "mdi:snowflake"
+
+    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
+        super().__init__(coord, zone_id, "force_start_cool")
+
+    async def async_press(self) -> None:
+        zone = self.coordinator.zone(self._zone_id)
+        if not zone:
+            return
+        zone.force_start("cool", utc_now_ts())
+        await self.coordinator.async_tick_now()
+
+
+class ZoneForceStartHeatButton(DelormejClimateZoneEntity, ButtonEntity):
+    _attr_translation_key = "zone_force_start_heat"
+    _attr_icon = "mdi:fire"
+
+    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
+        super().__init__(coord, zone_id, "force_start_heat")
+
+    async def async_press(self) -> None:
+        zone = self.coordinator.zone(self._zone_id)
+        if not zone:
+            return
+        zone.force_start("heat", utc_now_ts())
         await self.coordinator.async_tick_now()

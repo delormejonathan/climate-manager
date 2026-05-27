@@ -99,6 +99,7 @@ class ZoneRuntimeState:
     override_until_ts: float | None = None
     boost_until_ts: float | None = None
     mode: str = ZoneMode.AUTO  # auto / off / boost
+    forced_direction: str | None = None  # 'cool' | 'heat' | None — set by force_start
 
 
 @dataclass
@@ -215,6 +216,27 @@ class Zone:
         """Activate boost régime for BOOST_DURATION_MIN."""
         self.state.boost_until_ts = now_ts + BOOST_DURATION_MIN * 60
 
+    def force_start(self, direction: str, now_ts: float) -> None:
+        """Force a cycle to start right now, in the given direction.
+
+        Lets the user say 'start cooling now' while staying in auto mode —
+        the integration runs a normal cycle, just without waiting for T°
+        to cross the start threshold. The forced direction is cleared as
+        soon as we leave STARTING/RUNNING (cycle completes or user
+        intervenes).
+        """
+        if direction not in (HVACMode.COOL, HVACMode.HEAT):
+            return
+        # Only meaningful if we're idle / cooldown / window_open. From other
+        # states (running, override, etc.), force_start is a no-op.
+        if self.state.state not in (
+            ZoneState.IDLE, ZoneState.COOLDOWN,
+            ZoneState.WINDOW_OPEN, ZoneState.SCHEDULE_OFF,
+        ):
+            return
+        self.state.forced_direction = direction
+        self._transition(ZoneState.STARTING, now_ts)
+
     def reset_override(self, now_ts: float) -> None:
         """Court-circuit any ongoing manual override."""
         self.state.override_until_ts = None
@@ -240,6 +262,9 @@ class Zone:
         )
         self.state.state = new_state
         self.state.last_state_transition_ts = now_ts
+        # A forced cycle (force_start) ends as soon as we leave the active states
+        if new_state not in (ZoneState.STARTING, ZoneState.RUNNING):
+            self.state.forced_direction = None
 
     def _force_off(self, inp: ZoneInputs) -> list[Command]:
         """Mode=OFF : ensure the clim is off, do nothing else."""
@@ -416,6 +441,9 @@ class Zone:
         return self._desired_hvac_mode(inp)
 
     def _desired_hvac_mode(self, inp: ZoneInputs) -> str | None:
+        # User explicitly forced a direction (force_start) — honour it
+        if self.state.forced_direction in (HVACMode.COOL, HVACMode.HEAT):
+            return self.state.forced_direction
         if inp.room_temperature is None:
             return None
         if inp.room_temperature > self.config.seuil_debut_refroidissement:
