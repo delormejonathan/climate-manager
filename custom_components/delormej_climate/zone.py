@@ -165,6 +165,17 @@ class Zone:
 
     def tick(self, inp: ZoneInputs) -> list[Command]:
         """Advance the state machine and emit commands for the current step."""
+        # Boot recovery: if the zone is freshly constructed (no transitions yet)
+        # and the underlying clim is already in heat/cool, take over from it
+        # instead of stopping it. Without this, a HA restart mid-cycle would
+        # cause the next tick to see "IDLE + clim active" → emit turn_off.
+        if (
+            self.state.state == ZoneState.IDLE
+            and self.state.last_state_transition_ts == 0.0
+            and inp.clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL)
+        ):
+            self._transition(ZoneState.RUNNING, inp.now_ts)
+
         if self.state.mode == ZoneMode.OFF:
             return self._force_off(inp)
 

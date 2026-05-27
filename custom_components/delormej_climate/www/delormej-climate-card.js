@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.4.1
+ * delormej-climate-card  v0.4.2
  *
  * Single all-in-one card for one zone of the delormej_climate integration.
  * Replaces both the standard HA `thermostat` card and the previous slim
@@ -714,7 +714,7 @@ window.customCards.push({
 document.addEventListener("DOMContentLoaded", () => {});
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.4.1 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.4.2 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
