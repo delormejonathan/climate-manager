@@ -52,6 +52,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 _CARD_PATH_REGISTERED = "_card_path_registered"
 
 
+def _read_card_version() -> str:
+    """Read the integration version from manifest.json — used as cache-bust."""
+    try:
+        manifest = Path(__file__).parent / "manifest.json"
+        import json as _json
+        return _json.loads(manifest.read_text()).get("version", "0")
+    except Exception:
+        return "0"
+
+
 async def _register_lovelace_card(hass: HomeAssistant) -> None:
     """Serve the Lovelace card from `custom_components/<domain>/www/` at
     `CARD_URL_PATH`, and register it as a Lovelace resource so the user
@@ -93,11 +103,28 @@ async def _register_lovelace_card(hass: HomeAssistant) -> None:
         if hasattr(resources, "async_load") and not getattr(resources, "loaded", False):
             await resources.async_load()
         items = list(resources.async_items()) if hasattr(resources, "async_items") else []
-        if any((it.get("url") or "").split("?")[0] == CARD_URL_PATH for it in items):
-            return
+        version = _read_card_version()
+        versioned_url = f"{CARD_URL_PATH}?v={version}"
+
+        # Find any pre-existing entry pointing at our card path (any version)
+        existing = next(
+            (it for it in items if (it.get("url") or "").split("?")[0] == CARD_URL_PATH),
+            None,
+        )
+        if existing:
+            if (existing.get("url") or "") == versioned_url:
+                return  # already on the current version
+            # Update so the browser sees a new URL and reloads the module
+            if hasattr(resources, "async_update_item"):
+                await resources.async_update_item(
+                    existing.get("id"), {"res_type": "module", "url": versioned_url}
+                )
+                _LOGGER.info("Updated Lovelace resource → %s", versioned_url)
+                return
+
         if hasattr(resources, "async_create_item"):
-            await resources.async_create_item({"res_type": "module", "url": CARD_URL_PATH})
-            _LOGGER.info("Auto-registered Lovelace resource %s", CARD_URL_PATH)
+            await resources.async_create_item({"res_type": "module", "url": versioned_url})
+            _LOGGER.info("Auto-registered Lovelace resource %s", versioned_url)
     except Exception:
         _LOGGER.warning(
             "Could not auto-register Lovelace resource. Add manually via "

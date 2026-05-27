@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.4.0
+ * delormej-climate-card  v0.4.1
  *
  * Single all-in-one card for one zone of the delormej_climate integration.
  * Replaces both the standard HA `thermostat` card and the previous slim
@@ -238,6 +238,14 @@ class DelormejClimateCard extends HTMLElement {
     if (attrs.any_window_open === true) ctx.appendChild(this._chip("mdi:window-open", "Fenêtre ouverte", "warn"));
     if (attrs.house_is_absent === true) ctx.appendChild(this._chip("mdi:home-export-outline", "Maison absente", "info"));
     if (attrs.in_override === true) ctx.appendChild(this._chip("mdi:account-edit", "Override manuel", "warn"));
+
+    // ----- Resume-auto button is only meaningful while in MANUAL_OVERRIDE_* -----
+    const inOverride = attrs.in_override === true;
+    const resumeBtn = $("resume-btn");
+    resumeBtn.disabled = !inOverride;
+    resumeBtn.title = inOverride
+      ? "Annule l'override manuel en cours"
+      : "Aucun override en cours";
 
     // ----- Mode pilotage segmented -----
     const currentMode = get(ids.modeSelect)?.state;
@@ -540,7 +548,8 @@ const STYLES = `
     transition: background 0.15s;
   }
   .dc-actions button ha-icon { --mdc-icon-size: 16px; }
-  .dc-actions button:hover { background: var(--secondary-background-color); }
+  .dc-actions button:hover:not(:disabled) { background: var(--secondary-background-color); }
+  .dc-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
 
   /* Collapsible config */
   details.dc-collapse { padding: 0; border-top: 1px solid var(--dc-divider); }
@@ -705,7 +714,7 @@ window.customCards.push({
 document.addEventListener("DOMContentLoaded", () => {});
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.4.0 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.4.1 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
