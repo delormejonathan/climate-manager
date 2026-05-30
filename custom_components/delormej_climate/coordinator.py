@@ -422,6 +422,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "state_entered_ts": entered_ts,
                 "stabilization_ends_ts": stabilization_ends_ts,
                 "cooldown_ends_ts": cooldown_ends_ts,
+                "cycle_started_ts": zone.state.cycle_started_ts,
                 "direction": direction,
                 "target_temperature": target_temperature,
                 "aggressivity": zone.config.aggressivity,  # legacy alias

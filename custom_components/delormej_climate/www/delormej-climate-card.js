@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.7.0
+ * delormej-climate-card  v0.8.0
  *
  * Three-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
@@ -268,6 +268,9 @@ class DelormejClimateCard extends HTMLElement {
     narEl.innerHTML = nar.html;
     narEl.classList.toggle("warn", !!nar.warn);
 
+    // Timeline + sparkline (only during an active cycle)
+    this._updateTimeline(stateVal, attrs, get, ids);
+
     // Status pills — always show, color-coded by state
     const pills = $("status-pills");
     pills.innerHTML = "";
@@ -507,6 +510,135 @@ class DelormejClimateCard extends HTMLElement {
     return { html: "", warn: false };
   }
 
+  /* =================================================================== timeline */
+
+  _updateTimeline(state, attrs, get, ids) {
+    const $ = (sel) => this.querySelector(`[data-bind="${sel}"]`);
+    const block = $("timeline");
+    if (!block) return;
+
+    const active = state === "starting" || state === "running" || state === "stabilizing";
+    const startedAt = attrs.cycle_started_at;
+    if (!active || !startedAt) {
+      block.style.display = "none";
+      return;
+    }
+    block.style.display = "";
+
+    const startMs = Date.parse(startedAt);
+    const elapsedMin = Math.max(0, Math.round((Date.now() - startMs) / 60000));
+    const target = attrs.target_temperature;
+
+    // Fetch (or reuse cached) history of the room temp sensor since cycle start.
+    this._ensureSparkData(ids.roomTemp, startMs).then((points) => {
+      this._renderSpark($("spark"), points, target, attrs.direction);
+      // Text line: "Démarré il y a 23min · -2.0°C"
+      const txtEl = $("timeline-text");
+      const deltaTxt = this._deltaText(points, parseFloat(get(ids.roomTemp)?.state));
+      const elapsedTxt = elapsedMin === 0 ? "à l'instant" : `il y a ${elapsedMin} min`;
+      txtEl.innerHTML = deltaTxt
+        ? `Démarré ${elapsedTxt} · <span class="dc-delta">${deltaTxt}</span>`
+        : `Démarré ${elapsedTxt}`;
+    });
+  }
+
+  _deltaText(points, currentT) {
+    if (!points || points.length === 0 || Number.isNaN(currentT)) return null;
+    const startT = points[0].t;
+    const d = currentT - startT;
+    if (Math.abs(d) < 0.1) return "stable";
+    const sign = d > 0 ? "+" : "−";
+    return `${sign}${Math.abs(d).toFixed(1)}°C`;
+  }
+
+  async _ensureSparkData(entityId, cycleStartMs) {
+    const now = Date.now();
+    const cache = this._sparkCache;
+    if (
+      cache
+      && cache.entityId === entityId
+      && cache.cycleStartMs === cycleStartMs
+      && now - cache.fetchedAt < 30_000
+    ) {
+      return cache.points;
+    }
+    const startIso = new Date(cycleStartMs).toISOString();
+    const endIso = new Date(now).toISOString();
+    let raw;
+    try {
+      raw = await this._hass.callWS({
+        type: "history/history_during_period",
+        start_time: startIso,
+        end_time: endIso,
+        entity_ids: [entityId],
+        minimal_response: true,
+        no_attributes: true,
+        significant_changes_only: false,
+      });
+    } catch {
+      return cache?.points || [];
+    }
+    const series = (raw && raw[entityId]) || [];
+    const points = [];
+    for (const s of series) {
+      const v = parseFloat(s.s ?? s.state);
+      // Each row's timestamp is either `lu` (minimal) or `last_updated`
+      const ts = (s.lu ?? s.last_updated);
+      if (!Number.isNaN(v) && ts != null) {
+        const ms = typeof ts === "number" ? ts * 1000 : Date.parse(ts);
+        points.push({ ms, t: v });
+      }
+    }
+    this._sparkCache = { entityId, cycleStartMs, fetchedAt: now, points };
+    return points;
+  }
+
+  _renderSpark(el, points, target, direction) {
+    if (!el) return;
+    if (!points || points.length < 2) {
+      el.innerHTML = "";
+      return;
+    }
+    const W = 280, H = 56, padX = 4, padY = 6;
+    const xs = points.map(p => p.ms);
+    const ys = points.map(p => p.t);
+    const xMin = xs[0], xMax = Math.max(xs[xs.length - 1], xs[0] + 60_000);
+    const tValues = [...ys];
+    if (typeof target === "number") tValues.push(target);
+    let yMin = Math.min(...tValues) - 0.3;
+    let yMax = Math.max(...tValues) + 0.3;
+    if (yMax - yMin < 1) { yMax = yMin + 1; }
+    const sx = (x) => padX + ((x - xMin) / (xMax - xMin)) * (W - 2 * padX);
+    const sy = (y) => padY + (1 - (y - yMin) / (yMax - yMin)) * (H - 2 * padY);
+
+    const stroke = direction === "heat" ? "#ff6b35" : "#4d8bff";
+    const path = points.map((p, i) =>
+      `${i === 0 ? "M" : "L"}${sx(p.ms).toFixed(1)},${sy(p.t).toFixed(1)}`
+    ).join(" ");
+
+    let targetLine = "";
+    if (typeof target === "number") {
+      const ty = sy(target).toFixed(1);
+      targetLine =
+        `<line x1="${padX}" y1="${ty}" x2="${W - padX}" y2="${ty}" `
+        + `stroke="#fd9853" stroke-width="1" stroke-dasharray="3 3" opacity="0.7"/>`;
+    }
+
+    const last = points[points.length - 1];
+    const lastDot =
+      `<circle cx="${sx(last.ms).toFixed(1)}" cy="${sy(last.t).toFixed(1)}" `
+      + `r="2.5" fill="${stroke}"/>`;
+
+    el.innerHTML =
+      `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" `
+      + `style="width:100%;height:${H}px;display:block">`
+      + targetLine
+      + `<path d="${path}" fill="none" stroke="${stroke}" stroke-width="1.6" `
+      + `stroke-linejoin="round" stroke-linecap="round"/>`
+      + lastDot
+      + `</svg>`;
+  }
+
   /* =================================================================== helpers */
 
   _pill(icon, text, cls = "neutral") {
@@ -687,6 +819,25 @@ const STYLES = `
   .dc-narrative .target { color: var(--dc-accent); font-weight: 700; font-variant-numeric: tabular-nums; }
   .dc-narrative .until { color: var(--dc-muted); font-variant-numeric: tabular-nums; font-weight: 600; }
   .dc-narrative.warn { color: var(--dc-warn); }
+
+  /* Timeline + sparkline (visible during an active cycle) */
+  .dc-timeline {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--dc-hairline);
+  }
+  .dc-timeline-text {
+    font-size: 0.82em;
+    color: var(--dc-muted);
+    margin-bottom: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-timeline-text .dc-delta {
+    color: var(--dc-info);
+    font-weight: 600;
+  }
+  .dc-spark { width: 100%; }
+  .dc-spark svg { display: block; }
 
   /* Status pills */
   .dc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
@@ -996,6 +1147,10 @@ const TEMPLATE = `
         </div>
       </div>
       <div class="dc-narrative" data-bind="narrative"></div>
+      <div class="dc-timeline" data-bind="timeline" style="display:none">
+        <div class="dc-timeline-text" data-bind="timeline-text"></div>
+        <div class="dc-spark" data-bind="spark"></div>
+      </div>
     </div>
 
     <div class="dc-pills" data-bind="status-pills"></div>

@@ -108,6 +108,10 @@ class ZoneRuntimeState:
     boost_until_ts: float | None = None
     mode: str = ZoneMode.AUTO  # auto / off / boost
     forced_direction: str | None = None  # 'cool' | 'heat' | None — set by force_start
+    # Wall-time of the latest entry into STARTING. Survives RUNNING and
+    # STABILIZING so the UI can render "démarré il y a Xmin" across the whole
+    # cycle. Cleared whenever the zone leaves the active states.
+    cycle_started_ts: float | None = None
 
 
 @dataclass
@@ -197,6 +201,9 @@ class Zone:
             and inp.clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL)
         ):
             self._transition(ZoneState.RUNNING, inp.now_ts)
+            # Boot recovery — we don't know when the cycle actually started,
+            # so use now as a best-effort anchor for the UI's elapsed timer.
+            self.state.cycle_started_ts = inp.now_ts
 
         if self.state.mode == ZoneMode.OFF:
             return self._force_off(inp)
@@ -312,6 +319,14 @@ class Zone:
         # A forced cycle (force_start) ends as soon as we leave the active states
         if new_state not in (ZoneState.STARTING, ZoneState.RUNNING):
             self.state.forced_direction = None
+        # Cycle start timestamp — set on entry to STARTING, kept across
+        # RUNNING/STABILIZING, cleared on any other transition. Override /
+        # window / schedule_off interrupt the cycle; if we resume later it's
+        # a new cycle (and a new starting point for the UI's elapsed time).
+        if new_state == ZoneState.STARTING:
+            self.state.cycle_started_ts = now_ts
+        elif new_state not in (ZoneState.RUNNING, ZoneState.STABILIZING):
+            self.state.cycle_started_ts = None
 
     def _force_off(self, inp: ZoneInputs) -> list[Command]:
         """Mode=OFF : ensure the clim is off, do nothing else."""

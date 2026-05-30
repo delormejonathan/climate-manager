@@ -65,7 +65,12 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             "windows_open": d.get("windows_open"),
             "windows_total": d.get("windows_total"),
         }
-        for ts_key in ("state_entered_ts", "stabilization_ends_ts", "cooldown_ends_ts"):
+        for ts_key in (
+            "state_entered_ts",
+            "stabilization_ends_ts",
+            "cooldown_ends_ts",
+            "cycle_started_ts",
+        ):
             ts = d.get(ts_key)
             if ts:
                 attrs[ts_key.replace("_ts", "_at")] = datetime.fromtimestamp(ts, tz=UTC).isoformat()
