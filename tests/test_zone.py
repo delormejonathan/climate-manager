@@ -308,6 +308,30 @@ def test_override_timed_expires_and_returns_to_idle():
     assert zone.state.state == ZoneState.IDLE
 
 
+def test_reset_override_with_clim_on_keeps_cycle_running():
+    """Reported 2026-05-30: user is in override, clim is cooling, they hit
+    Resume auto, the next tick turns the clim off. Auto should instead take
+    over the running cycle."""
+    zone = Zone(_config())
+    zone.on_external_override(now_ts=1_000.0, schedule_is_on=True)
+    assert zone.state.state == ZoneState.MANUAL_OVERRIDE_TIMED
+
+    # User clicks Resume auto while the clim is in 'cool'
+    zone.reset_override(now_ts=2_000.0, clim_current_hvac_mode=HVAC_COOL)
+    assert zone.state.state == ZoneState.RUNNING
+    assert zone.state.cycle_started_ts == 2_000.0
+
+
+def test_reset_override_with_clim_off_goes_idle():
+    """Symmetric: if the clim is off when Resume auto is pressed, IDLE is
+    correct — auto re-evaluates the thresholds from a cold start."""
+    zone = Zone(_config())
+    zone.on_external_override(now_ts=1_000.0, schedule_is_on=True)
+    zone.reset_override(now_ts=2_000.0, clim_current_hvac_mode=HVAC_OFF)
+    assert zone.state.state == ZoneState.IDLE
+    assert zone.state.cycle_started_ts is None
+
+
 # === Decision algorithm gates ===
 
 

@@ -219,7 +219,9 @@ def _register_services(hass: HomeAssistant) -> None:
         coord, zone = _find_zone(hass, call.data["zone_id"])
         if zone is None:
             return
-        zone.reset_override(utc_now_ts())
+        clim_state = hass.states.get(zone.config.climate_entity)
+        clim_mode = clim_state.state if clim_state else "off"
+        zone.reset_override(utc_now_ts(), clim_current_hvac_mode=clim_mode)
         await coord.async_tick_now()
 
     async def _boost(call: ServiceCall) -> None:

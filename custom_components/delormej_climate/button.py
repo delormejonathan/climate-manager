@@ -84,7 +84,9 @@ class ZoneResetOverrideButton(DelormejClimateZoneEntity, ButtonEntity):
         zone = self.coordinator.zone(self._zone_id)
         if not zone:
             return
-        zone.reset_override(utc_now_ts())
+        clim_state = self.hass.states.get(zone.config.climate_entity)
+        clim_mode = clim_state.state if clim_state else "off"
+        zone.reset_override(utc_now_ts(), clim_current_hvac_mode=clim_mode)
         await self.coordinator.async_tick_now()
 
 

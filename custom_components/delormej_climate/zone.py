@@ -291,11 +291,24 @@ class Zone:
         self.state.forced_direction = direction
         self._transition(ZoneState.STARTING, now_ts)
 
-    def reset_override(self, now_ts: float) -> None:
-        """Court-circuit any ongoing manual override."""
+    def reset_override(self, now_ts: float, clim_current_hvac_mode: str = "off") -> None:
+        """Court-circuit any ongoing manual override.
+
+        If the clim is actively heating/cooling at the moment the user hits
+        Resume auto, hand the reins to RUNNING so auto can continue the cycle
+        instead of turning the unit off. Without that, the next tick saw IDLE
+        + clim active and emitted turn_off — i.e. Resume auto killed an
+        in-progress cycle (reported on étage, 2026-05-30).
+        """
         self.state.override_until_ts = None
         if self.state.state in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE):
-            self._transition(ZoneState.IDLE, now_ts)
+            if clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
+                self._transition(ZoneState.RUNNING, now_ts)
+                # We don't know when the actual cycle started — anchor at now
+                # so the card timeline has something to render.
+                self.state.cycle_started_ts = now_ts
+            else:
+                self._transition(ZoneState.IDLE, now_ts)
 
     def on_external_override(self, now_ts: float, schedule_is_on: bool) -> None:
         """A state_changed with a non-tracked context was detected on our clim."""
