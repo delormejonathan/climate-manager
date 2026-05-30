@@ -27,6 +27,7 @@ config/
 .env
 .hass-env
 *.token
+CLAUDE.md
 
 # Lovelace build
 lovelace/dist/

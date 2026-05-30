@@ -140,7 +140,11 @@ async def _register_lovelace_card(hass: HomeAssistant) -> None:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        coordinator: DelormejClimateCoordinator | None = hass.data.get(DOMAIN, {}).pop(
+            entry.entry_id, None
+        )
+        if coordinator is not None:
+            await coordinator.async_shutdown()
         if not hass.data[DOMAIN]:
             _unregister_services(hass)
     return unload_ok

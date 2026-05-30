@@ -23,6 +23,8 @@ from .const import (
     CONF_PRESENCE_ENTITY,
     CONF_ZONES,
     DOMAIN,
+    OVERRIDE_DEBOUNCE_SECONDS,
+    SETPOINT_NOOP_DELTA,
     UPDATE_INTERVAL_SECONDS,
     ZoneMode,
     ZoneState,
@@ -47,6 +49,10 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._context_tracker = ContextTracker()
         self._zones: dict[str, Zone] = {}
         self._unsub_state_listener = None
+        # Per-entity debounced override decisions. Each entry holds the original
+        # old_state (from the first event in a flap burst), the latest new_state,
+        # and the asyncio TimerHandle that will fire _resolve_pending_override.
+        self._pending_overrides: dict[str, dict[str, Any]] = {}
         self._rebuild_zones()
 
     # === Public API for platforms ===
@@ -107,6 +113,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         if self._unsub_state_listener:
             self._unsub_state_listener()
             self._unsub_state_listener = None
+        # A rebuild invalidates any pending override decisions: the zones may
+        # be different, and we'd resolve against a stale Zone reference.
+        self._cancel_pending_overrides()
         if not self._zones:
             return
         entities = [z.config.climate_entity for z in self._zones.values()]
@@ -160,11 +169,61 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             old_state, new_state
         ):
             return
-        # External override
+        # Debounce: the Daikin BRP integration occasionally emits temperature
+        # flaps (X→Y→X) on poll, in two events at the same timestamp. Reacting
+        # to the first wrongly trips MANUAL_OVERRIDE_TIMED. Coalesce events per
+        # entity, then at fire time compare the cumulative diff to what we last
+        # commanded — if it's an echo of our intent, ignore it.
+        pending = self._pending_overrides.get(entity_id)
+        if pending is None:
+            pending = {"old_state": old_state, "new_state": new_state, "handle": None}
+            self._pending_overrides[entity_id] = pending
+        else:
+            pending["new_state"] = new_state
+            if pending["handle"] is not None:
+                pending["handle"].cancel()
+        pending["handle"] = self.hass.loop.call_later(
+            OVERRIDE_DEBOUNCE_SECONDS,
+            self._resolve_pending_override,
+            entity_id,
+            zone,
+        )
+
+    @callback
+    def _resolve_pending_override(self, entity_id: str, zone: Zone) -> None:
+        """Fire after the debounce window. Decide if it's a real override."""
+        pending = self._pending_overrides.pop(entity_id, None)
+        if pending is None:
+            return
+        old_state = pending["old_state"]
+        new_state = pending["new_state"]
+        # Echo check: latest state matches what we last commanded → no override.
+        if _is_echo_of_intent(zone, new_state.attributes or {}):
+            return
+        # Cumulative diff: in the X→Y→X flap, old.temperature == new.temperature
+        # so _user_action_changed returns False here and we bail.
+        if old_state.state == new_state.state and not self._user_action_changed(
+            old_state, new_state
+        ):
+            return
         now = utc_now_ts()
         schedule_on = self._read_schedule_on(zone)
         zone.on_external_override(now, schedule_on)
         self.hass.async_create_task(self.async_request_refresh())
+
+    def _cancel_pending_overrides(self) -> None:
+        for pending in self._pending_overrides.values():
+            handle = pending.get("handle")
+            if handle is not None:
+                handle.cancel()
+        self._pending_overrides.clear()
+
+    async def async_shutdown(self) -> None:  # type: ignore[override]
+        self._cancel_pending_overrides()
+        if self._unsub_state_listener:
+            self._unsub_state_listener()
+            self._unsub_state_listener = None
+        await super().async_shutdown()
 
     def _user_action_changed(self, old_state, new_state) -> bool:
         """Return True iff a user-actionable attribute differs between old and new."""
@@ -386,3 +445,25 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_echo_of_intent(zone: Zone, new_attrs: dict[str, Any]) -> bool:
+    """Pure helper: True iff the post-debounce attributes match what the zone
+    last commanded — i.e. this state_changed burst is just the Daikin
+    integration echoing our own writes back at us.
+
+    We only consider it an echo when *every* attribute we have an intent for
+    matches. Attributes we never set (preset_mode, swing_horizontal_mode,
+    target_temp_high/low) are not considered: any movement on those still
+    counts as a user action and falls through to the cumulative-diff check.
+    """
+    last_sp = zone.state.last_setpoint_sent
+    if last_sp is None:
+        return False
+    cur_sp = _as_float(new_attrs.get(ATTR_TEMPERATURE))
+    if cur_sp is None or abs(cur_sp - last_sp) >= SETPOINT_NOOP_DELTA:
+        return False
+    last_fan = zone.state.last_fan_sent
+    if last_fan is not None and new_attrs.get(ATTR_FAN_MODE) != last_fan:
+        return False
+    return True

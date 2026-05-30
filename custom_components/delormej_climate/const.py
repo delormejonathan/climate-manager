@@ -84,6 +84,13 @@ SETPOINT_NOOP_DELTA = 0.5  # ne pas réémettre si delta < 0.5°C
 # Context tracker window
 CONTEXT_WINDOW_SECONDS = 30
 
+# Override debounce — Daikin emits brief temperature flaps (X→Y→X) when its
+# integration polls the unit, with both events on the same tick. Without
+# debounce, the first event trips on_external_override before the second can
+# resolve it. 2s is enough to coalesce the flap; UX impact on a real user
+# action is invisible.
+OVERRIDE_DEBOUNCE_SECONDS = 2
+
 # Mode boost
 BOOST_DURATION_MIN = 15
 BOOST_OFFSET = 5.0
