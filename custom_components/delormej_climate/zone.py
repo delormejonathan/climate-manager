@@ -79,6 +79,10 @@ class ZoneInputs:
     supports_heat: bool = True
     supports_fan_mode: bool = True
     supports_windnice: bool = True
+    # Wall-time of the climate entity's last state change (clim_state.last_changed).
+    # Used as a best-effort anchor for cycle_started_ts when the integration
+    # adopts an already-running clim (boot recovery, reset_override).
+    clim_state_last_changed_ts: float | None = None
 
 
 @dataclass(frozen=True)
@@ -201,9 +205,11 @@ class Zone:
             and inp.clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL)
         ):
             self._transition(ZoneState.RUNNING, inp.now_ts)
-            # Boot recovery — we don't know when the cycle actually started,
-            # so use now as a best-effort anchor for the UI's elapsed timer.
-            self.state.cycle_started_ts = inp.now_ts
+            # Boot recovery — we don't know exactly when the cycle started, but
+            # the clim's own last_changed (when it went to heat/cool) is a
+            # much better estimate than "now" (which would lie about elapsed
+            # time after every HA restart mid-cycle).
+            self.state.cycle_started_ts = inp.clim_state_last_changed_ts or inp.now_ts
 
         if self.state.mode == ZoneMode.OFF:
             return self._force_off(inp)
@@ -291,7 +297,12 @@ class Zone:
         self.state.forced_direction = direction
         self._transition(ZoneState.STARTING, now_ts)
 
-    def reset_override(self, now_ts: float, clim_current_hvac_mode: str = "off") -> None:
+    def reset_override(
+        self,
+        now_ts: float,
+        clim_current_hvac_mode: str = "off",
+        clim_state_last_changed_ts: float | None = None,
+    ) -> None:
         """Court-circuit any ongoing manual override.
 
         If the clim is actively heating/cooling at the moment the user hits
@@ -299,14 +310,16 @@ class Zone:
         instead of turning the unit off. Without that, the next tick saw IDLE
         + clim active and emitted turn_off — i.e. Resume auto killed an
         in-progress cycle (reported on étage, 2026-05-30).
+
+        `clim_state_last_changed_ts` is the clim's own last_changed, used to
+        anchor cycle_started_ts at the real moment the clim went active rather
+        than at the click time.
         """
         self.state.override_until_ts = None
         if self.state.state in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE):
             if clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
                 self._transition(ZoneState.RUNNING, now_ts)
-                # We don't know when the actual cycle started — anchor at now
-                # so the card timeline has something to render.
-                self.state.cycle_started_ts = now_ts
+                self.state.cycle_started_ts = clim_state_last_changed_ts or now_ts
             else:
                 self._transition(ZoneState.IDLE, now_ts)
 

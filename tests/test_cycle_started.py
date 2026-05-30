@@ -79,11 +79,32 @@ def test_cycle_anchor_clears_on_override() -> None:
     assert z.state.cycle_started_ts is None
 
 
-def test_boot_recovery_sets_anchor() -> None:
-    """At HA restart, if the clim is already running, the boot-recovery path
-    transitions IDLE→RUNNING (skipping STARTING). The anchor must still be set
-    so the card has something to render."""
+def test_boot_recovery_anchors_to_clim_last_changed() -> None:
+    """At HA restart mid-cycle, the boot-recovery path adopts the running clim.
+    Using `now` as anchor would lie about elapsed time after every restart, so
+    we anchor to the clim's own last_changed (when it went heat/cool) instead.
+    """
+    z = Zone(_cfg())
+    z.tick(ZoneInputs(
+        now_ts=10_000.0,
+        room_temperature=26.0,
+        clim_internal_temperature=27.0,
+        clim_current_hvac_mode=HVAC_COOL,
+        clim_current_setpoint=None,
+        clim_current_fan_mode=None,
+        clim_current_swing_mode=None,
+        schedule_is_on=True,
+        any_window_open=False,
+        house_is_absent=False,
+        clim_state_last_changed_ts=8_500.0,  # clim went cool 1500s before this tick
+    ))
+    assert z.state.state == ZoneState.RUNNING
+    assert z.state.cycle_started_ts == 8_500.0
+
+
+def test_boot_recovery_falls_back_to_now_without_clim_last_changed() -> None:
+    """If we have no clim last_changed (e.g. very fresh HA install), the
+    anchor falls back to now — best-effort, still better than nothing."""
     z = Zone(_cfg())
     z.tick(_inp(9_999.0, room=26.0, hvac=HVAC_COOL))
-    assert z.state.state == ZoneState.RUNNING
     assert z.state.cycle_started_ts == 9_999.0

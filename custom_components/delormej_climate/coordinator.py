@@ -257,6 +257,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         clim_setpoint = None
         clim_fan = None
         clim_swing = None
+        clim_last_changed_ts: float | None = None
         # Capability flags — default permissive when we have no state yet
         supports_cool = True
         supports_heat = True
@@ -276,6 +277,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             supports_heat = "heat" in hvac_modes
             supports_fan_mode = bool(fan_modes)
             supports_windnice = "windnice" in swing_modes
+            if clim_state.last_changed is not None:
+                clim_last_changed_ts = clim_state.last_changed.timestamp()
         return ZoneInputs(
             now_ts=now,
             room_temperature=room_temperature,
@@ -291,6 +294,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             supports_heat=supports_heat,
             supports_fan_mode=supports_fan_mode,
             supports_windnice=supports_windnice,
+            clim_state_last_changed_ts=clim_last_changed_ts,
         )
 
     def _average_temperature(self, sensors: list[str]) -> float | None:
