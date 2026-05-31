@@ -15,9 +15,7 @@ import pytest
 
 from custom_components.delormej_climate.const import (
     BOOST_OFFSET,
-    OFFSET_APPROCHE,
     OFFSET_ATTAQUE,
-    OFFSET_CROISIERE,
     Regime,
     ZoneMode,
     ZoneState,
@@ -152,36 +150,36 @@ def test_attaque_in_cool_uses_offset_attaque_below_internal():
     assert zone.state.regime == Regime.ATTAQUE
 
 
-def test_croisiere_in_cool():
+def test_running_uses_constant_attaque_offset_close_to_target():
+    """Architecture D (juin 2026): no more CROISIERE/APPROCHE handoffs. The
+    offset stays at ATTAQUE throughout RUNNING — Daikin's inverter handles
+    the ramp-down internally. Reproduces the bug where the descent plateaued
+    when the integration switched to CROISIERE 2°C from target."""
     zone = Zone(_config(seuil_fin_refroidissement=25.0))
+    # Close to target (would have been CROISIERE in the old model)
     inp = _inputs(
-        room_temperature=26.0,  # écart = 1, between 0.5 and 2 → CROISIERE
+        room_temperature=26.0,
         clim_internal_temperature=26.0,
         clim_current_hvac_mode=HVAC_COOL,
     )
     zone.state.state = ZoneState.RUNNING
     cmds = zone.tick(inp)
     sp = _find_setpoint(cmds)
-    expected = 26.0 - OFFSET_CROISIERE
     assert sp is not None
-    assert abs(sp - expected) < 0.5
-    assert zone.state.regime == Regime.CROISIERE
+    assert abs(sp - (26.0 - OFFSET_ATTAQUE)) < 0.5
+    assert zone.state.regime == Regime.ATTAQUE
 
-
-def test_approche_in_cool():
-    zone = Zone(_config(seuil_fin_refroidissement=25.0))
+    # Very close to target (would have been APPROCHE in the old model)
     inp = _inputs(
-        room_temperature=25.3,  # écart = 0.3, < 0.5 but > 0 → APPROCHE
+        room_temperature=25.3,
         clim_internal_temperature=25.0,
         clim_current_hvac_mode=HVAC_COOL,
     )
-    zone.state.state = ZoneState.RUNNING
     cmds = zone.tick(inp)
     sp = _find_setpoint(cmds)
-    expected = 25.0 - OFFSET_APPROCHE
     assert sp is not None
-    assert abs(sp - expected) < 0.5
-    assert zone.state.regime == Regime.APPROCHE
+    assert abs(sp - (25.0 - OFFSET_ATTAQUE)) < 0.5
+    assert zone.state.regime == Regime.ATTAQUE
 
 
 def test_stabilisation_uses_pendulum_neutral():

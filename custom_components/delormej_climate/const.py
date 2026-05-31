@@ -67,15 +67,13 @@ MAX_OVERRIDE_DUREE_MIN = 240
 CLIM_MIN_SETPOINT = 18.0
 CLIM_MAX_SETPOINT = 32.0
 
-# Algorithme — offset par régime (delta vs T°_interne_clim)
+# Architecture D (juin 2026) : ATTAQUE pendant tout le RUNNING, STABILISATION
+# quand seuil_fin atteint. Plus de CROISIERE ni APPROCHE. Daikin module
+# elle-même via son inverter quand sa T° interne approche la consigne — on
+# ne lui retire pas la marge nous-mêmes. Les offsets ne sont conservés ici que
+# pour les tests historiques ; la valeur runtime vient de POWER_PROFILES.
 OFFSET_ATTAQUE = 5.0
-OFFSET_CROISIERE = 2.0
-OFFSET_APPROCHE = 1.0
-OFFSET_STABILISATION = 0.0  # pendule neutre
-
-# Seuils d'écart pour basculer entre régimes (T° pièce vs seuil_fin)
-ECART_ATTAQUE_THRESHOLD = 2.0
-ECART_APPROCHE_THRESHOLD = 0.5
+OFFSET_STABILISATION = 0.0
 
 # Rate limiting
 RATE_LIMIT_SECONDS = 60
@@ -126,12 +124,10 @@ class Regime:
 
     NONE = "none"
     ATTAQUE = "attaque"
-    CROISIERE = "croisiere"
-    APPROCHE = "approche"
     STABILISATION = "stabilisation"
     BOOST = "boost"
 
-    ALL: ClassVar[list[str]] = [NONE, ATTAQUE, CROISIERE, APPROCHE, STABILISATION, BOOST]
+    ALL: ClassVar[list[str]] = [NONE, ATTAQUE, STABILISATION, BOOST]
 
 
 class ZoneMode:
@@ -176,14 +172,14 @@ class Aggressivity:
 
 # Offsets °C par régime, signe appliqué au moment du pilotage selon hvac_mode.
 POWER_PROFILES: dict[str, dict] = {
-    "doux":     {"attaque": 3.0, "croisiere": 1.0, "approche": 0.5},
-    "normal":   {"attaque": 5.0, "croisiere": 2.0, "approche": 1.0},
-    "agressif": {"attaque": 7.0, "croisiere": 3.0, "approche": 1.5},
+    "doux":     {"attaque": 3.0},
+    "normal":   {"attaque": 5.0},
+    "agressif": {"attaque": 7.0},
 }
 
-# fan_mode par régime. Valeurs Daikin valides : auto, quiet, 1, 2, 3, 4, 5.
+# fan_mode pendant RUNNING (clé "attaque"). Valeurs Daikin : auto, quiet, 1..5.
 FAN_PROFILES: dict[str, dict] = {
-    "doux":   {"attaque": "quiet", "croisiere": "quiet", "approche": "quiet"},
-    "normal": {"attaque": "auto",  "croisiere": "auto",  "approche": "quiet"},
-    "fort":   {"attaque": "5",     "croisiere": "4",     "approche": "auto"},
+    "doux":   {"attaque": "quiet"},
+    "normal": {"attaque": "auto"},
+    "fort":   {"attaque": "5"},
 }

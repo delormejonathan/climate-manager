@@ -43,8 +43,6 @@ from .const import (
     DEFAULT_SEUIL_FIN_CHAUFFAGE,
     DEFAULT_SEUIL_FIN_REFROIDISSEMENT,
     DEFAULT_SWING_MODE,
-    ECART_APPROCHE_THRESHOLD,
-    ECART_ATTAQUE_THRESHOLD,
     FAN_PROFILES,
     POWER_PROFILES,
     RATE_LIMIT_SECONDS,
@@ -504,26 +502,15 @@ class Zone:
     # --- régime + setpoint maths ---
 
     def _compute_regime(self, inp: ZoneInputs) -> str:
-        target_mode = self._current_active_mode(inp)
-        if target_mode is None or inp.room_temperature is None:
+        # Architecture D: during RUNNING the offset stays constant (driven by
+        # the Power knob). Daikin's inverter handles compressor modulation as
+        # internal temp approaches setpoint — we don't ramp it down ourselves,
+        # because doing so caused a visible plateau on the descent (the
+        # CROISIERE→APPROCHE handoff used to drop the offset from 7°C to 3°C
+        # and the unit slowed accordingly).
+        if self._current_active_mode(inp) is None or inp.room_temperature is None:
             return Regime.NONE
-        seuil_fin = (
-            self.config.seuil_fin_chauffage
-            if target_mode == HVACMode.HEAT
-            else self.config.seuil_fin_refroidissement
-        )
-        # Écart positif = encore à faire pour atteindre seuil_fin
-        if target_mode == HVACMode.HEAT:
-            ecart = seuil_fin - inp.room_temperature
-        else:
-            ecart = inp.room_temperature - seuil_fin
-        if ecart > ECART_ATTAQUE_THRESHOLD:
-            return Regime.ATTAQUE
-        if ecart > ECART_APPROCHE_THRESHOLD:
-            return Regime.CROISIERE
-        if ecart > 0:
-            return Regime.APPROCHE
-        return Regime.STABILISATION
+        return Regime.ATTAQUE
 
     def _current_active_mode(self, inp: ZoneInputs) -> str | None:
         """What hvac_mode we should be running in this active state."""
@@ -658,10 +645,6 @@ class Zone:
 def _offset_for_regime(regime: str, power_profile: dict) -> float:
     if regime == Regime.ATTAQUE:
         return power_profile["attaque"]
-    if regime == Regime.CROISIERE:
-        return power_profile["croisiere"]
-    if regime == Regime.APPROCHE:
-        return power_profile["approche"]
     if regime == Regime.STABILISATION:
         return 0.0
     if regime == Regime.BOOST:
@@ -672,12 +655,8 @@ def _offset_for_regime(regime: str, power_profile: dict) -> float:
 def _fan_for_regime(regime: str, fan_profile: dict) -> str | None:
     if regime == Regime.ATTAQUE:
         return fan_profile["attaque"]
-    if regime == Regime.CROISIERE:
-        return fan_profile["croisiere"]
-    if regime == Regime.APPROCHE:
-        return fan_profile["approche"]
     if regime == Regime.STABILISATION:
-        return "quiet"  # always quiet during stabilization — pendulum at neutral
+        return "quiet"  # pendulum at neutral
     if regime == Regime.BOOST:
         return BOOST_FAN_MODE
     return None

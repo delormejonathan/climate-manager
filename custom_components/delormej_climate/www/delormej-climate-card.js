@@ -26,8 +26,7 @@ const STATE_META = {
 };
 
 const REGIME_LABELS = {
-  none: "—", attaque: "Attaque", croisiere: "Croisière",
-  approche: "Approche", stabilisation: "Stabilisation", boost: "Boost",
+  none: "—", attaque: "Attaque", stabilisation: "Stabilisation", boost: "Boost",
 };
 
 const HVAC_ICONS = {
@@ -482,9 +481,7 @@ class DelormejClimateCard extends HTMLElement {
       return { html: `Démarrage ${dir === "heat" ? "chauffage" : "refroidissement"} vers ${targetSpan(target)}.`, warn: false };
     if (state === "running") {
       const reg = {
-        attaque: `${verb} intensif vers ${targetSpan(target)}.`,
-        croisiere: `${verb} en cours vers ${targetSpan(target)}.`,
-        approche: `Approche de ${targetSpan(target)}.`,
+        attaque: `${verb} en cours vers ${targetSpan(target)}.`,
         boost: `Boost ${dir === "heat" ? "chauffage" : "refroidissement"} vers ${targetSpan(target)}.`,
       }[regime] || `${verb} en cours.`;
       return { html: reg, warn: false };

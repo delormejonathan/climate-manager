@@ -109,8 +109,6 @@
         "state": {
           "none": "None",
           "attaque": "Attack",
-          "croisiere": "Cruise",
-          "approche": "Approach",
           "stabilisation": "Stabilization",
           "boost": "Boost"
         }
