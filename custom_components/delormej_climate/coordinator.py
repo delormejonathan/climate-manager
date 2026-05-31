@@ -30,7 +30,7 @@ from .const import (
     ZoneState,
 )
 from .context_tracker import ContextTracker
-from .zone import Command, Zone, ZoneConfig, ZoneInputs, ZoneRuntimeState, utc_now_ts
+from .zone import Command, Profile, Zone, ZoneConfig, ZoneInputs, ZoneRuntimeState, utc_now_ts
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +73,21 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             if hasattr(zone.config, k):
                 setattr(zone.config, k, v)
         self._persist_zone_config(zone_id, **kwargs)
+        self.async_set_updated_data(self._build_coordinator_data())
+
+    def update_zone_profiles(self, zone_id: str, profiles: list[dict[str, Any]]) -> None:
+        """Replace the cascade of profiles for a zone (called by the card via service).
+
+        Persists the full list to ConfigEntry.options and hot-reloads the
+        zone's in-memory config — the active cycle is preserved (we do not
+        rebuild the Zone, only swap the profile list).
+        """
+        zone = self._zones.get(zone_id)
+        if not zone:
+            return
+        parsed = [Profile.from_dict(p) for p in profiles]
+        zone.config.profiles = parsed
+        self._persist_zone_config(zone_id, profiles=[p.to_dict() for p in parsed])
         self.async_set_updated_data(self._build_coordinator_data())
 
     async def async_tick_now(self) -> None:
@@ -207,7 +222,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         ):
             return
         now = utc_now_ts()
-        schedule_on = self._read_schedule_on(zone)
+        schedule_on = self._active_profile(zone) is not None
         zone.on_external_override(now, schedule_on)
         self.hass.async_create_task(self.async_request_refresh())
 
@@ -248,6 +263,47 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     # === Inputs gathering ===
 
+    def _active_profile(self, zone: Zone) -> Profile | None:
+        """Return the first profile whose gate matches the current state, or None.
+
+        Cascade rules:
+        - A profile's schedule entity must be ON (or be None, meaning "always on")
+        - If presence_entity is set, its current state must be in the
+          presence_required_state (str or list of str). Both being None means
+          no presence condition.
+
+        Order matters: the user puts the more specific conditions (e.g. needing
+        absence) at the top of the list, and a generic fallback last.
+        """
+        for p in zone.config.profiles:
+            if not self._profile_schedule_on(p):
+                continue
+            if not self._profile_presence_match(p):
+                continue
+            return p
+        return None
+
+    def _profile_schedule_on(self, p: Profile) -> bool:
+        if not p.schedule_entity:
+            return True
+        st = self.hass.states.get(p.schedule_entity)
+        if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return True  # fail-open like _read_schedule_on for the zone-level entity
+        return st.state == STATE_ON
+
+    def _profile_presence_match(self, p: Profile) -> bool:
+        if not p.presence_entity:
+            return True
+        required = p.presence_required_state
+        if required is None:
+            return True
+        st = self.hass.states.get(p.presence_entity)
+        if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return False  # fail-closed on presence: don't assume the condition holds
+        if isinstance(required, str):
+            return st.state == required
+        return st.state in required
+
     def _gather_inputs(self, zone: Zone) -> ZoneInputs:
         now = utc_now_ts()
         room_temperature = self._average_temperature(zone.config.temperature_sensors)
@@ -279,6 +335,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             supports_windnice = "windnice" in swing_modes
             if clim_state.last_changed is not None:
                 clim_last_changed_ts = clim_state.last_changed.timestamp()
+        active_profile = self._active_profile(zone)
         return ZoneInputs(
             now_ts=now,
             room_temperature=room_temperature,
@@ -287,7 +344,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             clim_current_setpoint=clim_setpoint,
             clim_current_fan_mode=clim_fan,
             clim_current_swing_mode=clim_swing,
-            schedule_is_on=self._read_schedule_on(zone),
+            schedule_is_on=active_profile is not None,
             any_window_open=self._any_window_open(zone),
             house_is_absent=self._house_is_absent(),
             supports_cool=supports_cool,
@@ -295,6 +352,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             supports_fan_mode=supports_fan_mode,
             supports_windnice=supports_windnice,
             clim_state_last_changed_ts=clim_last_changed_ts,
+            active_profile=active_profile,
         )
 
     def _average_temperature(self, sensors: list[str]) -> float | None:
@@ -310,25 +368,28 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             return None
         return sum(values) / len(values)
 
-    def _read_schedule_on(self, zone: Zone) -> bool:
-        ent = zone.config.schedule_entity
-        if not ent:
-            return True  # no schedule configured → always allowed
-        st = self.hass.states.get(ent)
-        if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return True  # fail-open: don't lock the zone if schedule entity missing
-        return st.state == STATE_ON
-
     def _schedule_next_event(self, zone: Zone) -> str | None:
-        """ISO timestamp of the next schedule transition, or None."""
-        ent = zone.config.schedule_entity
-        if not ent:
-            return None
-        st = self.hass.states.get(ent)
-        if not st:
-            return None
-        nxt = st.attributes.get("next_event")
-        return str(nxt) if nxt else None
+        """ISO timestamp of the next schedule transition, or None.
+
+        With multi-profile, we surface the next transition of the *currently
+        active* profile's schedule if there is one; otherwise the first
+        upcoming transition across the configured profiles.
+        """
+        active = self._active_profile(zone)
+        candidates = []
+        if active and active.schedule_entity:
+            candidates.append(active.schedule_entity)
+        for p in zone.config.profiles:
+            if p.schedule_entity and p.schedule_entity not in candidates:
+                candidates.append(p.schedule_entity)
+        for ent in candidates:
+            st = self.hass.states.get(ent)
+            if not st:
+                continue
+            nxt = st.attributes.get("next_event")
+            if nxt:
+                return str(nxt)
+        return None
 
     def _any_window_open(self, zone: Zone) -> bool:
         for ent in zone.config.window_sensors:
@@ -388,23 +449,25 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
             # Direction & target temperature inferred from underlying clim mode
             # (more reliable than guessing from thresholds + room temp).
+            # Thresholds come from the active profile when there is one;
+            # fallback to zone defaults if not (e.g. zone idle without a
+            # matching profile, or transition gap).
+            active = inputs.active_profile or zone.config.profiles[0]
             clim_mode = inputs.clim_current_hvac_mode
             direction: str | None = None
             target_temperature: float | None = None
             if clim_mode == "cool":
                 direction = "cool"
-                target_temperature = zone.config.seuil_fin_refroidissement
+                target_temperature = active.seuil_fin_refroidissement
             elif clim_mode == "heat":
                 direction = "heat"
-                target_temperature = zone.config.seuil_fin_chauffage
+                target_temperature = active.seuil_fin_chauffage
             elif zone.state.state in (ZoneState.STARTING, ZoneState.RUNNING):
-                # Just decided to start but no clim mode echoed yet — guess from
-                # the thresholds vs current temperature.
                 rt = inputs.room_temperature
-                if rt is not None and rt > zone.config.seuil_debut_refroidissement:
-                    direction, target_temperature = "cool", zone.config.seuil_fin_refroidissement
-                elif rt is not None and rt < zone.config.seuil_debut_chauffage:
-                    direction, target_temperature = "heat", zone.config.seuil_fin_chauffage
+                if rt is not None and rt > active.seuil_debut_refroidissement:
+                    direction, target_temperature = "cool", active.seuil_fin_refroidissement
+                elif rt is not None and rt < active.seuil_debut_chauffage:
+                    direction, target_temperature = "heat", active.seuil_fin_chauffage
 
             out["zones"][zid] = {
                 "config": zone.config,
@@ -430,8 +493,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "direction": direction,
                 "target_temperature": target_temperature,
                 "aggressivity": zone.config.aggressivity,  # legacy alias
-                "power": zone.config.power,
-                "fan_intensity": zone.config.fan_intensity,
+                "power": active.power,
+                "fan_intensity": active.fan_intensity,
                 "supports_cool": inputs.supports_cool,
                 "supports_heat": inputs.supports_heat,
                 "supports_fan_mode": inputs.supports_fan_mode,
@@ -439,6 +502,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "schedule_next_event": self._schedule_next_event(zone),
                 "windows_open": self._window_counts(zone)[0],
                 "windows_total": self._window_counts(zone)[1],
+                # Profiles surfaced for the card §2: list of profiles in priority
+                # order + the name of the currently active one (or None when no
+                # profile matches → zone gated off).
+                "profiles": [p.to_dict() for p in zone.config.profiles],
+                "active_profile_name": (
+                    inputs.active_profile.name if inputs.active_profile else None
+                ),
             }
         return out
 

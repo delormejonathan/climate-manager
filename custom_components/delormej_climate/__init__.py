@@ -28,6 +28,7 @@ SERVICE_RESET_OVERRIDE = "reset_override"
 SERVICE_BOOST = "boost"
 SERVICE_FORCE_START = "force_start"
 SERVICE_RELOAD_ZONES = "reload_zones"
+SERVICE_UPDATE_PROFILES = "update_profiles"
 
 SCHEMA_ZONE_ID = vol.Schema({vol.Required("zone_id"): cv.string})
 SCHEMA_SET_MODE = vol.Schema(
@@ -35,6 +36,12 @@ SCHEMA_SET_MODE = vol.Schema(
 )
 SCHEMA_FORCE_START = vol.Schema(
     {vol.Required("zone_id"): cv.string, vol.Required("direction"): vol.In(["cool", "heat"])}
+)
+SCHEMA_UPDATE_PROFILES = vol.Schema(
+    {
+        vol.Required("zone_id"): cv.string,
+        vol.Required("profiles"): [dict],
+    }
 )
 
 
@@ -260,6 +267,14 @@ def _register_services(hass: HomeAssistant) -> None:
         for coord in _all_coordinators(hass):
             await coord.async_reload_zones()
 
+    async def _update_profiles(call: ServiceCall) -> None:
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            _LOGGER.warning("update_profiles: zone %r not found", call.data["zone_id"])
+            return
+        coord.update_zone_profiles(zone.config.zone_id, call.data["profiles"])
+        await coord.async_tick_now()
+
     hass.services.async_register(DOMAIN, SERVICE_SET_MODE, _set_mode, schema=SCHEMA_SET_MODE)
     hass.services.async_register(DOMAIN, SERVICE_FORCE_OFF, _force_off, schema=SCHEMA_ZONE_ID)
     hass.services.async_register(
@@ -270,12 +285,16 @@ def _register_services(hass: HomeAssistant) -> None:
         DOMAIN, SERVICE_FORCE_START, _force_start, schema=SCHEMA_FORCE_START
     )
     hass.services.async_register(DOMAIN, SERVICE_RELOAD_ZONES, _reload)
+    hass.services.async_register(
+        DOMAIN, SERVICE_UPDATE_PROFILES, _update_profiles, schema=SCHEMA_UPDATE_PROFILES
+    )
 
 
 def _unregister_services(hass: HomeAssistant) -> None:
     for service in (
         SERVICE_SET_MODE, SERVICE_FORCE_OFF, SERVICE_RESET_OVERRIDE,
         SERVICE_BOOST, SERVICE_FORCE_START, SERVICE_RELOAD_ZONES,
+        SERVICE_UPDATE_PROFILES,
     ):
         hass.services.async_remove(DOMAIN, service)
 

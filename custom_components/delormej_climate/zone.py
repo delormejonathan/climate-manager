@@ -81,6 +81,12 @@ class ZoneInputs:
     # Used as a best-effort anchor for cycle_started_ts when the integration
     # adopts an already-running clim (boot recovery, reset_override).
     clim_state_last_changed_ts: float | None = None
+    # Active profile selected by the coordinator (the first whose gate matches
+    # at this tick). None when no profile matches → zone idle. Zone code reads
+    # all driver values (seuils, power, fan_intensity) from this when set;
+    # falls back to ZoneConfig defaults otherwise (test paths that don't go
+    # through the coordinator).
+    active_profile: Profile | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +123,67 @@ class ZoneRuntimeState:
 
 
 @dataclass
+class Profile:
+    """One driver (thresholds + power + fan) gated by a schedule + optional presence.
+
+    A zone has an ordered list of Profiles. At each tick the coordinator picks
+    the first whose gate matches the current state of the world (schedule on,
+    and presence in required state if configured). That profile then drives
+    the cooling cycle. If no profile matches → zone idle (= same as the old
+    schedule_off behaviour).
+    """
+
+    name: str
+    schedule_entity: str | None = None
+    # Optional presence condition: profile matches only if the entity is in
+    # the required state. State can be a single string or a list of accepted
+    # strings (e.g. ["armed_away", "armed_night"] to mean "absent however").
+    presence_entity: str | None = None
+    presence_required_state: str | list[str] | None = None
+    seuil_debut_chauffage: float = DEFAULT_SEUIL_DEBUT_CHAUFFAGE
+    seuil_fin_chauffage: float = DEFAULT_SEUIL_FIN_CHAUFFAGE
+    seuil_debut_refroidissement: float = DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT
+    seuil_fin_refroidissement: float = DEFAULT_SEUIL_FIN_REFROIDISSEMENT
+    power: str = DEFAULT_POWER
+    fan_intensity: str = DEFAULT_FAN_INTENSITY
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Profile:
+        return cls(
+            name=str(d.get("name", "Profil")),
+            schedule_entity=d.get("schedule_entity"),
+            presence_entity=d.get("presence_entity"),
+            presence_required_state=d.get("presence_required_state"),
+            seuil_debut_chauffage=float(
+                d.get("seuil_debut_chauffage", DEFAULT_SEUIL_DEBUT_CHAUFFAGE)
+            ),
+            seuil_fin_chauffage=float(d.get("seuil_fin_chauffage", DEFAULT_SEUIL_FIN_CHAUFFAGE)),
+            seuil_debut_refroidissement=float(
+                d.get("seuil_debut_refroidissement", DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT)
+            ),
+            seuil_fin_refroidissement=float(
+                d.get("seuil_fin_refroidissement", DEFAULT_SEUIL_FIN_REFROIDISSEMENT)
+            ),
+            power=str(d.get("power", DEFAULT_POWER)),
+            fan_intensity=str(d.get("fan_intensity", DEFAULT_FAN_INTENSITY)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "schedule_entity": self.schedule_entity,
+            "presence_entity": self.presence_entity,
+            "presence_required_state": self.presence_required_state,
+            "seuil_debut_chauffage": self.seuil_debut_chauffage,
+            "seuil_fin_chauffage": self.seuil_fin_chauffage,
+            "seuil_debut_refroidissement": self.seuil_debut_refroidissement,
+            "seuil_fin_refroidissement": self.seuil_fin_refroidissement,
+            "power": self.power,
+            "fan_intensity": self.fan_intensity,
+        }
+
+
+@dataclass
 class ZoneConfig:
     """Static config for a zone (from ConfigEntry.options)."""
 
@@ -141,10 +208,31 @@ class ZoneConfig:
     # fan_intensity so behaviour is unchanged at upgrade time.
     power: str = DEFAULT_POWER
     fan_intensity: str = DEFAULT_FAN_INTENSITY
+    # Ordered list of profiles (cascade evaluated top-to-bottom). If empty at
+    # construction, __post_init__ synthesises one from the legacy fields so
+    # an upgraded config keeps the same behaviour without any user action.
+    profiles: list[Profile] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.profiles:
+            self.profiles = [
+                Profile(
+                    name="Pilotage par défaut",
+                    schedule_entity=self.schedule_entity,
+                    seuil_debut_chauffage=self.seuil_debut_chauffage,
+                    seuil_fin_chauffage=self.seuil_fin_chauffage,
+                    seuil_debut_refroidissement=self.seuil_debut_refroidissement,
+                    seuil_fin_refroidissement=self.seuil_fin_refroidissement,
+                    power=self.power,
+                    fan_intensity=self.fan_intensity,
+                )
+            ]
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ZoneConfig:
         """Build from a stored options dict (with sensible defaults for missing keys)."""
+        raw_profiles = d.get("profiles") or []
+        profiles = [Profile.from_dict(p) for p in raw_profiles]
         return cls(
             zone_id=d.get("id") or str(uuid.uuid4())[:8],
             name=d["name"],
@@ -169,13 +257,11 @@ class ZoneConfig:
             override_duree_min=int(d.get("override_duree_min", DEFAULT_OVERRIDE_DUREE_MIN)),
             aggressive_when_absent=bool(d.get("aggressive_when_absent", True)),
             aggressivity=str(d.get("aggressivity", DEFAULT_AGGRESSIVITY)),
-            # Migration: when only the legacy 'aggressivity' is stored, mirror
-            # it into power + fan_intensity (same name happens to work for
-            # both — 'agressif' fan becomes the new 'fort' though).
             power=str(d.get("power", d.get("aggressivity", DEFAULT_POWER))),
             fan_intensity=str(d.get("fan_intensity", _legacy_to_fan(
                 d.get("aggressivity", DEFAULT_AGGRESSIVITY)
             ))),
+            profiles=profiles,
         )
 
 
@@ -423,29 +509,33 @@ class Zone:
             if elapsed >= self.config.duree_cooldown_min * 60:
                 self._transition(ZoneState.IDLE, inp.now_ts)
 
+    def _active(self, inp: ZoneInputs) -> Profile:
+        """Return the active driver profile for this tick.
+
+        Falls back to the zone's default profile (synthesised in
+        ZoneConfig.__post_init__ from legacy fields) when the coordinator has
+        not resolved one — primarily the test path that builds ZoneInputs
+        directly without going through the coordinator's cascade logic.
+        """
+        return inp.active_profile or self.config.profiles[0]
+
     def _decide(self, inp: ZoneInputs) -> None:
         """Pure decision logic (IDLE -> STARTING) based on room sensor + thresholds."""
         if inp.room_temperature is None:
-            # No reliable room data — be conservative, do nothing.
             return
+        p = self._active(inp)
 
         if self.state.state == ZoneState.IDLE:
-            if (
-                inp.supports_cool
-                and inp.room_temperature > self.config.seuil_debut_refroidissement
-            ):
+            if inp.supports_cool and inp.room_temperature > p.seuil_debut_refroidissement:
                 self._transition(ZoneState.STARTING, inp.now_ts)
-            elif (
-                inp.supports_heat
-                and inp.room_temperature < self.config.seuil_debut_chauffage
-            ):
+            elif inp.supports_heat and inp.room_temperature < p.seuil_debut_chauffage:
                 self._transition(ZoneState.STARTING, inp.now_ts)
         elif self.state.state == ZoneState.RUNNING:
             in_heat = inp.clim_current_hvac_mode == HVACMode.HEAT
             in_cool = inp.clim_current_hvac_mode == HVACMode.COOL
-            if in_heat and inp.room_temperature >= self.config.seuil_fin_chauffage:
+            if in_heat and inp.room_temperature >= p.seuil_fin_chauffage:
                 self._transition(ZoneState.STABILIZING, inp.now_ts)
-            elif in_cool and inp.room_temperature <= self.config.seuil_fin_refroidissement:
+            elif in_cool and inp.room_temperature <= p.seuil_fin_refroidissement:
                 self._transition(ZoneState.STABILIZING, inp.now_ts)
 
     def _pilot(self, inp: ZoneInputs) -> list[Command]:
@@ -528,9 +618,10 @@ class Zone:
             return self.state.forced_direction
         if inp.room_temperature is None:
             return None
-        if inp.supports_cool and inp.room_temperature > self.config.seuil_debut_refroidissement:
+        p = self._active(inp)
+        if inp.supports_cool and inp.room_temperature > p.seuil_debut_refroidissement:
             return HVACMode.COOL
-        if inp.supports_heat and inp.room_temperature < self.config.seuil_debut_chauffage:
+        if inp.supports_heat and inp.room_temperature < p.seuil_debut_chauffage:
             return HVACMode.HEAT
         return None
 
@@ -543,8 +634,9 @@ class Zone:
             return []
 
         cmds: list[Command] = []
-        power_profile = POWER_PROFILES.get(self.config.power, POWER_PROFILES[DEFAULT_POWER])
-        fan_profile = FAN_PROFILES.get(self.config.fan_intensity, FAN_PROFILES[DEFAULT_FAN_INTENSITY])
+        p = self._active(inp)
+        power_profile = POWER_PROFILES.get(p.power, POWER_PROFILES[DEFAULT_POWER])
+        fan_profile = FAN_PROFILES.get(p.fan_intensity, FAN_PROFILES[DEFAULT_FAN_INTENSITY])
 
         # HVAC mode
         if force_hvac or inp.clim_current_hvac_mode != target_mode:
