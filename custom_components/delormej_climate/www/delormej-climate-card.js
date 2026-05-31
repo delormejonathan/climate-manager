@@ -1,10 +1,11 @@
 /**
- * delormej-climate-card  v0.8.0
+ * delormej-climate-card  v0.10.0
  *
- * Three-section layout for one zone of the delormej_climate integration:
- *   1. ÉTAT ACTUEL   — observability (T° hero, narrative, status pills, metrics)
- *   2. AUTOMATISATION — integration knobs (mode, agressivité, boost/resume)
- *   3. CONFIGURATION — manual clim controls + thresholds + durations
+ * Four-section layout for one zone of the delormej_climate integration:
+ *   1. ÉTAT ACTUEL       — observability (T° hero, narrative, profile pill)
+ *   2. PROFILS           — cascade of driver profiles (add/edit/reorder)
+ *   3. PILOTAGE          — mode (auto/off/boost) + force start
+ *   4. COMMANDE MANUELLE — boost/resume + direct climate.* controls
  *
  * Usage:
  *   type: custom:delormej-climate-card
@@ -129,16 +130,6 @@ class DelormejClimateCard extends HTMLElement {
       b.addEventListener("click", () => this._call("select", "select_option",
         { entity_id: ids.modeSelect, option: b.dataset.mode }));
     });
-    // Puissance
-    $("power").querySelectorAll("button").forEach((b) => {
-      b.addEventListener("click", () => this._call("select", "select_option",
-        { entity_id: ids.powerSelect, option: b.dataset.power }));
-    });
-    // Ventilation
-    $("fan-intensity").querySelectorAll("button").forEach((b) => {
-      b.addEventListener("click", () => this._call("select", "select_option",
-        { entity_id: ids.fanIntensitySelect, option: b.dataset.fanIntensity }));
-    });
     // Quick actions
     $("boost-btn").addEventListener("click", () =>
       this._call("button", "press", { entity_id: ids.boostBtn }));
@@ -168,18 +159,10 @@ class DelormejClimateCard extends HTMLElement {
           { entity_id: this._climateEntity, swing_mode: e.target.value }));
     }
 
-    // Number inputs (thresholds + durations)
-    const numMap = {
-      heatStart: ids.heatStart, heatStop: ids.heatStop,
-      coolStart: ids.coolStart, coolStop: ids.coolStop,
-      stabDuration: ids.stabDuration, cooldownDuration: ids.cooldownDuration,
-      overrideDuration: ids.overrideDuration,
-    };
-    for (const [key, entity] of Object.entries(numMap)) {
-      const el = $(`num-${key}`);
-      if (el) el.addEventListener("change", (e) =>
-        this._call("number", "set_value", { entity_id: entity, value: parseFloat(e.target.value) }));
-    }
+    // Profiles — single delegate on the list, plus "add" button
+    $("profiles-list").addEventListener("click", (e) => this._onProfileListClick(e));
+    $("profiles-list").addEventListener("change", (e) => this._onProfileFieldChange(e));
+    $("profile-add").addEventListener("click", () => this._onProfileAdd());
   }
 
   _bumpSetpoint(dir) {
@@ -320,6 +303,15 @@ class DelormejClimateCard extends HTMLElement {
       pills.appendChild(this._pill("mdi:account-edit", "Override actif", "warn"));
     }
 
+    // Profil actif — surfacing the cascade decision in §1 so the user sees
+    // which profile drives the current cycle without scrolling to §2.
+    const activeProfileName = attrs.active_profile_name;
+    if (activeProfileName) {
+      pills.appendChild(this._pill("mdi:tag", `Profil : ${activeProfileName}`, "info"));
+    } else if (Array.isArray(attrs.profiles) && attrs.profiles.length > 0) {
+      pills.appendChild(this._pill("mdi:tag-off", "Aucun profil actif", "warn"));
+    }
+
     // Metrics grid (2x2)
     $("metric-setpoint-sent").textContent = this._fmtTempUnit(get(ids.setpointSent)?.state);
     const climObj = this._climateEntity ? get(this._climateEntity) : null;
@@ -339,17 +331,13 @@ class DelormejClimateCard extends HTMLElement {
       overrideRow.style.display = "none";
     }
 
-    // ─────────────────── SECTION 2: AUTOMATISATION
+    // ─────────────────── SECTION 2: PROFILS (rendu cascade)
+    this._renderProfiles(attrs);
+
+    // ─────────────────── SECTION 3: PILOTAGE
     const currentMode = get(ids.modeSelect)?.state;
     $("mode").querySelectorAll("button").forEach((b) =>
       b.classList.toggle("active", b.dataset.mode === currentMode));
-
-    const currentPower = get(ids.powerSelect)?.state || attrs.power || "normal";
-    $("power").querySelectorAll("button").forEach((b) =>
-      b.classList.toggle("active", b.dataset.power === currentPower));
-    const currentFan = get(ids.fanIntensitySelect)?.state || attrs.fan_intensity || "normal";
-    $("fan-intensity").querySelectorAll("button").forEach((b) =>
-      b.classList.toggle("active", b.dataset.fanIntensity === currentFan));
 
     const inOverride = attrs.in_override === true;
     const resumeBtn = $("resume-btn");
@@ -374,7 +362,7 @@ class DelormejClimateCard extends HTMLElement {
         .style.gridTemplateColumns = single ? "1fr" : "1fr 1fr";
     }
 
-    // ─────────────────── SECTION 3: CONFIGURATION
+    // ─────────────────── SECTION 4: COMMANDE MANUELLE
     const climBlock = $("manual-clim-block");
     if (!this._climateEntity || !climObj) {
       climBlock.style.display = "none";
@@ -384,19 +372,6 @@ class DelormejClimateCard extends HTMLElement {
       $("setpoint").textContent = this._fmtTemp(climObj.attributes.temperature);
       this._renderSelectOptions($("fan-select"), climObj.attributes.fan_modes, climObj.attributes.fan_mode);
       this._renderSelectOptions($("swing-select"), climObj.attributes.swing_modes, climObj.attributes.swing_mode);
-    }
-
-    // Number inputs
-    const numMap = {
-      heatStart: ids.heatStart, heatStop: ids.heatStop,
-      coolStart: ids.coolStart, coolStop: ids.coolStop,
-      stabDuration: ids.stabDuration, cooldownDuration: ids.cooldownDuration,
-      overrideDuration: ids.overrideDuration,
-    };
-    for (const [key, entity] of Object.entries(numMap)) {
-      const o = get(entity);
-      const el = $(`num-${key}`);
-      if (o && el && document.activeElement !== el) el.value = o.state;
     }
   }
 
@@ -505,6 +480,242 @@ class DelormejClimateCard extends HTMLElement {
     if (state === "manual_override_free") return { html: "Pilotage manuel libre.", warn: true };
     if (state === "window_open") return { html: "Fenêtre ouverte, clim en pause.", warn: true };
     return { html: "", warn: false };
+  }
+
+  /* =================================================================== profiles */
+
+  _renderProfiles(attrs) {
+    const list = this.querySelector('[data-bind="profiles-list"]');
+    const empty = this.querySelector('[data-bind="profiles-empty"]');
+    const profiles = Array.isArray(attrs.profiles) ? attrs.profiles : [];
+    const activeName = attrs.active_profile_name;
+
+    if (profiles.length === 0) {
+      list.innerHTML = "";
+      empty.style.display = "";
+      return;
+    }
+    empty.style.display = "none";
+
+    // Re-render only when the underlying data signature changes (avoids
+    // wiping a half-typed input on every coordinator tick).
+    const sig = JSON.stringify({ profiles, activeName, editing: this._editingProfileIdx });
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    list.innerHTML = "";
+
+    profiles.forEach((p, idx) => {
+      list.appendChild(this._buildProfileCard(p, idx, idx === this._editingProfileIdx, p.name === activeName));
+    });
+  }
+
+  _buildProfileCard(profile, idx, isEditing, isActive) {
+    const card = document.createElement("div");
+    card.className = "dc-profile" + (isActive ? " dc-profile--active" : "");
+    card.dataset.idx = String(idx);
+
+    if (isEditing) {
+      card.appendChild(this._buildProfileEditForm(profile, idx));
+      return card;
+    }
+
+    const head = document.createElement("div");
+    head.className = "dc-profile-head";
+    head.innerHTML = `
+      ${isActive ? '<span class="dc-profile-badge">ACTIF</span>' : ''}
+      <span class="dc-profile-name">${this._escapeHTML(profile.name || "Sans nom")}</span>
+      <div class="dc-profile-actions">
+        <button data-action="up" title="Monter">↑</button>
+        <button data-action="down" title="Descendre">↓</button>
+        <button data-action="edit" title="Éditer"><ha-icon icon="mdi:pencil"></ha-icon></button>
+        <button data-action="delete" title="Supprimer"><ha-icon icon="mdi:trash-can-outline"></ha-icon></button>
+      </div>`;
+    card.appendChild(head);
+
+    const meta = document.createElement("div");
+    meta.className = "dc-profile-meta";
+    const schedule = profile.schedule_entity || "—";
+    const presence = profile.presence_entity
+      ? `${profile.presence_entity}${profile.presence_required_state ? " = " + profile.presence_required_state : ""}`
+      : null;
+    meta.innerHTML = `
+      <span><ha-icon icon="mdi:calendar-clock"></ha-icon>${this._escapeHTML(schedule)}</span>
+      ${presence ? `<span><ha-icon icon="mdi:shield-account"></ha-icon>${this._escapeHTML(presence)}</span>` : ''}
+      <span><ha-icon icon="mdi:snowflake"></ha-icon>cible ${this._fmtTemp(profile.seuil_fin_refroidissement)}°C</span>
+      <span><ha-icon icon="mdi:flash"></ha-icon>${this._capitalize(profile.power || "normal")}</span>
+      <span><ha-icon icon="mdi:fan"></ha-icon>${this._capitalize(profile.fan_intensity || "normal")}</span>`;
+    card.appendChild(meta);
+    return card;
+  }
+
+  _buildProfileEditForm(profile, idx) {
+    const form = document.createElement("div");
+    form.className = "dc-profile-edit";
+    form.dataset.idx = String(idx);
+    const scheduleEntities = this._listEntities("schedule.");
+    const presenceEntities = this._listEntities(["alarm_control_panel.", "person.", "binary_sensor.", "device_tracker.", "input_boolean.", "group."]);
+    const opt = (val, label, current) =>
+      `<option value="${this._escapeHTML(val)}" ${val === current ? "selected" : ""}>${this._escapeHTML(label)}</option>`;
+    form.innerHTML = `
+      <div class="dc-profile-edit-title">Édition de ${this._escapeHTML(profile.name || "Sans nom")}</div>
+      <div class="dc-field"><label>Nom</label>
+        <input type="text" data-field="name" value="${this._escapeHTML(profile.name || "")}">
+      </div>
+      <div class="dc-field"><label>Schedule (gate horaire)</label>
+        <select data-field="schedule_entity">
+          ${opt("", "— Aucun (toujours actif) —", profile.schedule_entity || "")}
+          ${scheduleEntities.map(e => opt(e, e, profile.schedule_entity || "")).join("")}
+        </select>
+      </div>
+      <div class="dc-field"><label>Entité présence (condition optionnelle)</label>
+        <select data-field="presence_entity">
+          ${opt("", "— Aucune condition —", profile.presence_entity || "")}
+          ${presenceEntities.map(e => opt(e, e, profile.presence_entity || "")).join("")}
+        </select>
+      </div>
+      <div class="dc-field"><label>État requis (ex: armed_away, home, on)</label>
+        <input type="text" data-field="presence_required_state" value="${this._escapeHTML(profile.presence_required_state || "")}">
+      </div>
+      <div class="dc-pair">
+        <div class="dc-field"><label>Démarrage froid</label>
+          <div class="dc-input-wrap"><input type="number" step="0.5" data-field="seuil_debut_refroidissement" value="${profile.seuil_debut_refroidissement}"><span class="unit">°C</span></div>
+        </div>
+        <div class="dc-field"><label>Cible froid</label>
+          <div class="dc-input-wrap"><input type="number" step="0.5" data-field="seuil_fin_refroidissement" value="${profile.seuil_fin_refroidissement}"><span class="unit">°C</span></div>
+        </div>
+      </div>
+      <div class="dc-pair">
+        <div class="dc-field"><label>Démarrage chaud</label>
+          <div class="dc-input-wrap"><input type="number" step="0.5" data-field="seuil_debut_chauffage" value="${profile.seuil_debut_chauffage}"><span class="unit">°C</span></div>
+        </div>
+        <div class="dc-field"><label>Cible chaud</label>
+          <div class="dc-input-wrap"><input type="number" step="0.5" data-field="seuil_fin_chauffage" value="${profile.seuil_fin_chauffage}"><span class="unit">°C</span></div>
+        </div>
+      </div>
+      <div class="dc-pair">
+        <div class="dc-field"><label>Puissance</label>
+          <select data-field="power">
+            ${["doux","normal","agressif"].map(o => opt(o, this._capitalize(o), profile.power || "normal")).join("")}
+          </select>
+        </div>
+        <div class="dc-field"><label>Ventilation</label>
+          <select data-field="fan_intensity">
+            ${["doux","normal","fort"].map(o => opt(o, this._capitalize(o), profile.fan_intensity || "normal")).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="dc-profile-edit-actions">
+        <button data-action="cancel">Annuler</button>
+        <button data-action="save" class="dc-profile-save">Enregistrer</button>
+      </div>`;
+    return form;
+  }
+
+  _listEntities(prefixes) {
+    if (!this._hass) return [];
+    const list = Array.isArray(prefixes) ? prefixes : [prefixes];
+    return Object.keys(this._hass.states)
+      .filter((eid) => list.some((p) => eid.startsWith(p)))
+      .sort();
+  }
+
+  _onProfileListClick(e) {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    const card = btn.closest(".dc-profile");
+    if (!card) return;
+    const idx = parseInt(card.dataset.idx, 10);
+    const action = btn.dataset.action;
+    if (action === "edit") {
+      this._editingProfileIdx = idx;
+      this._update();
+    } else if (action === "cancel") {
+      this._editingProfileIdx = null;
+      this._update();
+    } else if (action === "delete") {
+      if (!confirm(`Supprimer ce profil ?`)) return;
+      const profiles = this._currentProfiles();
+      profiles.splice(idx, 1);
+      this._editingProfileIdx = null;
+      this._pushProfiles(profiles);
+    } else if (action === "up" && idx > 0) {
+      const profiles = this._currentProfiles();
+      [profiles[idx - 1], profiles[idx]] = [profiles[idx], profiles[idx - 1]];
+      this._pushProfiles(profiles);
+    } else if (action === "down") {
+      const profiles = this._currentProfiles();
+      if (idx < profiles.length - 1) {
+        [profiles[idx], profiles[idx + 1]] = [profiles[idx + 1], profiles[idx]];
+        this._pushProfiles(profiles);
+      }
+    } else if (action === "save") {
+      const form = card.querySelector(".dc-profile-edit");
+      if (!form) return;
+      const profiles = this._currentProfiles();
+      profiles[idx] = this._readProfileForm(form, profiles[idx]);
+      this._editingProfileIdx = null;
+      this._pushProfiles(profiles);
+    }
+  }
+
+  _onProfileFieldChange(_e) {
+    // No-op for now — fields are only committed on Enregistrer. Kept as a
+    // listener anchor so we can add per-field validation later.
+  }
+
+  _onProfileAdd() {
+    const profiles = this._currentProfiles();
+    profiles.push({
+      name: "Nouveau profil",
+      schedule_entity: null,
+      presence_entity: null,
+      presence_required_state: null,
+      seuil_debut_chauffage: 19.5,
+      seuil_fin_chauffage: 21.0,
+      seuil_debut_refroidissement: 26.5,
+      seuil_fin_refroidissement: 24.0,
+      power: "normal",
+      fan_intensity: "normal",
+    });
+    this._editingProfileIdx = profiles.length - 1;
+    this._pushProfiles(profiles);
+  }
+
+  _currentProfiles() {
+    const attrs = this._hass?.states[this._ent("sensor", "state")]?.attributes || {};
+    // Deep copy so we don't mutate the cached attrs in place
+    return JSON.parse(JSON.stringify(attrs.profiles || []));
+  }
+
+  _readProfileForm(form, fallback) {
+    const get = (field) => form.querySelector(`[data-field="${field}"]`)?.value ?? "";
+    const f = (field, def) => {
+      const v = parseFloat(get(field));
+      return Number.isFinite(v) ? v : def;
+    };
+    const s = (field) => {
+      const v = get(field);
+      return v === "" ? null : v;
+    };
+    return {
+      name: get("name") || "Sans nom",
+      schedule_entity: s("schedule_entity"),
+      presence_entity: s("presence_entity"),
+      presence_required_state: s("presence_required_state"),
+      seuil_debut_chauffage: f("seuil_debut_chauffage", fallback?.seuil_debut_chauffage ?? 19.5),
+      seuil_fin_chauffage: f("seuil_fin_chauffage", fallback?.seuil_fin_chauffage ?? 21.0),
+      seuil_debut_refroidissement: f("seuil_debut_refroidissement", fallback?.seuil_debut_refroidissement ?? 26.5),
+      seuil_fin_refroidissement: f("seuil_fin_refroidissement", fallback?.seuil_fin_refroidissement ?? 24.0),
+      power: get("power") || "normal",
+      fan_intensity: get("fan_intensity") || "normal",
+    };
+  }
+
+  _pushProfiles(profiles) {
+    this._call("delormej_climate", "update_profiles", {
+      zone_id: this._zone,
+      profiles,
+    });
   }
 
   /* =================================================================== timeline */
@@ -747,10 +958,10 @@ const STYLES = `
     color: var(--dc-fg);
   }
   /* per-section accent on the head bubble */
-  .section-status .head-bubble { background: var(--dc-info); }
-  .section-auto   .head-bubble { background: var(--dc-success); }
-  .section-manual .head-bubble { background: var(--dc-cool); }
-  .section-config .head-bubble { background: var(--dc-warn); }
+  .section-status   .head-bubble { background: var(--dc-info); }
+  .section-profiles .head-bubble { background: var(--dc-warn); }
+  .section-auto     .head-bubble { background: var(--dc-success); }
+  .section-manual   .head-bubble { background: var(--dc-cool); }
 
   /* ============ §1 ÉTAT ACTUEL ============ */
   /* Hero bubble — big, friendly, central */
@@ -906,7 +1117,133 @@ const STYLES = `
   .dc-details-toggle > summary:hover { color: var(--dc-fg); }
   .dc-details-toggle[open] .dc-metrics { margin-top: 4px; }
 
-  /* ============ §2 AUTOMATISATION ============ */
+  /* ============ §2 PROFILS ============ */
+  .dc-profiles-list {
+    display: flex; flex-direction: column; gap: 8px;
+    margin-bottom: 10px;
+  }
+  .dc-profiles-empty {
+    background: var(--dc-bg-bubble);
+    border-radius: var(--dc-radius-sm);
+    padding: 14px;
+    color: var(--dc-muted);
+    font-size: 0.85em;
+    text-align: center;
+    margin-bottom: 10px;
+  }
+  .dc-profile {
+    background: var(--dc-bg-bubble);
+    border-radius: var(--dc-radius-sm);
+    padding: 12px;
+    border: 1px solid transparent;
+  }
+  .dc-profile--active {
+    background: rgba(67,160,71,0.10);
+    border-color: rgba(67,160,71,0.35);
+  }
+  .dc-profile-head {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 8px;
+  }
+  .dc-profile-badge {
+    background: var(--dc-success);
+    color: white;
+    font-size: 0.65em; font-weight: 700;
+    padding: 2px 7px;
+    border-radius: var(--dc-radius-pill);
+    letter-spacing: 0.05em;
+  }
+  .dc-profile-name {
+    flex: 1;
+    font-weight: 600;
+    color: var(--dc-fg);
+    font-size: 0.95em;
+  }
+  .dc-profile-actions {
+    display: flex; gap: 4px;
+  }
+  .dc-profile-actions button {
+    width: 32px; height: 32px;
+    border: none; border-radius: 50%;
+    background: var(--dc-bg-bubble-strong);
+    color: var(--dc-muted);
+    cursor: pointer; font-size: 0.95em; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .dc-profile-actions button ha-icon { --mdc-icon-size: 16px; }
+  .dc-profile-actions button:hover { background: var(--dc-bg-inset); color: var(--dc-fg); }
+  .dc-profile-meta {
+    display: flex; flex-wrap: wrap; gap: 4px 10px;
+    font-size: 0.78em; color: var(--dc-muted);
+  }
+  .dc-profile-meta span { display: inline-flex; align-items: center; gap: 5px; }
+  .dc-profile-meta ha-icon { --mdc-icon-size: 14px; color: var(--dc-dim); }
+
+  /* Profile edit form */
+  .dc-profile-edit { display: flex; flex-direction: column; gap: 10px; }
+  .dc-profile-edit-title {
+    font-size: 0.85em; color: var(--dc-muted); font-weight: 600;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--dc-hairline);
+  }
+  .dc-profile-edit .dc-field { display: flex; flex-direction: column; gap: 4px; }
+  .dc-profile-edit .dc-field label {
+    font-size: 0.75em; color: var(--dc-muted); font-weight: 600;
+  }
+  .dc-profile-edit input[type="text"],
+  .dc-profile-edit input[type="number"],
+  .dc-profile-edit select {
+    background: var(--dc-bg-inset); border: none;
+    border-radius: var(--dc-radius-sm);
+    color: var(--dc-fg); padding: 9px 11px;
+    font-size: 0.9em; font-weight: 500;
+    appearance: none; -webkit-appearance: none;
+  }
+  .dc-profile-edit select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(255,255,255,0.5)' d='M0 0l5 6 5-6z'/></svg>");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 28px;
+  }
+  .dc-profile-edit input:focus,
+  .dc-profile-edit select:focus { outline: 2px solid var(--dc-cool); outline-offset: -2px; }
+  .dc-profile-edit-actions {
+    display: flex; gap: 8px; justify-content: flex-end;
+    margin-top: 4px;
+  }
+  .dc-profile-edit-actions button {
+    padding: 8px 16px;
+    border-radius: var(--dc-radius-pill);
+    border: none; cursor: pointer;
+    font-size: 0.85em; font-weight: 600;
+    background: var(--dc-bg-inset); color: var(--dc-muted);
+    transition: all 0.15s;
+  }
+  .dc-profile-edit-actions button:hover { background: var(--dc-bg-bubble-strong); color: var(--dc-fg); }
+  .dc-profile-edit-actions .dc-profile-save {
+    background: var(--dc-success); color: white;
+  }
+  .dc-profile-edit-actions .dc-profile-save:hover { background: #2e8430; }
+
+  .dc-profile-add {
+    width: 100%;
+    padding: 11px 14px;
+    border: 1px dashed var(--dc-hairline);
+    border-radius: var(--dc-radius-sm);
+    background: transparent;
+    color: var(--dc-muted);
+    font-size: 0.9em; font-weight: 600;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    transition: all 0.15s;
+  }
+  .dc-profile-add ha-icon { --mdc-icon-size: 18px; }
+  .dc-profile-add:hover {
+    border-color: var(--dc-cool);
+    color: var(--dc-cool);
+  }
+
+  /* ============ §3 PILOTAGE ============ */
   .dc-control { margin-bottom: 14px; }
   .dc-control:last-child { margin-bottom: 0; }
   .dc-control-label {
@@ -980,7 +1317,7 @@ const STYLES = `
   .dc-force-actions .force-heat { background: var(--dc-heat); }
   .dc-force-actions .force-heat:hover { background: #f06030; }
 
-  /* ============ §3 CONFIGURATION ============ */
+  /* ============ §4 COMMANDE MANUELLE ============ */
   .dc-subblock {
     background: var(--dc-bg-bubble);
     border-radius: var(--dc-radius-sm);
@@ -1180,11 +1517,26 @@ const TEMPLATE = `
     </details>
   </section>
 
-  <!-- ════════════════════════════════════ §2 AUTOMATISATION -->
+  <!-- ════════════════════════════════════ §2 PROFILS -->
+  <section class="dc-section section-profiles">
+    <div class="dc-section-head">
+      <div class="head-bubble"><ha-icon icon="mdi:layers-triple"></ha-icon></div>
+      <span class="lbl">Profils</span>
+    </div>
+    <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
+      Aucun profil configuré. Tant qu'aucun profil ne match, la zone reste OFF.
+    </div>
+    <div class="dc-profiles-list" data-bind="profiles-list"></div>
+    <button class="dc-profile-add" data-bind="profile-add">
+      <ha-icon icon="mdi:plus-circle"></ha-icon> Nouveau profil
+    </button>
+  </section>
+
+  <!-- ════════════════════════════════════ §3 PILOTAGE -->
   <section class="dc-section section-auto">
     <div class="dc-section-head">
       <div class="head-bubble"><ha-icon icon="mdi:robot"></ha-icon></div>
-      <span class="lbl">Automatisation</span>
+      <span class="lbl">Pilotage</span>
     </div>
 
     <div class="dc-control">
@@ -1193,24 +1545,6 @@ const TEMPLATE = `
         <button data-mode="auto">Auto</button>
         <button data-mode="off">Off</button>
         <button data-mode="boost">Boost</button>
-      </div>
-    </div>
-
-    <div class="dc-control">
-      <div class="dc-control-label">Puissance (consigne)</div>
-      <div class="dc-segmented tone-warn" data-bind="power">
-        <button data-power="doux">Doux</button>
-        <button data-power="normal">Normal</button>
-        <button data-power="agressif">Agressif</button>
-      </div>
-    </div>
-
-    <div class="dc-control">
-      <div class="dc-control-label">Ventilation (bruit)</div>
-      <div class="dc-segmented tone-warn" data-bind="fan-intensity">
-        <button data-fan-intensity="doux">Doux</button>
-        <button data-fan-intensity="normal">Normal</button>
-        <button data-fan-intensity="fort">Fort</button>
       </div>
     </div>
 
@@ -1227,11 +1561,11 @@ const TEMPLATE = `
     </div>
   </section>
 
-  <!-- ════════════════════════════════════ §3 CONTRÔLE MANUEL -->
+  <!-- ════════════════════════════════════ §4 COMMANDE MANUELLE -->
   <section class="dc-section section-manual">
     <div class="dc-section-head">
       <div class="head-bubble"><ha-icon icon="mdi:hand-back-right"></ha-icon></div>
-      <span class="lbl">Contrôle manuel</span>
+      <span class="lbl">Commande manuelle</span>
     </div>
 
     <div class="dc-control">
@@ -1267,66 +1601,6 @@ const TEMPLATE = `
     </div>
   </section>
 
-  <!-- ════════════════════════════════════ §4 CONFIGURATION -->
-  <section class="dc-section section-config">
-    <div class="dc-section-head">
-      <div class="head-bubble"><ha-icon icon="mdi:cog"></ha-icon></div>
-      <span class="lbl">Configuration</span>
-    </div>
-
-    <div class="dc-subblock">
-      <div class="dc-subblock-title">
-        <ha-icon icon="mdi:thermometer-chevron-up"></ha-icon> Seuils chauffage
-      </div>
-      <div class="dc-pair">
-        <div class="dc-field">
-          <label>Démarrage</label>
-          <div class="dc-input-wrap"><input type="number" step="0.5" data-bind="num-heatStart"><span class="unit">°C</span></div>
-        </div>
-        <div class="dc-field">
-          <label>Arrêt</label>
-          <div class="dc-input-wrap"><input type="number" step="0.5" data-bind="num-heatStop"><span class="unit">°C</span></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="dc-subblock">
-      <div class="dc-subblock-title">
-        <ha-icon icon="mdi:thermometer-chevron-down"></ha-icon> Seuils refroidissement
-      </div>
-      <div class="dc-pair">
-        <div class="dc-field">
-          <label>Démarrage</label>
-          <div class="dc-input-wrap"><input type="number" step="0.5" data-bind="num-coolStart"><span class="unit">°C</span></div>
-        </div>
-        <div class="dc-field">
-          <label>Arrêt</label>
-          <div class="dc-input-wrap"><input type="number" step="0.5" data-bind="num-coolStop"><span class="unit">°C</span></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="dc-subblock">
-      <div class="dc-subblock-title">
-        <ha-icon icon="mdi:timer-sand"></ha-icon> Temporisations
-      </div>
-      <div class="dc-rows">
-        <div class="dc-field-row">
-          <label>Stabilisation</label>
-          <div class="dc-input-wrap"><input type="number" step="1" data-bind="num-stabDuration"><span class="unit">min</span></div>
-        </div>
-        <div class="dc-field-row">
-          <label>Cooldown</label>
-          <div class="dc-input-wrap"><input type="number" step="1" data-bind="num-cooldownDuration"><span class="unit">min</span></div>
-        </div>
-        <div class="dc-field-row">
-          <label>Override max</label>
-          <div class="dc-input-wrap"><input type="number" step="1" data-bind="num-overrideDuration"><span class="unit">min</span></div>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <div class="dc-err" data-bind="error"></div>
 `;
 
@@ -1336,12 +1610,12 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "delormej-climate-card",
   name: "Delormej Climate Card",
-  description: "Carte tout-en-un en 3 sections : état, automatisation, configuration.",
+  description: "Carte tout-en-un en 4 sections : état, profils, pilotage, commande manuelle.",
   preview: false,
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.7.0 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.10.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
