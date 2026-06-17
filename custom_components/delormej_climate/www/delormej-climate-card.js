@@ -1,11 +1,12 @@
 /**
- * delormej-climate-card  v0.10.0
+ * delormej-climate-card  v0.12.0
  *
- * Four-section layout for one zone of the delormej_climate integration:
+ * Five-section layout for one zone of the delormej_climate integration:
  *   1. ÉTAT ACTUEL       — observability (T° hero, narrative, profile pill)
  *   2. PROFILS           — cascade of driver profiles (add/edit/reorder)
  *   3. PILOTAGE          — mode (auto/off/boost) + force start
  *   4. COMMANDE MANUELLE — boost/resume + direct climate.* controls
+ *   5. SESSIONS RÉCENTES — last N completed cycles (start/end/T°/profile)
  *
  * Usage:
  *   type: custom:delormej-climate-card
@@ -373,6 +374,9 @@ class DelormejClimateCard extends HTMLElement {
       this._renderSelectOptions($("fan-select"), climObj.attributes.fan_modes, climObj.attributes.fan_mode);
       this._renderSelectOptions($("swing-select"), climObj.attributes.swing_modes, climObj.attributes.swing_mode);
     }
+
+    // ─────────────────── SECTION 5: SESSIONS RÉCENTES
+    this._renderCycleHistory(attrs);
   }
 
   _renderHvacModes(container, clim) {
@@ -868,6 +872,83 @@ class DelormejClimateCard extends HTMLElement {
     const f = parseFloat(v); return Number.isNaN(f) ? "—" : f.toFixed(1); }
   _fmtTempUnit(v) { const t = this._fmtTemp(v); return t === "—" ? "—" : `${t} °C`; }
   _fmtTime(iso) { try { return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }); } catch { return iso; } }
+  _fmtTimeFromTs(ts) {
+    if (ts == null) return "—";
+    try {
+      return new Date(ts * 1000).toLocaleTimeString("fr-FR",
+        { hour: "2-digit", minute: "2-digit" });
+    } catch { return "—"; }
+  }
+  _fmtDuration(minutes) {
+    if (minutes == null) return "—";
+    const total = Math.round(minutes);
+    const h = Math.floor(total / 60);
+    const m = total % 60;
+    if (h === 0) return `${m} min`;
+    return `${h}h ${m.toString().padStart(2, "0")}`;
+  }
+
+  /* =================================================================== cycles */
+
+  _renderCycleHistory(attrs) {
+    const list = this.querySelector('[data-bind="cycles-list"]');
+    const empty = this.querySelector('[data-bind="cycles-empty"]');
+    const cycles = Array.isArray(attrs.cycle_history) ? attrs.cycle_history : [];
+    if (cycles.length === 0) {
+      empty.style.display = "";
+      list.innerHTML = "";
+      list.dataset.sig = "";
+      return;
+    }
+    empty.style.display = "none";
+    // Newest first (server gives oldest-first)
+    const newest = [...cycles].reverse();
+    const sig = JSON.stringify(newest);
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    list.innerHTML = newest.map((c) => this._buildCycleRow(c)).join("");
+  }
+
+  _buildCycleRow(c) {
+    const tStart = this._fmtTimeFromTs(c.start_ts);
+    const tEnd = this._fmtTimeFromTs(c.end_ts);
+    const duration = this._fmtDuration(c.duration_min);
+    const tStartC = this._fmtTemp(c.temp_start);
+    const tEndC = this._fmtTemp(c.temp_end);
+    const tMinC = this._fmtTemp(c.temp_min);
+    const profile = c.profile_at_start || c.profile_at_end || "—";
+    const meta = this._cycleEndReasonMeta(c.end_reason);
+    return `
+      <div class="dc-cycle-row">
+        <div class="dc-cycle-icon ${meta.klass}" title="${this._escapeHTML(meta.label)}">
+          <ha-icon icon="${meta.icon}"></ha-icon>
+        </div>
+        <div class="dc-cycle-main">
+          <div class="dc-cycle-times">${tStart}–${tEnd}</div>
+          <div class="dc-cycle-details">${tStartC}° → ${tEndC}° (min ${tMinC}°) · ${this._escapeHTML(profile)}</div>
+        </div>
+        <div class="dc-cycle-duration">${duration}</div>
+      </div>
+    `;
+  }
+
+  _cycleEndReasonMeta(reason) {
+    switch (reason) {
+      case "stabilization_complete":
+        return { icon: "mdi:check-circle", klass: "success", label: "Stabilisation terminée" };
+      case "natural_end":
+        return { icon: "mdi:stop-circle", klass: "", label: "Fin naturelle" };
+      case "schedule_ended":
+        return { icon: "mdi:calendar-clock", klass: "", label: "Fin de plage horaire" };
+      case "window_opened":
+        return { icon: "mdi:window-open", klass: "warn", label: "Fenêtre ouverte" };
+      case "user_override":
+        return { icon: "mdi:hand-back-right", klass: "warn", label: "Override utilisateur" };
+      default:
+        return { icon: "mdi:circle-small", klass: "", label: reason || "—" };
+    }
+  }
+
   _escapeHTML(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
   _capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 }
@@ -962,6 +1043,46 @@ const STYLES = `
   .section-profiles .head-bubble { background: var(--dc-warn); }
   .section-auto     .head-bubble { background: var(--dc-success); }
   .section-manual   .head-bubble { background: var(--dc-cool); }
+  .section-cycles   .head-bubble { background: var(--dc-muted); }
+
+  /* ============ §5 SESSIONS RÉCENTES ============ */
+  .dc-cycles-empty {
+    text-align: center; color: var(--dc-muted); font-size: 0.9em;
+    padding: 16px; background: var(--dc-bg-bubble);
+    border-radius: var(--dc-radius-sm);
+  }
+  .dc-cycles-list { display: flex; flex-direction: column; gap: 8px; }
+  .dc-cycle-row {
+    display: grid;
+    grid-template-columns: 28px 1fr auto;
+    gap: 10px; align-items: center;
+    padding: 10px 12px;
+    background: var(--dc-bg-bubble);
+    border-radius: var(--dc-radius-sm);
+  }
+  .dc-cycle-icon {
+    display: flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--dc-info); color: white; flex-shrink: 0;
+  }
+  .dc-cycle-icon.success { background: var(--dc-success); }
+  .dc-cycle-icon.warn { background: var(--dc-warn); }
+  .dc-cycle-icon ha-icon { --mdc-icon-size: 16px; }
+  .dc-cycle-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .dc-cycle-times {
+    font-weight: 600; color: var(--dc-fg);
+    font-size: 0.95em;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-cycle-details {
+    font-size: 0.82em; color: var(--dc-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dc-cycle-duration {
+    font-size: 0.85em; color: var(--dc-muted);
+    text-align: right; font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
 
   /* ============ §1 ÉTAT ACTUEL ============ */
   /* Hero bubble — big, friendly, central */
@@ -1601,6 +1722,18 @@ const TEMPLATE = `
     </div>
   </section>
 
+  <!-- ════════════════════════════════════ §5 SESSIONS RÉCENTES -->
+  <section class="dc-section section-cycles">
+    <div class="dc-section-head">
+      <div class="head-bubble"><ha-icon icon="mdi:history"></ha-icon></div>
+      <span class="lbl">Sessions récentes</span>
+    </div>
+    <div class="dc-cycles-empty" data-bind="cycles-empty" style="display:none">
+      Aucune session terminée. La prochaine apparaîtra ici dès que le cycle se boucle.
+    </div>
+    <div class="dc-cycles-list" data-bind="cycles-list"></div>
+  </section>
+
   <div class="dc-err" data-bind="error"></div>
 `;
 
@@ -1615,7 +1748,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.10.0 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.12.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

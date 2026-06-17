@@ -101,6 +101,12 @@ class Command:
 # === Zone state holder ===
 
 
+CYCLE_HISTORY_MAX = 10
+ACTIVE_CYCLE_STATES = frozenset(
+    {ZoneState.STARTING, ZoneState.RUNNING, ZoneState.STABILIZING}
+)
+
+
 @dataclass
 class ZoneRuntimeState:
     """Mutable runtime state of a zone (lives in memory)."""
@@ -120,6 +126,15 @@ class ZoneRuntimeState:
     # STABILIZING so the UI can render "démarré il y a Xmin" across the whole
     # cycle. Cleared whenever the zone leaves the active states.
     cycle_started_ts: float | None = None
+    # Cycle snapshot fields — captured on entry into the active states and
+    # used to build the historical CycleRecord when the cycle ends.
+    cycle_start_room_temp: float | None = None
+    cycle_start_profile_name: str | None = None
+    cycle_min_room_temp: float | None = None
+    cycle_regimes_seen: list[str] = field(default_factory=list)
+    # Rolling history of completed cycles (most recent at the end).
+    # Persisted by the coordinator via HA Store across restarts.
+    completed_cycles: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -279,6 +294,18 @@ class Zone:
 
     def tick(self, inp: ZoneInputs) -> list[Command]:
         """Advance the state machine and emit commands for the current step."""
+        # Snapshot pre-tick state — used at the end of the tick to detect cycle
+        # start/end transitions and emit historical records. Captured here
+        # because _transition() wipes cycle_started_ts before we can read it.
+        prev = {
+            "state": self.state.state,
+            "cycle_started_ts": self.state.cycle_started_ts,
+            "cycle_start_room_temp": self.state.cycle_start_room_temp,
+            "cycle_start_profile_name": self.state.cycle_start_profile_name,
+            "cycle_min_room_temp": self.state.cycle_min_room_temp,
+            "cycle_regimes_seen": list(self.state.cycle_regimes_seen),
+        }
+
         # Boot recovery: if the zone is freshly constructed (no transitions yet)
         # and the underlying clim is already in heat/cool, take over from it
         # instead of stopping it. Without this, a HA restart mid-cycle would
@@ -296,7 +323,9 @@ class Zone:
             self.state.cycle_started_ts = inp.clim_state_last_changed_ts or inp.now_ts
 
         if self.state.mode == ZoneMode.OFF:
-            return self._force_off(inp)
+            cmds = self._force_off(inp)
+            self._update_cycle_snapshot(inp, prev)
+            return cmds
 
         # Boost auto-expiry
         if self.state.boost_until_ts and inp.now_ts >= self.state.boost_until_ts:
@@ -305,6 +334,7 @@ class Zone:
         # 1) Hard gates (window / schedule / override) override the regular flow
         gate_cmds = self._maybe_handle_hard_gates(inp)
         if gate_cmds is not None:
+            self._update_cycle_snapshot(inp, prev)
             return gate_cmds
 
         # 2) Time-based transitions out of STABILIZING / COOLDOWN
@@ -312,11 +342,82 @@ class Zone:
 
         # 3) Boost is a special active régime that ignores hysteresis
         if self.state.boost_until_ts and self.state.boost_until_ts > inp.now_ts:
-            return self._pilot_boost(inp)
+            cmds = self._pilot_boost(inp)
+            self._update_cycle_snapshot(inp, prev)
+            return cmds
 
         # 4) Auto régime: decision (state machine) + pilot (commands)
         self._decide(inp)
-        return self._pilot(inp)
+        cmds = self._pilot(inp)
+        self._update_cycle_snapshot(inp, prev)
+        return cmds
+
+    def _update_cycle_snapshot(self, inp: ZoneInputs, prev: dict[str, Any]) -> None:
+        """Track in-progress cycle metrics and record completed cycles.
+
+        Called once per tick after the state machine has settled. Detects:
+        - cycle start (was idle, now active) → seed start_room_temp / profile
+        - in-cycle update (still active) → update min_room_temp + regime trace
+        - cycle end (was active, now idle) → append CycleRecord to history
+        """
+        was_active = prev["state"] in ACTIVE_CYCLE_STATES
+        is_active = self.state.state in ACTIVE_CYCLE_STATES
+
+        if is_active and inp.room_temperature is not None:
+            cur_min = self.state.cycle_min_room_temp
+            if cur_min is None or inp.room_temperature < cur_min:
+                self.state.cycle_min_room_temp = inp.room_temperature
+            if (
+                self.state.regime
+                and self.state.regime != Regime.NONE
+                and self.state.regime not in self.state.cycle_regimes_seen
+            ):
+                self.state.cycle_regimes_seen.append(self.state.regime)
+
+        if not was_active and is_active:
+            self.state.cycle_start_room_temp = inp.room_temperature
+            self.state.cycle_start_profile_name = (
+                inp.active_profile.name if inp.active_profile else None
+            )
+            if self.state.cycle_min_room_temp is None and inp.room_temperature is not None:
+                self.state.cycle_min_room_temp = inp.room_temperature
+
+        if was_active and not is_active and prev["cycle_started_ts"] is not None:
+            duration_s = inp.now_ts - prev["cycle_started_ts"]
+            record = {
+                "start_ts": prev["cycle_started_ts"],
+                "end_ts": inp.now_ts,
+                "duration_min": round(duration_s / 60, 1),
+                "profile_at_start": prev["cycle_start_profile_name"],
+                "profile_at_end": (
+                    inp.active_profile.name if inp.active_profile else None
+                ),
+                "temp_start": prev["cycle_start_room_temp"],
+                "temp_end": inp.room_temperature,
+                "temp_min": prev["cycle_min_room_temp"],
+                "regimes_seen": prev["cycle_regimes_seen"],
+                "end_reason": self._end_reason_label(self.state.state),
+            }
+            self.state.completed_cycles.append(record)
+            if len(self.state.completed_cycles) > CYCLE_HISTORY_MAX:
+                self.state.completed_cycles = self.state.completed_cycles[
+                    -CYCLE_HISTORY_MAX:
+                ]
+            self.state.cycle_start_room_temp = None
+            self.state.cycle_start_profile_name = None
+            self.state.cycle_min_room_temp = None
+            self.state.cycle_regimes_seen = []
+
+    @staticmethod
+    def _end_reason_label(new_state: str) -> str:
+        return {
+            ZoneState.COOLDOWN: "stabilization_complete",
+            ZoneState.IDLE: "natural_end",
+            ZoneState.SCHEDULE_OFF: "schedule_ended",
+            ZoneState.WINDOW_OPEN: "window_opened",
+            ZoneState.MANUAL_OVERRIDE_TIMED: "user_override",
+            ZoneState.MANUAL_OVERRIDE_FREE: "user_override",
+        }.get(new_state, new_state)
 
     # --- mode / external triggers ---
 

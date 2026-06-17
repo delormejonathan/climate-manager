@@ -66,6 +66,10 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             "windows_total": d.get("windows_total"),
             "profiles": d.get("profiles", []),
             "active_profile_name": d.get("active_profile_name"),
+            "cycle_history": d.get("cycle_history", []),
+            "last_completed_cycle": (
+                d.get("cycle_history")[-1] if d.get("cycle_history") else None
+            ),
             "zone_id": self._zone_id,
         }
         for ts_key in (

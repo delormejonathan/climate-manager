@@ -16,6 +16,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Context, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
@@ -53,6 +54,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         # old_state (from the first event in a flap burst), the latest new_state,
         # and the asyncio TimerHandle that will fire _resolve_pending_override.
         self._pending_overrides: dict[str, dict[str, Any]] = {}
+        # Cycle history persistence — one Store per entry, keyed by zone_id.
+        # Loaded once in _async_setup; written after any tick that produced a
+        # newly-completed cycle (detected by per-zone length comparison).
+        self._cycle_store: Store = Store(
+            hass, 1, f"{DOMAIN}_cycles_{entry.entry_id}"
+        )
+        self._cycle_counts: dict[str, int] = {}
         self._rebuild_zones()
 
     # === Public API for platforms ===
@@ -98,6 +106,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     async def _async_setup(self) -> None:
         """Register state-change listeners — called once before first refresh."""
+        await self._load_cycle_history()
         await self._setup_state_listeners()
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -107,7 +116,29 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             commands = zone.tick(inputs)
             for cmd in commands:
                 await self._apply_command(cmd)
+        await self._save_cycle_history_if_changed()
         return self._build_coordinator_data()
+
+    async def _load_cycle_history(self) -> None:
+        """Restore per-zone completed cycles from disk into runtime state."""
+        data = await self._cycle_store.async_load() or {}
+        zones_data = data.get("zones", {}) if isinstance(data, dict) else {}
+        for zid, zone in self._zones.items():
+            zone.state.completed_cycles = list(zones_data.get(zid, []))
+            self._cycle_counts[zid] = len(zone.state.completed_cycles)
+
+    async def _save_cycle_history_if_changed(self) -> None:
+        """Persist if any zone's completed_cycles grew during this tick."""
+        changed = False
+        out: dict[str, list[dict[str, Any]]] = {}
+        for zid, zone in self._zones.items():
+            out[zid] = zone.state.completed_cycles
+            prev_count = self._cycle_counts.get(zid, 0)
+            if len(zone.state.completed_cycles) != prev_count:
+                changed = True
+                self._cycle_counts[zid] = len(zone.state.completed_cycles)
+        if changed:
+            await self._cycle_store.async_save({"zones": out})
 
     # === Zone setup / rebuild ===
 
@@ -509,6 +540,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "active_profile_name": (
                     inputs.active_profile.name if inputs.active_profile else None
                 ),
+                # Historical cycles for §5 of the card. List of dicts, newest
+                # at the end; coordinator persists across HA restarts.
+                "cycle_history": zone.state.completed_cycles,
             }
         return out
 
