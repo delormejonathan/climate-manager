@@ -6,9 +6,9 @@
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://gitlab.com/delormejonathan/delormej_climate",
+  "documentation": "https://github.com/delormejonathan/delormej_climate",
   "iot_class": "local_polling",
-  "issue_tracker": "https://gitlab.com/delormejonathan/delormej_climate/-/issues",
+  "issue_tracker": "https://github.com/delormejonathan/delormej_climate/issues",
   "requirements": [],
   "version": "0.14.0"
 }
