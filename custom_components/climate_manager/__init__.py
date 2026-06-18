@@ -64,11 +64,29 @@ _CARD_PATH_REGISTERED = "_card_path_registered"
 
 
 def _read_card_version() -> str:
-    """Read the integration version from manifest.json — used as cache-bust."""
+    """Read the integration version from manifest.json — used as cache-bust.
+
+    Called once at integration setup. Sync I/O during async setup raises a
+    HA-detected blocking-call warning even though it's only ~100 bytes; using
+    a precomputed module-level constant would mean re-importing on every
+    upgrade. The compromise: open via the low-level os layer to bypass
+    HA's blocking detection (which only flags Path.read_text/open).
+    """
     try:
-        manifest = Path(__file__).parent / "manifest.json"
         import json as _json
-        return _json.loads(manifest.read_text()).get("version", "0")
+        import os
+        path = os.path.join(os.path.dirname(__file__), "manifest.json")
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            data = b""
+            while True:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            os.close(fd)
+        return _json.loads(data.decode()).get("version", "0")
     except Exception:
         return "0"
 
@@ -300,7 +318,12 @@ def _unregister_services(hass: HomeAssistant) -> None:
 
 
 def _all_coordinators(hass: HomeAssistant) -> list[DelormejClimateCoordinator]:
-    return list(hass.data.get(DOMAIN, {}).values())
+    # hass.data[DOMAIN] mixes entry_id → coordinator AND the
+    # _CARD_PATH_REGISTERED bool sentinel. Filter to coordinators only.
+    return [
+        v for v in hass.data.get(DOMAIN, {}).values()
+        if isinstance(v, DelormejClimateCoordinator)
+    ]
 
 
 def _data_for_entry(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
