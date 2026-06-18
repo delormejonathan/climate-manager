@@ -8,8 +8,8 @@ expose them.
 
 from __future__ import annotations
 
-from custom_components.delormej_climate.const import Regime, ZoneState
-from custom_components.delormej_climate.zone import Zone, ZoneConfig, ZoneInputs
+from custom_components.climate_manager.const import Regime, ZoneState
+from custom_components.climate_manager.zone import Zone, ZoneConfig, ZoneInputs
 
 
 HVAC_OFF, HVAC_HEAT, HVAC_COOL = "off", "heat", "cool"

@@ -3,8 +3,8 @@ render 'démarré il y a Xmin' and the cooling-progress sparkline."""
 
 from __future__ import annotations
 
-from custom_components.delormej_climate.const import ZoneState
-from custom_components.delormej_climate.zone import Zone, ZoneConfig, ZoneInputs
+from custom_components.climate_manager.const import ZoneState
+from custom_components.climate_manager.zone import Zone, ZoneConfig, ZoneInputs
 
 HVAC_OFF = "off"
 HVAC_COOL = "cool"

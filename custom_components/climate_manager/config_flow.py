@@ -4,7 +4,7 @@ Design philosophy (v0.14): the Config Flow is empty — the integration creates
 itself without asking anything. Everything that's configurable lives in the
 Options Flow:
 
-  Settings → Devices & Services → Delormej Climate → Configure
+  Settings → Devices & Services → Climate Manager → Configure
     ├─ Add a zone
     ├─ Edit a zone
     ├─ Remove a zone
@@ -178,7 +178,7 @@ class DelormejClimateConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is None:
             return self.async_show_form(step_id="user", data_schema=vol.Schema({}))
         return self.async_create_entry(
-            title="Delormej Climate",
+            title="Climate Manager",
             data={},
             options={CONF_ZONES: []},
         )

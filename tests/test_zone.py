@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.delormej_climate.const import (
+from custom_components.climate_manager.const import (
     BOOST_OFFSET,
     OFFSET_ATTAQUE,
     Regime,
     ZoneMode,
     ZoneState,
 )
-from custom_components.delormej_climate.zone import (
+from custom_components.climate_manager.zone import (
     Zone,
     ZoneConfig,
     ZoneInputs,

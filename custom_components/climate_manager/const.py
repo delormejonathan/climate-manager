@@ -1,4 +1,4 @@
-"""Constants for the Delormej Climate integration."""
+"""Constants for the Climate Manager integration."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import ClassVar
 
 from homeassistant.const import Platform
 
-DOMAIN = "delormej_climate"
+DOMAIN = "climate_manager"
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,

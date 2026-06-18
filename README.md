@@ -1,4 +1,4 @@
-# delormej_climate
+# climate_manager
 
 Custom_component Home Assistant pour le pilotage intelligent de plusieurs climatisations (initialement 2 Daikin), avec :
 
@@ -22,8 +22,8 @@ En production sur HA depuis mai 2026. Architecture stabilisée à la v0.12.0 :
 ## Structure
 
 ```
-delormej_climate/
-├── custom_components/delormej_climate/   # le composant HA (Python)
+climate_manager/
+├── custom_components/climate_manager/   # le composant HA (Python)
 ├── lovelace/                              # la carte Lovelace custom (JS/TS)
 ├── docs/                                  # documentation
 ├── tests/                                 # tests pytest
@@ -33,15 +33,15 @@ delormej_climate/
 ## Installation via HACS (recommandé)
 
 1. HACS → menu ⋮ → **Custom repositories**
-2. Repository : `https://github.com/delormejonathan/delormej_climate`
+2. Repository : `https://github.com/delormejonathan/climate-manager`
 3. Category : **Integration**
-4. **Add** → tu retrouves "Delormej Climate" dans la liste HACS → **Download**
+4. **Add** → tu retrouves "Climate Manager" dans la liste HACS → **Download**
 5. Redémarre HA
-6. _Paramètres → Appareils & services → Ajouter une intégration → Delormej Climate_
+6. _Paramètres → Appareils & services → Ajouter une intégration → Climate Manager_
 
 Les futures versions remontent automatiquement comme update disponible dans HACS — 1 clic pour installer.
 
-La carte Lovelace est embarquée dans le composant : elle est servie automatiquement à `/delormej_climate/delormej-climate-card.js` et enregistrée comme ressource Lovelace dès que l'intégration démarre.
+La carte Lovelace est embarquée dans le composant : elle est servie automatiquement à `/climate_manager/climate-manager-card.js` et enregistrée comme ressource Lovelace dès que l'intégration démarre.
 
 ## Migration depuis l'automation actuelle
 

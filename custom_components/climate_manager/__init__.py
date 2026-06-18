@@ -1,4 +1,4 @@
-"""The Delormej Climate integration."""
+"""The Climate Manager integration."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from .const import CONF_ZONES, DOMAIN, PLATFORMS, ZoneMode
 from .coordinator import DelormejClimateCoordinator
 from .zone import utc_now_ts
 
-CARD_URL_PATH = f"/{DOMAIN}/delormej-climate-card.js"
-CARD_FILENAME = "delormej-climate-card.js"
+CARD_URL_PATH = f"/{DOMAIN}/climate-manager-card.js"
+CARD_FILENAME = "climate-manager-card.js"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ SCHEMA_UPDATE_PROFILES = vol.Schema(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Delormej Climate from a config entry."""
+    """Set up Climate Manager from a config entry."""
     coordinator = DelormejClimateCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
 

@@ -12,8 +12,8 @@ its thresholds from `inp.active_profile` when one is supplied.
 
 from __future__ import annotations
 
-from custom_components.delormej_climate.const import POWER_PROFILES, ZoneState
-from custom_components.delormej_climate.zone import Profile, Zone, ZoneConfig, ZoneInputs
+from custom_components.climate_manager.const import POWER_PROFILES, ZoneState
+from custom_components.climate_manager.zone import Profile, Zone, ZoneConfig, ZoneInputs
 
 HVAC_OFF = "off"
 HVAC_COOL = "cool"

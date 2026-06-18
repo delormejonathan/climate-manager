@@ -1,4 +1,4 @@
-"""Sensor platform for delormej_climate."""
+"""Sensor platform for climate_manager."""
 
 from __future__ import annotations
 

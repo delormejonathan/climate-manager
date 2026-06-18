@@ -1,4 +1,4 @@
-"""Pytest configuration for delormej_climate tests."""
+"""Pytest configuration for climate_manager tests."""
 
 from __future__ import annotations
 

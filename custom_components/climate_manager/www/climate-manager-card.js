@@ -1,5 +1,5 @@
 /**
- * delormej-climate-card  v0.13.0
+ * climate-manager-card  v0.15.0
  *
  * Instrument-panel redesign. Five sections for one zone:
  *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
@@ -9,7 +9,7 @@
  *   5. SESSIONS RÉCENTES — last N completed cycles with per-row sparklines
  *
  * Usage:
- *   type: custom:delormej-climate-card
+ *   type: custom:climate-manager-card
  *   zone: rdc
  *   title: Salon (RDC)
  *   climate_entity: climate.salon
@@ -71,10 +71,10 @@ class DelormejClimateCard extends HTMLElement {
     this._climateEntity = config.climate_entity || null;
     this._rendered = false;
   }
-  static getStubConfig() { return { type: "custom:delormej-climate-card", zone: "rdc" }; }
+  static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
   getCardSize() { return 14; }
 
-  _ent(kind, suffix) { return `${kind}.delormej_climate_${this._zone}_${suffix}`; }
+  _ent(kind, suffix) { return `${kind}.climate_manager_${this._zone}_${suffix}`; }
 
   _ids() {
     return {
@@ -726,7 +726,7 @@ class DelormejClimateCard extends HTMLElement {
   }
 
   _pushProfiles(profiles) {
-    this._call("delormej_climate", "update_profiles", {
+    this._call("climate_manager", "update_profiles", {
       zone_id: this._zone,
       profiles,
     });
@@ -2331,18 +2331,18 @@ const TEMPLATE = `
   <div class="dc-err" data-bind="error"></div>
 `;
 
-customElements.define("delormej-climate-card", DelormejClimateCard);
+customElements.define("climate-manager-card", DelormejClimateCard);
 
 window.customCards = window.customCards || [];
 window.customCards.push({
-  type: "delormej-climate-card",
-  name: "Delormej Climate Card",
+  type: "climate-manager-card",
+  name: "Climate Manager Card",
   description: "Carte tout-en-un en 4 sections : état, profils, pilotage, commande manuelle.",
   preview: false,
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.13.0 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.15.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

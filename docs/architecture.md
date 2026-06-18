@@ -1,4 +1,4 @@
-# Architecture — delormej_climate
+# Architecture — climate_manager
 
 > Document de référence des décisions prises avant l'implémentation. Toute déviation doit être justifiée et le doc mis à jour.
 
@@ -207,7 +207,7 @@ Bouton "Ajouter une zone" depuis l'écran d'intégration :
 | `duree_cooldown_min` | number | défaut 10 |
 | `override_duree_min` | number | défaut 30 |
 
-À la création de zone, le composant crée automatiquement `schedule.delormej_climate_<zone>` avec une plage par défaut (06:00–23:00) que l'utilisateur peut éditer depuis l'éditeur de planning HA.
+À la création de zone, le composant crée automatiquement `schedule.climate_manager_<zone>` avec une plage par défaut (06:00–23:00) que l'utilisateur peut éditer depuis l'éditeur de planning HA.
 
 ### 5.3. Reconfiguration
 
@@ -232,20 +232,20 @@ Toute zone est éditable post-création via le flow "Configure" de l'entrée d'i
 | `button` | `<zone>_reprendre_auto` | Court-circuite l'override en cours |
 | `button` | `<zone>_boost` | Active le boost 15 min |
 
-Auto-créée : `schedule.delormej_climate_<zone>`.
+Auto-créée : `schedule.climate_manager_<zone>`.
 
 ## 7. Services HA
 
 | Service | Args | Effet |
 |---|---|---|
-| `delormej_climate.set_mode` | `zone`, `mode` (auto/off/boost) | Change le mode global d'une zone |
-| `delormej_climate.force_off` | `zone` | Stop forcé immédiat |
-| `delormej_climate.reset_override` | `zone` | Sort de l'override en cours |
-| `delormej_climate.reload_zones` | — | Recharge la config sans redémarrer HA |
+| `climate_manager.set_mode` | `zone`, `mode` (auto/off/boost) | Change le mode global d'une zone |
+| `climate_manager.force_off` | `zone` | Stop forcé immédiat |
+| `climate_manager.reset_override` | `zone` | Sort de l'override en cours |
+| `climate_manager.reload_zones` | — | Recharge la config sans redémarrer HA |
 
 ## 8. Carte Lovelace
 
-Card custom `delormej-climate-card` (Lit-element TypeScript).
+Card custom `climate-manager-card` (Lit-element TypeScript).
 
 Une instance = une zone. Affichage :
 
@@ -260,8 +260,8 @@ Une instance = une zone. Affichage :
 ## 9. Structure du repo
 
 ```
-delormej_climate/
-├── custom_components/delormej_climate/
+climate_manager/
+├── custom_components/climate_manager/
 │   ├── __init__.py            # entry point, setup_entry / unload_entry
 │   ├── manifest.json
 │   ├── const.py               # constantes (DOMAIN, états, régimes, defaults)
@@ -292,7 +292,7 @@ delormej_climate/
 
 ## 10. Migration
 
-Une fois `delormej_climate` stable :
+Une fois `climate_manager` stable :
 
 **Supprimer :**
 - `automation.climatisation_controleur_unique` (1760779888860)

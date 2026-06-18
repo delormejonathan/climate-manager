@@ -1,4 +1,4 @@
-"""Base entity for delormej_climate platforms.
+"""Base entity for climate_manager platforms.
 
 All entities are scoped to a single Zone — represented as an HA Device.
 """
@@ -40,7 +40,7 @@ class DelormejClimateZoneEntity(CoordinatorEntity[DelormejClimateCoordinator]):
         name = zone.config.name if zone else self._zone_id
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self.coordinator.entry.entry_id}_{self._zone_id}")},
-            name=f"Delormej Climate · {name}",
+            name=f"Climate Manager · {name}",
             manufacturer="delormej",
             model="Smart Climate Zone",
         )

@@ -1,9 +1,9 @@
 {
-  "title": "Delormej Climate",
+  "title": "Climate Manager",
   "config": {
     "step": {
       "user": {
-        "title": "Installer Delormej Climate",
+        "title": "Installer Climate Manager",
         "description": "L'intégration s'installe sans configuration. Tu pourras ensuite ajouter des zones et configurer la présence depuis « Configurer »."
       }
     },
@@ -14,7 +14,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Delormej Climate",
+        "title": "Climate Manager",
         "description": "Choisis une action. Les seuils, planning et présence se règlent ensuite **par profil** dans la carte Lovelace, pas ici.",
         "menu_options": {
           "add_zone": "Ajouter une zone",

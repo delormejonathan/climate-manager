@@ -3,8 +3,8 @@ sessions exposed to the Lovelace card §5 'Sessions récentes'."""
 
 from __future__ import annotations
 
-from custom_components.delormej_climate.const import Regime, ZoneState
-from custom_components.delormej_climate.zone import (
+from custom_components.climate_manager.const import Regime, ZoneState
+from custom_components.climate_manager.zone import (
     CYCLE_HISTORY_MAX,
     Profile,
     Zone,

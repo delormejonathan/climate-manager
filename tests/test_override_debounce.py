@@ -18,13 +18,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.delormej_climate.const import (
+from custom_components.climate_manager.const import (
     OVERRIDE_DEBOUNCE_SECONDS,
     SETPOINT_NOOP_DELTA,
     ZoneState,
 )
-from custom_components.delormej_climate.coordinator import _is_echo_of_intent
-from custom_components.delormej_climate.zone import Zone, ZoneConfig
+from custom_components.climate_manager.coordinator import _is_echo_of_intent
+from custom_components.climate_manager.zone import Zone, ZoneConfig
 
 
 def _zone(last_sp: float | None = None, last_fan: str | None = None) -> Zone:
@@ -98,8 +98,8 @@ def hass_loop():
 def _make_coordinator(hass):
     """Build a coordinator with one zone and skip the DataUpdateCoordinator
     init path (which wants a logger, intervals, etc. that we don't need here)."""
-    from custom_components.delormej_climate.context_tracker import ContextTracker
-    from custom_components.delormej_climate.coordinator import DelormejClimateCoordinator
+    from custom_components.climate_manager.context_tracker import ContextTracker
+    from custom_components.climate_manager.coordinator import DelormejClimateCoordinator
 
     coord = DelormejClimateCoordinator.__new__(DelormejClimateCoordinator)
     coord.hass = hass
