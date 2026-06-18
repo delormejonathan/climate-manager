@@ -1,4 +1,19 @@
-"""Config flow: integration-level setup + OptionsFlow for zones."""
+"""Config flow + OptionsFlow.
+
+Design philosophy (v0.14): the Config Flow is empty — the integration creates
+itself without asking anything. Everything that's configurable lives in the
+Options Flow:
+
+  Settings → Devices & Services → Delormej Climate → Configure
+    ├─ Add a zone
+    ├─ Edit a zone
+    ├─ Remove a zone
+    └─ Global presence (optional)
+
+Per-profile concerns (thresholds, schedule, presence gate, power, fan) are NOT
+in this flow — they're managed inline in the Lovelace card §2 "Profils". A
+zone's only durable static config here is hardware identity + timing.
+"""
 
 from __future__ import annotations
 
@@ -11,20 +26,12 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
-    CONF_AGGRESSIVE_WHEN_ABSENT,
     CONF_CLIMATE_ENTITY,
     CONF_DUREE_COOLDOWN_MIN,
     CONF_DUREE_STABILISATION_MIN,
-    CONF_FAN_INTENSITY,
     CONF_OVERRIDE_DUREE_MIN,
-    CONF_POWER,
     CONF_PRESENCE_ABSENT_STATES,
     CONF_PRESENCE_ENTITY,
-    CONF_SCHEDULE_ENTITY,
-    CONF_SEUIL_DEBUT_CHAUFFAGE,
-    CONF_SEUIL_DEBUT_REFROIDISSEMENT,
-    CONF_SEUIL_FIN_CHAUFFAGE,
-    CONF_SEUIL_FIN_REFROIDISSEMENT,
     CONF_TEMPERATURE_SENSORS,
     CONF_WINDOW_SENSORS,
     CONF_ZONE_ID,
@@ -32,62 +39,44 @@ from .const import (
     CONF_ZONES,
     DEFAULT_DUREE_COOLDOWN_MIN,
     DEFAULT_DUREE_STABILISATION_MIN,
-    DEFAULT_FAN_INTENSITY,
     DEFAULT_OVERRIDE_DUREE_MIN,
-    DEFAULT_POWER,
-    DEFAULT_SEUIL_DEBUT_CHAUFFAGE,
-    DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT,
-    DEFAULT_SEUIL_FIN_CHAUFFAGE,
-    DEFAULT_SEUIL_FIN_REFROIDISSEMENT,
     DOMAIN,
     MAX_DUREE_MIN,
     MAX_OVERRIDE_DUREE_MIN,
-    MAX_SEUIL,
     MIN_DUREE_MIN,
     MIN_OVERRIDE_DUREE_MIN,
-    MIN_SEUIL,
-    FanIntensity,
-    Power,
 )
 
-# States typically considered "absent" for an alarm_control_panel
-DEFAULT_ABSENT_STATES = ["armed_away", "armed_vacation"]
-KNOWN_ALARM_STATES = [
-    "disarmed",
-    "armed_home",
+# Domains a user might pick as a global presence proxy. Order matters: most
+# common defaults first so the selector picker surfaces them.
+PRESENCE_DOMAINS = ["person", "device_tracker", "binary_sensor", "input_boolean", "alarm_control_panel"]
+
+# Sensible default "absent" states across the supported domains. The user can
+# override and add custom values via the multi-select.
+DEFAULT_ABSENT_STATES = ["armed_away", "not_home", "off"]
+KNOWN_ABSENT_STATES = [
+    # alarm_control_panel
     "armed_away",
-    "armed_night",
     "armed_vacation",
-    "armed_custom_bypass",
-    "pending",
-    "triggered",
-    "arming",
-    "disarming",
+    "armed_night",
+    "armed_home",
+    # person / device_tracker
+    "not_home",
+    "away",
+    # binary_sensor occupancy/presence
+    "off",
+    # input_boolean used as "away" toggle
+    "on",
 ]
 
 
-def _integration_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
-    defaults = defaults or {}
-    return vol.Schema(
-        {
-            vol.Required(
-                CONF_PRESENCE_ENTITY, default=defaults.get(CONF_PRESENCE_ENTITY, vol.UNDEFINED)
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="alarm_control_panel")
-            ),
-            vol.Required(
-                CONF_PRESENCE_ABSENT_STATES,
-                default=defaults.get(CONF_PRESENCE_ABSENT_STATES, DEFAULT_ABSENT_STATES),
-            ): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=KNOWN_ALARM_STATES, multiple=True, custom_value=True
-                )
-            ),
-        }
-    )
-
-
 def _zone_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    """Schema for adding/editing a zone.
+
+    Intentionally minimal — only the things that don't fit per-profile:
+    hardware identity, hard-gate windows, and timing knobs (which are zone-
+    wide invariants, not usage-dependent).
+    """
     defaults = defaults or {}
     return vol.Schema(
         {
@@ -107,56 +96,15 @@ def _zone_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 )
             ),
             vol.Optional(
-                CONF_SCHEDULE_ENTITY,
-                default=defaults.get(CONF_SCHEDULE_ENTITY, vol.UNDEFINED),
-            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="schedule")),
-            vol.Optional(
                 CONF_WINDOW_SENSORS, default=defaults.get(CONF_WINDOW_SENSORS, [])
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(
                     domain="binary_sensor",
-                    # `opening` covers Ajax window sensors (which don't use the
-                    # narrower "window" device_class) as well as generic openings.
+                    # `opening` covers Ajax/Zigbee window sensors that don't use
+                    # the narrower "window" device_class as well as generic
+                    # openings (doors with sash detect, etc.).
                     device_class=["window", "opening", "door"],
                     multiple=True,
-                )
-            ),
-            vol.Required(
-                CONF_SEUIL_DEBUT_CHAUFFAGE,
-                default=defaults.get(
-                    CONF_SEUIL_DEBUT_CHAUFFAGE, DEFAULT_SEUIL_DEBUT_CHAUFFAGE
-                ),
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=MIN_SEUIL, max=MAX_SEUIL, step=0.5, unit_of_measurement="°C"
-                )
-            ),
-            vol.Required(
-                CONF_SEUIL_FIN_CHAUFFAGE,
-                default=defaults.get(CONF_SEUIL_FIN_CHAUFFAGE, DEFAULT_SEUIL_FIN_CHAUFFAGE),
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=MIN_SEUIL, max=MAX_SEUIL, step=0.5, unit_of_measurement="°C"
-                )
-            ),
-            vol.Required(
-                CONF_SEUIL_DEBUT_REFROIDISSEMENT,
-                default=defaults.get(
-                    CONF_SEUIL_DEBUT_REFROIDISSEMENT, DEFAULT_SEUIL_DEBUT_REFROIDISSEMENT
-                ),
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=MIN_SEUIL, max=MAX_SEUIL, step=0.5, unit_of_measurement="°C"
-                )
-            ),
-            vol.Required(
-                CONF_SEUIL_FIN_REFROIDISSEMENT,
-                default=defaults.get(
-                    CONF_SEUIL_FIN_REFROIDISSEMENT, DEFAULT_SEUIL_FIN_REFROIDISSEMENT
-                ),
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=MIN_SEUIL, max=MAX_SEUIL, step=0.5, unit_of_measurement="°C"
                 )
             ),
             vol.Optional(
@@ -165,44 +113,54 @@ def _zone_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                     CONF_DUREE_STABILISATION_MIN, DEFAULT_DUREE_STABILISATION_MIN
                 ),
             ): selector.NumberSelector(
-                selector.NumberSelectorConfig(min=MIN_DUREE_MIN, max=MAX_DUREE_MIN, step=1)
+                selector.NumberSelectorConfig(
+                    min=MIN_DUREE_MIN, max=MAX_DUREE_MIN, step=1,
+                    unit_of_measurement="min",
+                )
             ),
             vol.Optional(
                 CONF_DUREE_COOLDOWN_MIN,
                 default=defaults.get(CONF_DUREE_COOLDOWN_MIN, DEFAULT_DUREE_COOLDOWN_MIN),
             ): selector.NumberSelector(
-                selector.NumberSelectorConfig(min=MIN_DUREE_MIN, max=MAX_DUREE_MIN, step=1)
+                selector.NumberSelectorConfig(
+                    min=MIN_DUREE_MIN, max=MAX_DUREE_MIN, step=1,
+                    unit_of_measurement="min",
+                )
             ),
             vol.Optional(
                 CONF_OVERRIDE_DUREE_MIN,
                 default=defaults.get(CONF_OVERRIDE_DUREE_MIN, DEFAULT_OVERRIDE_DUREE_MIN),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
-                    min=MIN_OVERRIDE_DUREE_MIN, max=MAX_OVERRIDE_DUREE_MIN, step=1
+                    min=MIN_OVERRIDE_DUREE_MIN, max=MAX_OVERRIDE_DUREE_MIN, step=1,
+                    unit_of_measurement="min",
                 )
             ),
+        }
+    )
+
+
+def _presence_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    """Global presence config — informational only.
+
+    Drives the "Maison absente/présente" pill in the card. Per-profile gates
+    are configured separately in the card §2.
+    """
+    defaults = defaults or {}
+    return vol.Schema(
+        {
             vol.Optional(
-                CONF_AGGRESSIVE_WHEN_ABSENT,
-                default=defaults.get(CONF_AGGRESSIVE_WHEN_ABSENT, True),
-            ): bool,
-            vol.Optional(
-                CONF_POWER,
-                default=defaults.get(CONF_POWER, DEFAULT_POWER),
-            ): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=Power.ALL,
-                    mode=selector.SelectSelectorMode.LIST,
-                    translation_key="power",
-                )
+                CONF_PRESENCE_ENTITY,
+                default=defaults.get(CONF_PRESENCE_ENTITY, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=PRESENCE_DOMAINS)
             ),
             vol.Optional(
-                CONF_FAN_INTENSITY,
-                default=defaults.get(CONF_FAN_INTENSITY, DEFAULT_FAN_INTENSITY),
+                CONF_PRESENCE_ABSENT_STATES,
+                default=defaults.get(CONF_PRESENCE_ABSENT_STATES, DEFAULT_ABSENT_STATES),
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=FanIntensity.ALL,
-                    mode=selector.SelectSelectorMode.LIST,
-                    translation_key="fan_intensity",
+                    options=KNOWN_ABSENT_STATES, multiple=True, custom_value=True
                 )
             ),
         }
@@ -210,7 +168,7 @@ def _zone_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 
 
 class DelormejClimateConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Initial setup of the integration."""
+    """One-step empty Config Flow. Everything else is in Options."""
 
     VERSION = 1
 
@@ -218,10 +176,10 @@ class DelormejClimateConfigFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
         if user_input is None:
-            return self.async_show_form(step_id="user", data_schema=_integration_schema())
+            return self.async_show_form(step_id="user", data_schema=vol.Schema({}))
         return self.async_create_entry(
             title="Delormej Climate",
-            data=user_input,
+            data={},
             options={CONF_ZONES: []},
         )
 
@@ -232,7 +190,7 @@ class DelormejClimateConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class DelormejClimateOptionsFlow(OptionsFlow):
-    """Manage presence settings + zones via a menu."""
+    """Manage zones (add/edit/remove) + optional global presence."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
@@ -241,12 +199,15 @@ class DelormejClimateOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return self.async_show_menu(
-            step_id="init",
-            menu_options=["add_zone", "edit_zone", "remove_zone", "presence"],
-        )
+        zones = self._entry.options.get(CONF_ZONES, [])
+        # Only offer edit/remove if there are zones to act on.
+        menu = ["add_zone"]
+        if zones:
+            menu += ["edit_zone", "remove_zone"]
+        menu.append("presence")
+        return self.async_show_menu(step_id="init", menu_options=menu)
 
-    # --- presence ---
+    # --- presence (now optional, post-install only) ---
 
     async def async_step_presence(
         self, user_input: dict[str, Any] | None = None
@@ -254,9 +215,12 @@ class DelormejClimateOptionsFlow(OptionsFlow):
         if user_input is None:
             return self.async_show_form(
                 step_id="presence",
-                data_schema=_integration_schema(defaults=dict(self._entry.data)),
+                data_schema=_presence_schema(defaults=dict(self._entry.data)),
             )
-        self.hass.config_entries.async_update_entry(self._entry, data=user_input)
+        # Empty presence_entity (user cleared it) → drop the key so the
+        # coordinator falls back to "presence unknown".
+        clean = {k: v for k, v in user_input.items() if v not in (None, "", [])}
+        self.hass.config_entries.async_update_entry(self._entry, data=clean)
         return self.async_create_entry(title="", data=self._entry.options)
 
     # --- add zone ---
@@ -306,7 +270,10 @@ class DelormejClimateOptionsFlow(OptionsFlow):
             return self.async_show_form(
                 step_id="edit_zone_form", data_schema=_zone_schema(defaults=zone)
             )
-        new_zone = {CONF_ZONE_ID: zone[CONF_ZONE_ID], **user_input}
+        # Preserve any legacy keys present on the existing zone (seuils, power,
+        # fan, schedule, profiles...) so editing the form doesn't accidentally
+        # wipe the per-profile cascade or migration-synthesised defaults.
+        new_zone = {**zone, **user_input, CONF_ZONE_ID: zone[CONF_ZONE_ID]}
         new_zones = [new_zone if z[CONF_ZONE_ID] == self._editing_zone_id else z for z in zones]
         new_options = {**self._entry.options, CONF_ZONES: new_zones}
         return self.async_create_entry(title="", data=new_options)
