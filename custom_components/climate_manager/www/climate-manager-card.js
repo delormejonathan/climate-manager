@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.16.0
+ * climate-manager-card  v0.16.1
  *
  * Instrument-panel redesign. Five sections for one zone:
  *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
@@ -80,7 +80,7 @@ class DelormejClimateCard extends HTMLElement {
     return {
       state: this._ent("sensor", "state"),
       regime: this._ent("sensor", "regime"),
-      roomTemp: this._ent("sensor", "room_temperature_average"),
+      roomTemp: this._ent("sensor", "zone_temperature"),
       setpointSent: this._ent("sensor", "setpoint_sent"),
       overrideUntil: this._ent("sensor", "override_until"),
       modeSelect: this._ent("select", "mode"),
@@ -268,12 +268,15 @@ class DelormejClimateCard extends HTMLElement {
     const pills = $("status-pills");
     pills.innerHTML = "";
 
-    if (attrs.schedule_on === false) {
+    // Pills only when there's something the badge / banner doesn't already
+    // say. Override is already covered by the header badge + the bottom
+    // banner — no pill for it.
+    if (attrs.schedule_on === false && !attrs.in_override) {
       const nextEvt = attrs.schedule_next_event;
       const nextEvtTxt = nextEvt ? this._fmtTime(nextEvt) : null;
       pills.appendChild(this._pill(
         "mdi:pause-circle-outline",
-        nextEvtTxt ? `Hors planning · reprise ${nextEvtTxt}` : "Hors planning",
+        nextEvtTxt ? `Reprise ${nextEvtTxt}` : "Hors planning",
         "warn",
       ));
     }
@@ -282,19 +285,9 @@ class DelormejClimateCard extends HTMLElement {
     if (typeof wTotal === "number" && wTotal > 0 && wOpen > 0) {
       pills.appendChild(this._pill(
         "mdi:window-open",
-        `${wOpen}/${wTotal} fenêtre${wOpen > 1 ? "s" : ""} ouverte${wOpen > 1 ? "s" : ""}`,
+        `${wOpen} fenêtre${wOpen > 1 ? "s" : ""} ouverte${wOpen > 1 ? "s" : ""}`,
         "warn",
       ));
-    }
-    if (attrs.in_override === true) {
-      pills.appendChild(this._pill("mdi:account-edit", "Override actif", "warn"));
-    }
-    const activeProfileName = attrs.active_profile_name;
-    if (activeProfileName && !cycleActive && pills.children.length === 0) {
-      // Show the active profile only when there's no cycle running (during a
-      // cycle it's already obvious which one is driving). Keeps the hero
-      // sparse most of the time.
-      pills.appendChild(this._pill("mdi:tag-outline", activeProfileName, "neutral"));
     }
 
     // Metrics grid (2x2)
@@ -459,14 +452,12 @@ class DelormejClimateCard extends HTMLElement {
       const t = until ? ` jusqu'à <span class="until">${this._fmtTime(until)}</span>` : "";
       return { html: `Pause anti-rebond${t}.`, warn: false };
     }
-    if (state === "schedule_off") return { html: "Hors plage planning, pilotage auto désactivé.", warn: true };
-    if (state === "manual_override_timed") {
-      const u = get(ids.overrideUntil)?.state;
-      const t = u && u !== "unknown" ? ` jusqu'à <span class="until">${this._fmtTime(u)}</span>` : "";
-      return { html: `Override manuel${t}.`, warn: true };
-    }
-    if (state === "manual_override_free") return { html: "Pilotage manuel libre.", warn: true };
-    if (state === "window_open") return { html: "Fenêtre ouverte, clim en pause.", warn: true };
+    // Conditions de pause / override : la badge état + la zone dédiée
+    // en dessous portent déjà l'info, narrative redondante → vide.
+    if (state === "schedule_off") return { html: "", warn: false };
+    if (state === "manual_override_timed") return { html: "", warn: false };
+    if (state === "manual_override_free") return { html: "", warn: false };
+    if (state === "window_open") return { html: "", warn: false };
     return { html: "", warn: false };
   }
 
@@ -2033,7 +2024,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.16.0 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.16.1 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
