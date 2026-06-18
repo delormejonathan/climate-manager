@@ -1,12 +1,12 @@
 /**
- * delormej-climate-card  v0.12.0
+ * delormej-climate-card  v0.13.0
  *
- * Five-section layout for one zone of the delormej_climate integration:
- *   1. ÉTAT ACTUEL       — observability (T° hero, narrative, profile pill)
+ * Instrument-panel redesign. Five sections for one zone:
+ *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
  *   2. PROFILS           — cascade of driver profiles (add/edit/reorder)
  *   3. PILOTAGE          — mode (auto/off/boost) + force start
  *   4. COMMANDE MANUELLE — boost/resume + direct climate.* controls
- *   5. SESSIONS RÉCENTES — last N completed cycles (start/end/T°/profile)
+ *   5. SESSIONS RÉCENTES — last N completed cycles with per-row sparklines
  *
  * Usage:
  *   type: custom:delormej-climate-card
@@ -15,16 +15,21 @@
  *   climate_entity: climate.salon
  */
 
+// Each state has a tone class for the header tag (dot color + animation):
+//   active = lime pulsing dot (cycle running)
+//   warn   = amber (transient/transitional)
+//   alert  = red (override / window open)
+//   idle   = gray (no animation)
 const STATE_META = {
-  idle:        { label: "Inactif",          color: "#7a8290", icon: "mdi:power-sleep" },
-  starting:    { label: "Démarrage",        color: "#fd9853", icon: "mdi:play-circle" },
-  running:     { label: "Actif",            color: "#43a047", icon: "mdi:fan" },
-  stabilizing: { label: "Stabilisation",    color: "#00bcd4", icon: "mdi:waves" },
-  cooldown:    { label: "Cooldown",         color: "#8e6dc8", icon: "mdi:timer-sand" },
-  schedule_off:{ label: "Hors planning",    color: "#7a8290", icon: "mdi:clock-outline" },
-  manual_override_timed: { label: "Override", color: "#e96f8e", icon: "mdi:account-clock" },
-  manual_override_free:  { label: "Manuel",   color: "#e96f8e", icon: "mdi:account-edit" },
-  window_open: { label: "Fenêtre ouverte",  color: "#fbbf24", icon: "mdi:window-open" },
+  idle:        { label: "En veille",       color: "#8A92A0", icon: "mdi:power-sleep", tone: "idle" },
+  starting:    { label: "Démarrage",       color: "#F5A056", icon: "mdi:play-circle", tone: "warn" },
+  running:     { label: "Actif",           color: "#D6FF00", icon: "mdi:fan", tone: "active" },
+  stabilizing: { label: "Stabilisation",   color: "#D6FF00", icon: "mdi:waves", tone: "active" },
+  cooldown:    { label: "Cooldown",        color: "#5BC8E2", icon: "mdi:timer-sand", tone: "warn" },
+  schedule_off:{ label: "Hors planning",   color: "#8A92A0", icon: "mdi:clock-outline", tone: "idle" },
+  manual_override_timed: { label: "Override", color: "#F26D5B", icon: "mdi:account-clock", tone: "alert" },
+  manual_override_free:  { label: "Manuel",   color: "#F26D5B", icon: "mdi:account-edit", tone: "alert" },
+  window_open: { label: "Fenêtre ouverte", color: "#F5A056", icon: "mdi:window-open", tone: "warn" },
 };
 
 const REGIME_LABELS = {
@@ -190,9 +195,10 @@ class DelormejClimateCard extends HTMLElement {
     // ─────────────────── HEADER + STATE BADGE
     const stateObj = get(ids.state);
     const stateVal = stateObj?.state ?? "unknown";
-    const meta = STATE_META[stateVal] || { label: stateVal, color: "#7a8290", icon: "mdi:help-circle" };
+    const meta = STATE_META[stateVal] || { label: stateVal, color: "#8A92A0", icon: "mdi:help-circle", tone: "idle" };
     const badge = $("state-badge");
     badge.style.setProperty("--dc-state-color", meta.color);
+    badge.className = `dc-state state-${meta.tone}`;
     $("state-icon").setAttribute("icon", meta.icon);
     $("state-label").textContent = meta.label;
     const attrs = stateObj?.attributes || {};
@@ -250,6 +256,10 @@ class DelormejClimateCard extends HTMLElement {
     const narEl = $("narrative");
     narEl.innerHTML = nar.html;
     narEl.classList.toggle("warn", !!nar.warn);
+
+    // Thermal rail + phase ribbon (signature hero elements)
+    this._updateThermalRail(stateVal, attrs, get, ids);
+    this._updatePhases(stateVal, attrs);
 
     // Timeline + sparkline (only during an active cycle)
     this._updateTimeline(stateVal, attrs, get, ids);
@@ -851,6 +861,175 @@ class DelormejClimateCard extends HTMLElement {
       + `</svg>`;
   }
 
+  /* =================================================================== thermal rail */
+
+  /**
+   * Render the thermal rail in the hero. The rail represents the cooling (or
+   * heating) descent from "start threshold" to "target threshold", with a
+   * glowing cursor showing the current room T° pièce. When the zone is idle
+   * we hide the cursor reading but keep the bounds visible as a preview of
+   * the next cycle's range.
+   */
+  _updateThermalRail(stateVal, attrs, get, ids) {
+    const wrap = this.querySelector('[data-bind="rail-wrap"]');
+    const fill = this.querySelector('[data-bind="rail-fill"]');
+    const targetEl = this.querySelector('[data-bind="rail-target"]');
+    const cursor = this.querySelector('[data-bind="rail-cursor"]');
+    const cursorVal = this.querySelector('[data-bind="rail-cursor-val"]');
+    const boundLeft = this.querySelector('[data-bind="rail-bound-left"]');
+    const boundRight = this.querySelector('[data-bind="rail-bound-right"]');
+    if (!wrap || !fill || !targetEl || !cursor) return;
+
+    const roomTemp = parseFloat(get(ids.roomTemp)?.state);
+    const profiles = Array.isArray(attrs.profiles) ? attrs.profiles : [];
+    const activeName = attrs.active_profile_name;
+    const active = profiles.find((p) => p && p.name === activeName) || profiles[0];
+
+    // Resolve direction + thresholds. Direction comes from coordinator; when
+    // unknown, infer from room temp vs profile thresholds.
+    let dir = attrs.direction; // 'cool' | 'heat' | null
+    let startT, endT; // start = where the cycle would begin; end = the cible
+    if (active) {
+      if (dir === "cool") {
+        startT = active.seuil_debut_refroidissement;
+        endT = active.seuil_fin_refroidissement;
+      } else if (dir === "heat") {
+        startT = active.seuil_debut_chauffage;
+        endT = active.seuil_fin_chauffage;
+      } else {
+        // Idle: show the cooling range by default (more useful in summer)
+        startT = active.seuil_debut_refroidissement;
+        endT = active.seuil_fin_refroidissement;
+      }
+    }
+
+    if (startT == null || endT == null) {
+      // No profile / no thresholds → just hide the rail content
+      wrap.classList.add("no-rail");
+      return;
+    }
+    wrap.classList.remove("no-rail");
+
+    // Wrap classes — direction-aware coloring + idle dim
+    const idle = !["starting", "running", "stabilizing"].includes(stateVal);
+    wrap.classList.toggle("warm", dir === "heat");
+    wrap.classList.toggle("idle", idle);
+
+    // Map a temperature to a [0..100] position on the rail. The rail's LEFT
+    // edge represents `startT`, the RIGHT edge represents `endT`. For cool,
+    // startT > endT (rail descends left→right); for heat, startT < endT.
+    const mapPct = (t) => {
+      if (t == null || Number.isNaN(t) || startT === endT) return null;
+      let pct = ((t - startT) / (endT - startT)) * 100;
+      pct = Math.max(0, Math.min(100, pct));
+      return pct;
+    };
+
+    // Bounds labels: left = start, right = target — formatted as readouts
+    if (boundLeft) boundLeft.textContent = `${this._fmtTemp(startT)}°`;
+    if (boundRight) boundRight.textContent = `${this._fmtTemp(endT)}°`;
+
+    // Target marker — always at 100% (rail's right edge by definition).
+    // Visually offset slightly so it's not at the very edge.
+    targetEl.style.left = "100%";
+    targetEl.setAttribute("data-label", "CIBLE");
+
+    // Cursor position based on current room T°
+    const roomPct = mapPct(roomTemp);
+    if (roomPct == null) {
+      cursor.style.left = "0";
+      if (cursorVal) cursorVal.textContent = "—";
+      fill.style.width = "0";
+      return;
+    }
+    cursor.style.left = `${roomPct}%`;
+    if (cursorVal) cursorVal.textContent = this._fmtTemp(roomTemp);
+
+    // Fill: from rail-start (0%) up to current cursor (covers the journey already done)
+    fill.style.left = "0";
+    fill.style.width = `${roomPct}%`;
+  }
+
+  /* =================================================================== phases */
+
+  /**
+   * Highlight the active phase in the 3-card ribbon. Phases:
+   *   ATTAQUE (state in starting/running) → first card lights up
+   *   STABILISATION (state == stabilizing) → second card lights up
+   *   COOLDOWN (state == cooldown) → third card lights up
+   *
+   * Each card shows a small relevant value:
+   *   - attaque: elapsed time since cycle started
+   *   - stab: remaining time before STAB ends
+   *   - cooldown: remaining time before COOLDOWN ends
+   */
+  _updatePhases(stateVal, attrs) {
+    const wrap = this.querySelector('[data-bind="phases"]');
+    if (!wrap) return;
+
+    const active = ["starting", "running", "stabilizing", "cooldown"].includes(stateVal);
+    wrap.classList.toggle("hidden", !active);
+    if (!active) return;
+
+    const cards = {
+      attaque:  this.querySelector('[data-bind="phase-attaque"]'),
+      stab:     this.querySelector('[data-bind="phase-stab"]'),
+      cooldown: this.querySelector('[data-bind="phase-cooldown"]'),
+    };
+    const vals = {
+      attaque:  this.querySelector('[data-bind="phase-attaque-val"]'),
+      stab:     this.querySelector('[data-bind="phase-stab-val"]'),
+      cooldown: this.querySelector('[data-bind="phase-cooldown-val"]'),
+    };
+    Object.values(cards).forEach((c) => c && (c.className = "dc-phase upcoming"));
+
+    const now = Date.now() / 1000;
+    const cycleStart = attrs.cycle_started_at
+      ? new Date(attrs.cycle_started_at).getTime() / 1000 : null;
+    const stabEnds = attrs.stabilization_ends_at
+      ? new Date(attrs.stabilization_ends_at).getTime() / 1000 : null;
+    const cooldownEnds = attrs.cooldown_ends_at
+      ? new Date(attrs.cooldown_ends_at).getTime() / 1000 : null;
+
+    const fmtMin = (s) => {
+      if (s == null || s < 0) return "—";
+      const m = Math.round(s / 60);
+      if (m < 60) return `${m} min`;
+      const h = Math.floor(m / 60);
+      return `${h}h ${(m % 60).toString().padStart(2, "0")}`;
+    };
+
+    if (stateVal === "starting" || stateVal === "running") {
+      cards.attaque.className = "dc-phase active";
+      if (vals.attaque) {
+        vals.attaque.textContent = cycleStart != null
+          ? fmtMin(now - cycleStart) : "en cours";
+      }
+      if (vals.stab) vals.stab.textContent = "—";
+      if (vals.cooldown) vals.cooldown.textContent = "—";
+    } else if (stateVal === "stabilizing") {
+      cards.attaque.className = "dc-phase done";
+      if (vals.attaque && cycleStart != null && attrs.state_entered_at) {
+        const stabStart = new Date(attrs.state_entered_at).getTime() / 1000;
+        vals.attaque.textContent = fmtMin(stabStart - cycleStart);
+      }
+      cards.stab.className = "dc-phase active";
+      if (vals.stab) {
+        vals.stab.textContent = stabEnds != null
+          ? `${fmtMin(stabEnds - now)} restantes` : "en cours";
+      }
+      if (vals.cooldown) vals.cooldown.textContent = "—";
+    } else if (stateVal === "cooldown") {
+      cards.attaque.className = "dc-phase done";
+      cards.stab.className = "dc-phase done";
+      cards.cooldown.className = "dc-phase active";
+      if (vals.cooldown) {
+        vals.cooldown.textContent = cooldownEnds != null
+          ? `${fmtMin(cooldownEnds - now)} restantes` : "en cours";
+      }
+    }
+  }
+
   /* =================================================================== helpers */
 
   _pill(icon, text, cls = "neutral") {
@@ -918,18 +1097,80 @@ class DelormejClimateCard extends HTMLElement {
     const tMinC = this._fmtTemp(c.temp_min);
     const profile = c.profile_at_start || c.profile_at_end || "—";
     const meta = this._cycleEndReasonMeta(c.end_reason);
+    const spark = this._buildCycleSparkline(c);
+    const dayLabel = this._fmtDayLabel(c.start_ts);
     return `
       <div class="dc-cycle-row">
+        <div class="dc-cycle-times">
+          ${tStart}
+          <span class="end">${tEnd}</span>
+        </div>
         <div class="dc-cycle-icon ${meta.klass}" title="${this._escapeHTML(meta.label)}">
           <ha-icon icon="${meta.icon}"></ha-icon>
         </div>
         <div class="dc-cycle-main">
-          <div class="dc-cycle-times">${tStart}–${tEnd}</div>
-          <div class="dc-cycle-details">${tStartC}° → ${tEndC}° (min ${tMinC}°) · ${this._escapeHTML(profile)}</div>
+          <div class="dc-cycle-spark">${spark}</div>
+          <div class="dc-cycle-details">
+            <span class="v">${tStartC}°</span> → <span class="v">${tEndC}°</span>
+            · min <span class="v">${tMinC}°</span>
+            · ${this._escapeHTML(profile)}
+          </div>
         </div>
-        <div class="dc-cycle-duration">${duration}</div>
+        <div class="dc-cycle-duration">
+          ${duration}
+          <span class="sub">${dayLabel}</span>
+        </div>
       </div>
     `;
+  }
+
+  /**
+   * Build a 3-point sparkline SVG (start → min → end). It's a "trajectory hint"
+   * — we don't have per-tick samples for completed cycles, only start/min/end
+   * temps. A bezier curve gives the eye a sense of the descent's shape.
+   */
+  _buildCycleSparkline(c) {
+    const tS = parseFloat(c.temp_start);
+    const tE = parseFloat(c.temp_end);
+    const tM = parseFloat(c.temp_min);
+    if ([tS, tE, tM].some((v) => Number.isNaN(v))) {
+      return `<svg viewBox="0 0 100 22" preserveAspectRatio="none"></svg>`;
+    }
+    const tMax = Math.max(tS, tE);
+    const tMin = Math.min(tM, tS, tE);
+    const range = Math.max(0.5, tMax - tMin);
+    // Y inverted: higher temp = higher up (closer to 0). Padding of 2 top/bot.
+    const y = (t) => 2 + (1 - (t - tMin) / range) * 18;
+    const x0 = 2, x1 = 50, x2 = 98;
+    const y0 = y(tS), y1 = y(tM), y2 = y(tE);
+    // Smooth quadratic-ish curve through the 3 points
+    const cp1x = (x0 + x1) / 2, cp1y = y0;
+    const cp2x = (x1 + x2) / 2, cp2y = y2;
+    const d = `M${x0} ${y0} Q ${cp1x} ${cp1y}, ${x1} ${y1} Q ${cp2x} ${cp2y}, ${x2} ${y2}`;
+    return `
+      <svg viewBox="0 0 100 22" preserveAspectRatio="none">
+        <path d="${d}" fill="none" stroke="currentColor" stroke-width="1.4"
+              stroke-linecap="round" opacity="0.85"/>
+        <circle cx="${x0}" cy="${y0}" r="1.6" fill="currentColor"/>
+        <circle cx="${x1}" cy="${y1}" r="1.6" fill="currentColor" opacity="0.5"/>
+        <circle cx="${x2}" cy="${y2}" r="1.6" fill="currentColor"/>
+      </svg>
+    `;
+  }
+
+  _fmtDayLabel(ts) {
+    if (ts == null) return "";
+    const now = new Date();
+    const d = new Date(ts * 1000);
+    const startOfDay = (date) => {
+      const c = new Date(date);
+      c.setHours(0, 0, 0, 0);
+      return c.getTime();
+    };
+    const dayDiff = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
+    if (dayDiff === 0) return "AUJ";
+    if (dayDiff === 1) return "HIER";
+    return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
   }
 
   _cycleEndReasonMeta(reason) {
@@ -955,351 +1196,621 @@ class DelormejClimateCard extends HTMLElement {
 
 
 const STYLES = `
+  @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
   /* ─────────────────────────────────────────────────────────────────
-     Bubble palette : doux gris-bleus + icônes colorées dans des cercles
-     vibrants, à la manière du dashboard bubble-card de l'utilisateur.
+     Instrument-panel palette : deep neutral surface + glacial cool +
+     amber warm + sharp lime live signal. Mono numerals for readouts.
      ───────────────────────────────────────────────────────────────── */
   ha-card.dc-card {
-    --dc-pad: 18px;
+    /* spacing */
+    --dc-pad: 20px;
     --dc-radius: 18px;
+    --dc-radius-sm: 14px;
     --dc-radius-pill: 999px;
-    --dc-radius-sm: 12px;
-    --dc-hairline: rgba(255,255,255,0.06);
-    --dc-bg-bubble: rgba(255,255,255,0.04);
-    --dc-bg-bubble-strong: rgba(255,255,255,0.07);
-    --dc-bg-inset: rgba(0,0,0,0.18);
-    --dc-fg: rgba(255,255,255,0.95);
-    --dc-muted: rgba(255,255,255,0.62);
-    --dc-dim: rgba(255,255,255,0.42);
-    --dc-cool: #4d8bff;
-    --dc-heat: #ff7043;
-    --dc-warn: #fb9223;
-    --dc-success: #43a047;
-    --dc-danger: #e85e54;
-    --dc-info: #00bcd4;
-    --dc-accent: #fbbf24;       /* doré chaud, plus chaleureux que champagne */
+    --dc-hairline: rgba(255,255,255,0.07);
+
+    /* surfaces */
+    --dc-bg: #0E1014;
+    --dc-surface: #181B22;
+    --dc-surface-strong: #1E222A;
+    --dc-rail-empty: #2A2F3A;
+    --dc-bg-bubble: rgba(255,255,255,0.035);
+    --dc-bg-bubble-strong: rgba(255,255,255,0.06);
+    --dc-bg-inset: rgba(0,0,0,0.22);
+
+    /* text */
+    --dc-fg: #F2F4F7;
+    --dc-muted: #8A92A0;
+    --dc-dim: #5A6170;
+
+    /* climate semantics */
+    --dc-cool: #5BC8E2;
+    --dc-cool-soft: rgba(91,200,226,0.14);
+    --dc-heat: #F5A056;
+    --dc-warm: #F5A056;
+    --dc-warm-soft: rgba(245,160,86,0.14);
+
+    /* live signal — single bright accent, used VERY sparingly */
+    --dc-live: #D6FF00;
+    --dc-live-soft: rgba(214,255,0,0.16);
+
+    /* alerts / states */
+    --dc-warn: #F5A056;
+    --dc-success: #5BC8E2;
+    --dc-danger: #F26D5B;
+    --dc-info: #5BC8E2;
+    --dc-accent: #D6FF00;
+
+    /* typography */
+    --dc-font-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --dc-font-body: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+
+    background: var(--dc-bg);
+    color: var(--dc-fg);
+    font-family: var(--dc-font-body);
+    font-size: 14px;
+    line-height: 1.4;
     padding: 0; overflow: hidden;
     border-radius: var(--ha-card-border-radius, var(--dc-radius));
-    color: var(--dc-fg);
-    font-size: 0.95em;
   }
+  ha-card.dc-card * { box-sizing: border-box; }
 
   /* ============ HEADER ============ */
   .dc-header {
-    display: flex; align-items: center; gap: 14px;
-    padding: 18px var(--dc-pad);
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 24px var(--dc-pad) 12px;
   }
   .dc-header .head-icon {
-    width: 44px; height: 44px; border-radius: 50%;
-    background: var(--dc-bg-bubble-strong);
+    width: 32px; height: 32px;
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0;
-    color: var(--dc-state-color, var(--dc-fg));
-    transition: background 0.3s, color 0.3s;
+    color: var(--dc-state-color, var(--dc-muted));
+    margin-top: 4px;
+    transition: color 0.3s;
   }
   .dc-header .head-icon ha-icon { --mdc-icon-size: 24px; }
-  .dc-header .head-icon.active { background: var(--dc-state-color, var(--dc-bg-bubble-strong)); color: white; }
+  .dc-header .head-icon.active { color: var(--dc-state-color, var(--dc-fg)); }
   .dc-header .title-block { flex: 1; min-width: 0; }
   .dc-header .title {
-    font-size: 1.15em; font-weight: 700; line-height: 1.2;
-    letter-spacing: -0.005em;
-  }
-  .dc-header .subtitle {
-    font-size: 0.82em; color: var(--dc-muted); margin-top: 3px;
-  }
-  .dc-header .head-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-  .dc-state {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 5px 11px; border-radius: var(--dc-radius-pill);
-    font-size: 0.78em; font-weight: 600;
-    color: white;
-    background: var(--dc-state-color, #7a8290);
-    white-space: nowrap;
-  }
-  .dc-state ha-icon { --mdc-icon-size: 14px; }
-  .dc-header .head-regime {
-    font-size: 0.75em; color: var(--dc-muted);
-    font-weight: 500;
-  }
-
-  /* ============ SECTIONS ============ */
-  .dc-section { padding: 0 var(--dc-pad) var(--dc-pad); }
-  .dc-section-head {
-    display: flex; align-items: center; gap: 10px;
-    margin-bottom: 12px;
-  }
-  .dc-section-head .head-bubble {
-    width: 28px; height: 28px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0; color: white;
-  }
-  .dc-section-head .head-bubble ha-icon { --mdc-icon-size: 16px; }
-  .dc-section-head .lbl {
-    font-size: 1em; font-weight: 700;
-    color: var(--dc-fg);
-  }
-  /* per-section accent on the head bubble */
-  .section-status   .head-bubble { background: var(--dc-info); }
-  .section-profiles .head-bubble { background: var(--dc-warn); }
-  .section-auto     .head-bubble { background: var(--dc-success); }
-  .section-manual   .head-bubble { background: var(--dc-cool); }
-  .section-cycles   .head-bubble { background: var(--dc-muted); }
-
-  /* ============ §5 SESSIONS RÉCENTES ============ */
-  .dc-cycles-empty {
-    text-align: center; color: var(--dc-muted); font-size: 0.9em;
-    padding: 16px; background: var(--dc-bg-bubble);
-    border-radius: var(--dc-radius-sm);
-  }
-  .dc-cycles-list { display: flex; flex-direction: column; gap: 8px; }
-  .dc-cycle-row {
-    display: grid;
-    grid-template-columns: 28px 1fr auto;
-    gap: 10px; align-items: center;
-    padding: 10px 12px;
-    background: var(--dc-bg-bubble);
-    border-radius: var(--dc-radius-sm);
-  }
-  .dc-cycle-icon {
-    display: flex; align-items: center; justify-content: center;
-    width: 28px; height: 28px; border-radius: 50%;
-    background: var(--dc-info); color: white; flex-shrink: 0;
-  }
-  .dc-cycle-icon.success { background: var(--dc-success); }
-  .dc-cycle-icon.warn { background: var(--dc-warn); }
-  .dc-cycle-icon ha-icon { --mdc-icon-size: 16px; }
-  .dc-cycle-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .dc-cycle-times {
-    font-weight: 600; color: var(--dc-fg);
-    font-size: 0.95em;
-    font-variant-numeric: tabular-nums;
-  }
-  .dc-cycle-details {
-    font-size: 0.82em; color: var(--dc-muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .dc-cycle-duration {
-    font-size: 0.85em; color: var(--dc-muted);
-    text-align: right; font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  /* ============ §1 ÉTAT ACTUEL ============ */
-  /* Hero bubble — big, friendly, central */
-  .dc-hero {
-    background: var(--dc-bg-bubble);
-    border-radius: var(--dc-radius-sm);
-    padding: 18px;
-    margin-bottom: 12px;
-  }
-  .dc-hero-row {
-    display: flex; align-items: center; justify-content: center;
-    gap: 14px; flex-wrap: wrap;
-  }
-  /* Idle (no target): centered room temp, slightly larger to balance the bubble */
-  .dc-hero-row.hero-row--idle .room { font-size: 3.4em; line-height: 1; }
-  .dc-hero-row.hero-row--idle .room-label {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 12px; border-radius: var(--dc-radius-pill);
-    background: var(--dc-bg-bubble); margin-top: 12px;
-  }
-  .dc-hero-row.hero-row--idle .room-label::before {
-    content: ""; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--dc-muted);
-  }
-  .dc-hero .room-block { text-align: center; }
-  .dc-hero .room {
-    font-size: 3em; font-weight: 700; line-height: 1;
-    font-variant-numeric: tabular-nums;
+    font-size: 22px; font-weight: 700; line-height: 1.15;
     letter-spacing: -0.02em;
     color: var(--dc-fg);
   }
-  .dc-hero .room .unit {
-    font-size: 0.35em; color: var(--dc-muted); font-weight: 500;
-    margin-left: 3px;
+  .dc-header .subtitle {
+    font-size: 11px; color: var(--dc-muted);
+    margin-top: 5px;
+    font-family: var(--dc-font-mono);
+    letter-spacing: 0.04em;
   }
-  .dc-hero .room-label {
-    font-size: 0.78em; color: var(--dc-muted); margin-top: 6px;
+  /* State tag — small mono uppercase with a "live" dot when active */
+  .dc-state {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 10px 6px 11px;
+    border-radius: var(--dc-radius-pill);
+    font-size: 10px; font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-family: var(--dc-font-mono);
+    color: var(--dc-muted);
+    background: var(--dc-surface);
+    white-space: nowrap;
+    margin-top: 2px;
+  }
+  .dc-state::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--dc-muted);
+    flex-shrink: 0;
+  }
+  .dc-state.state-active {
+    color: var(--dc-live);
+    background: var(--dc-live-soft);
+  }
+  .dc-state.state-active::before {
+    background: var(--dc-live);
+    box-shadow: 0 0 8px var(--dc-live);
+    animation: dc-pulse 1.8s ease-in-out infinite;
+  }
+  .dc-state.state-warn { color: var(--dc-warm); background: var(--dc-warm-soft); }
+  .dc-state.state-warn::before { background: var(--dc-warm); }
+  .dc-state.state-alert { color: var(--dc-danger); background: rgba(242,109,91,0.16); }
+  .dc-state.state-alert::before { background: var(--dc-danger); }
+  .dc-state ha-icon { display: none; }
+  @keyframes dc-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.8); }
+  }
+
+  /* ============ SECTIONS ============ */
+  .dc-section { padding: 0 var(--dc-pad) 26px; }
+  .dc-section-head {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 16px;
+  }
+  /* Hide the legacy circular bubble icons */
+  .dc-section-head .head-bubble {
+    display: none;
+  }
+  /* Eyebrow label — small mono uppercase, followed by a thin rule */
+  .dc-section-head .lbl {
+    font-family: var(--dc-font-mono);
+    font-size: 10px; font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--dc-muted);
+    flex-shrink: 0;
+  }
+  .dc-section-head::after {
+    content: "";
+    flex: 1; height: 1px;
+    background: var(--dc-hairline);
+  }
+
+  /* ============ §5 SESSIONS RÉCENTES ============ */
+  .dc-cycles-empty {
+    text-align: center;
+    color: var(--dc-muted);
+    font-family: var(--dc-font-body);
+    font-size: 13px;
+    padding: 20px;
+    background: var(--dc-surface);
+    border-radius: var(--dc-radius-sm);
+    border: 1px dashed var(--dc-hairline);
+  }
+  .dc-cycles-list {
+    display: flex; flex-direction: column;
+    background: var(--dc-surface);
+    border-radius: var(--dc-radius-sm);
+    border: 1px solid var(--dc-hairline);
+    overflow: hidden;
+  }
+  .dc-cycle-row {
+    display: grid;
+    grid-template-columns: 64px 70px 1fr 78px;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--dc-hairline);
+    transition: background 0.15s;
+  }
+  .dc-cycle-row:last-child { border-bottom: none; }
+  .dc-cycle-row:hover { background: var(--dc-surface-strong); }
+  /* Time column — start/end times stacked */
+  .dc-cycle-times {
+    font-family: var(--dc-font-mono);
+    font-size: 12px;
+    color: var(--dc-fg);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: 0.02em;
+  }
+  .dc-cycle-times .end {
+    display: block;
+    color: var(--dc-dim);
     font-weight: 500;
   }
-  .dc-hero .arrow {
-    color: var(--dc-muted); font-size: 1.1em; font-weight: 400;
-    width: 22px; height: 22px;
+  /* Compact end-reason icon column */
+  .dc-cycle-icon {
     display: flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px;
+    color: var(--dc-cool);
+    flex-shrink: 0;
   }
-  .dc-hero .target-block {
-    display: flex; flex-direction: column; align-items: center; gap: 2px;
+  .dc-cycle-icon.success { color: var(--dc-cool); }
+  .dc-cycle-icon.warn { color: var(--dc-warm); }
+  .dc-cycle-icon ha-icon { --mdc-icon-size: 18px; }
+  /* Sparkline + temp details column */
+  .dc-cycle-main {
+    display: flex; flex-direction: column;
+    gap: 4px; min-width: 0;
   }
-  .dc-hero .target-block .target {
-    font-size: 1em; font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    color: var(--dc-accent);
+  .dc-cycle-spark {
+    width: 100%; height: 22px;
+    color: var(--dc-cool);
   }
-  .dc-hero .target-block .target-label {
-    font-size: 0.65em; color: var(--dc-dim); font-weight: 500;
+  .dc-cycle-spark svg { display: block; width: 100%; height: 100%; }
+  .dc-cycle-details {
+    font-family: var(--dc-font-mono);
+    font-size: 10px;
+    color: var(--dc-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    letter-spacing: 0.04em;
+  }
+  .dc-cycle-details .v {
+    color: var(--dc-fg);
+    font-weight: 600;
+  }
+  /* Right column — duration */
+  .dc-cycle-duration {
+    font-family: var(--dc-font-mono);
+    font-size: 12px; font-weight: 600;
+    color: var(--dc-fg);
+    text-align: right;
+    white-space: nowrap;
+    letter-spacing: 0.02em;
+  }
+  .dc-cycle-duration .sub {
+    display: block;
+    font-size: 9px; color: var(--dc-dim);
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-top: 1px;
   }
 
+  /* ============ §1 ÉTAT ACTUEL — instrument-style hero ============ */
+  .dc-hero {
+    padding: 4px 0 24px;
+  }
+  /* Narrative — 1 sentence above the rail */
   .dc-narrative {
-    text-align: center; margin: 14px 0 0;
-    padding-top: 14px; border-top: 1px solid var(--dc-hairline);
-    font-size: 0.95em; line-height: 1.45; color: var(--dc-fg);
+    font-size: 15px; line-height: 1.5;
+    color: var(--dc-fg);
+    margin-bottom: 4px;
+    font-weight: 400;
+  }
+  .dc-narrative .target,
+  .dc-narrative .accent {
+    color: var(--dc-cool);
+    font-family: var(--dc-font-mono);
+    font-weight: 600;
+    font-size: 0.92em;
+  }
+  .dc-narrative .until {
+    color: var(--dc-muted);
+    font-family: var(--dc-font-mono);
+    font-size: 0.88em;
+  }
+  .dc-narrative.warm .target,
+  .dc-narrative.warm .accent { color: var(--dc-warm); }
+  .dc-narrative.warn { color: var(--dc-warm); }
+
+  /* Hidden legacy hero-row elements (we don't use them anymore — JS still sets them) */
+  .dc-hero-row { display: none !important; }
+
+  /* THERMAL RAIL — the signature element */
+  .dc-rail-wrap {
+    position: relative;
+    margin: 48px 12px 0;
+    height: 56px;
+  }
+  .dc-rail-wrap.idle { opacity: 0.7; }
+  .dc-rail-track {
+    position: absolute;
+    left: 0; right: 0;
+    top: 22px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--dc-rail-empty);
+    overflow: visible;
+  }
+  /* Active fill: from the "start" threshold to the cursor position */
+  .dc-rail-fill {
+    position: absolute;
+    top: 0; bottom: 0;
+    background: linear-gradient(90deg, transparent, var(--dc-cool));
+    border-radius: 2px;
+    opacity: 0.5;
+    transition: left 0.6s ease, width 0.6s ease;
+  }
+  .dc-rail-wrap.warm .dc-rail-fill {
+    background: linear-gradient(90deg, transparent, var(--dc-warm));
+  }
+  /* Target marker — vertical line at the target threshold */
+  .dc-rail-target {
+    position: absolute;
+    top: -10px; bottom: -10px;
+    width: 2px;
+    background: var(--dc-cool);
+    opacity: 0.55;
+    transition: left 0.6s ease;
+  }
+  .dc-rail-wrap.warm .dc-rail-target { background: var(--dc-warm); }
+  .dc-rail-target::after {
+    content: attr(data-label);
+    position: absolute;
+    bottom: -22px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--dc-font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    color: var(--dc-muted);
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  /* Cursor — current T° pièce */
+  .dc-rail-cursor {
+    position: absolute;
+    top: 4px;
+    transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center;
+    gap: 6px;
+    transition: left 0.6s ease;
+  }
+  .dc-rail-cursor .reading {
+    font-family: var(--dc-font-mono);
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--dc-fg);
+    white-space: nowrap;
+    line-height: 1;
+  }
+  .dc-rail-cursor .reading .unit {
+    font-size: 12px;
+    color: var(--dc-muted);
+    margin-left: 1px;
     font-weight: 500;
   }
-  .dc-narrative .target { color: var(--dc-accent); font-weight: 700; font-variant-numeric: tabular-nums; }
-  .dc-narrative .until { color: var(--dc-muted); font-variant-numeric: tabular-nums; font-weight: 600; }
-  .dc-narrative.warn { color: var(--dc-warn); }
+  .dc-rail-cursor .dot {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--dc-live);
+    box-shadow: 0 0 18px var(--dc-live), 0 0 0 4px var(--dc-bg);
+    transition: background 0.3s, box-shadow 0.3s;
+  }
+  .dc-rail-wrap.idle .dc-rail-cursor .dot {
+    background: var(--dc-muted);
+    box-shadow: 0 0 0 4px var(--dc-bg);
+  }
+  /* Bounds row — start/end of the rail */
+  .dc-rail-bounds {
+    position: absolute;
+    left: 0; right: 0;
+    top: 44px;
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--dc-font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: var(--dc-dim);
+  }
+  .dc-rail-bounds .bound {
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .dc-rail-bounds .bound.right { align-items: flex-end; }
+  .dc-rail-bounds .bound .v {
+    color: var(--dc-muted); font-weight: 600; font-size: 11px;
+  }
+  /* When idle (no cycle running), hide the cursor reading + dot, just show the rail */
+  .dc-rail-wrap.no-rail { display: none; }
 
-  /* Timeline + sparkline (visible during an active cycle) */
+  /* PHASE RIBBON — 3 phase cards below the rail */
+  .dc-phases {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+    margin-top: 28px;
+  }
+  .dc-phase {
+    padding: 10px 12px 11px;
+    background: var(--dc-surface);
+    border-radius: 10px;
+    border: 1px solid transparent;
+    display: flex; flex-direction: column; gap: 3px;
+    transition: all 0.3s;
+  }
+  .dc-phase .label {
+    font-family: var(--dc-font-mono);
+    font-size: 9px; letter-spacing: 0.16em;
+    font-weight: 600;
+    color: var(--dc-dim);
+    text-transform: uppercase;
+  }
+  .dc-phase .val {
+    font-family: var(--dc-font-mono);
+    font-size: 12px;
+    color: var(--dc-muted);
+    font-weight: 500;
+  }
+  .dc-phase.active {
+    background: var(--dc-live-soft);
+    border-color: rgba(214,255,0,0.32);
+  }
+  .dc-phase.active .label { color: var(--dc-live); }
+  .dc-phase.active .val { color: var(--dc-fg); font-weight: 600; }
+  .dc-phase.done .label { color: var(--dc-muted); }
+  .dc-phase.done .val { color: var(--dc-fg); }
+  .dc-phase.upcoming { opacity: 0.45; }
+  .dc-phases.hidden { display: none; }
+
+  /* Timeline + sparkline (visible during an active cycle, below phases) */
   .dc-timeline {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px dashed var(--dc-hairline);
+    margin-top: 20px;
+    padding-top: 14px;
+    border-top: 1px solid var(--dc-hairline);
   }
   .dc-timeline-text {
-    font-size: 0.82em;
+    font-family: var(--dc-font-mono);
+    font-size: 11px;
     color: var(--dc-muted);
-    margin-bottom: 6px;
-    font-variant-numeric: tabular-nums;
+    margin-bottom: 8px;
+    letter-spacing: 0.04em;
   }
   .dc-timeline-text .dc-delta {
-    color: var(--dc-info);
+    color: var(--dc-cool);
     font-weight: 600;
   }
   .dc-spark { width: 100%; }
   .dc-spark svg { display: block; }
 
-  /* Status pills */
-  .dc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  /* Compact info row below hero — replaces the old pills row */
+  .dc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
   .dc-pill {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 6px 11px; border-radius: var(--dc-radius-pill);
-    font-size: 0.78em; font-weight: 600;
-    background: var(--dc-bg-bubble);
+    padding: 4px 9px;
+    border-radius: var(--dc-radius-pill);
+    font-family: var(--dc-font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    background: var(--dc-surface);
     color: var(--dc-muted);
+    border: 1px solid var(--dc-hairline);
   }
-  .dc-pill ha-icon { --mdc-icon-size: 14px; }
-  .dc-pill--ok    { background: rgba(67,160,71,0.15); color: var(--dc-success); }
-  .dc-pill--warn  { background: rgba(251,146,35,0.18); color: var(--dc-warn); }
-  .dc-pill--info  { background: rgba(0,188,212,0.15); color: var(--dc-info); }
-  .dc-pill--neutral { background: var(--dc-bg-bubble); color: var(--dc-muted); }
+  .dc-pill ha-icon { --mdc-icon-size: 12px; opacity: 0.8; }
+  .dc-pill--ok    { color: var(--dc-cool); border-color: rgba(91,200,226,0.25); background: var(--dc-cool-soft); }
+  .dc-pill--warn  { color: var(--dc-warm); border-color: rgba(245,160,86,0.28); background: var(--dc-warm-soft); }
+  .dc-pill--info  { color: var(--dc-cool); border-color: rgba(91,200,226,0.25); background: var(--dc-cool-soft); }
+  .dc-pill--neutral { background: var(--dc-surface); color: var(--dc-muted); }
 
-  /* Metrics — list of rows in a bubble */
+  /* Metrics list (in Détails techniques) */
   .dc-metrics {
-    background: var(--dc-bg-bubble);
-    border-radius: var(--dc-radius-sm);
-    padding: 6px 4px;
+    background: transparent;
+    padding: 0;
   }
   .dc-metric-row {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 9px 12px;
+    padding: 11px 0;
     border-bottom: 1px solid var(--dc-hairline);
   }
   .dc-metric-row:last-child { border-bottom: none; }
   .dc-metric-row .label {
     display: flex; align-items: center; gap: 8px;
-    font-size: 0.9em; color: var(--dc-muted); font-weight: 500;
+    font-size: 12px; color: var(--dc-muted); font-weight: 500;
   }
-  .dc-metric-row .label ha-icon { --mdc-icon-size: 16px; color: var(--dc-dim); }
+  .dc-metric-row .label ha-icon { --mdc-icon-size: 14px; color: var(--dc-dim); }
   .dc-metric-row .value {
-    font-size: 1em; font-weight: 700;
-    font-variant-numeric: tabular-nums; color: var(--dc-fg);
+    font-family: var(--dc-font-mono);
+    font-size: 13px; font-weight: 600;
+    color: var(--dc-fg);
   }
   .dc-override-row {
-    margin-top: 10px; padding: 12px 14px;
-    background: rgba(233,111,142,0.12);
+    margin-top: 14px; padding: 12px 14px;
+    background: rgba(242,109,91,0.10);
+    border: 1px solid rgba(242,109,91,0.28);
     border-radius: var(--dc-radius-sm);
     display: flex; justify-content: space-between; align-items: center;
-    font-size: 0.9em;
+    font-size: 12px;
   }
-  .dc-override-row .lbl { color: #e96f8e; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .dc-override-row .val { font-weight: 700; font-variant-numeric: tabular-nums; color: #e96f8e; }
+  .dc-override-row .lbl {
+    color: var(--dc-danger); font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--dc-font-mono);
+    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  .dc-override-row .val {
+    font-family: var(--dc-font-mono);
+    font-weight: 700;
+    color: var(--dc-danger);
+  }
 
-  /* Collapsible 'Détails techniques' — hidden by default, keeps §1 concise */
+  /* Collapsible 'Détails techniques' — hidden by default */
   .dc-details-toggle {
-    margin-top: 10px;
-    border-top: 1px dashed var(--dc-hairline);
-    padding-top: 4px;
+    margin-top: 20px;
+    padding: 0;
   }
   .dc-details-toggle > summary {
     cursor: pointer; list-style: none;
-    padding: 10px 4px;
-    font-size: 0.8em; color: var(--dc-muted); font-weight: 600;
+    padding: 10px 0;
+    font-family: var(--dc-font-mono);
+    font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--dc-muted); font-weight: 600;
     display: flex; align-items: center; gap: 8px;
     user-select: none;
+    border-top: 1px solid var(--dc-hairline);
   }
   .dc-details-toggle > summary::-webkit-details-marker { display: none; }
   .dc-details-toggle > summary::before {
-    content: "▸";
+    content: "+";
     display: inline-block;
     transition: transform 0.2s ease;
     color: var(--dc-dim);
+    font-size: 14px;
+    line-height: 1;
   }
-  .dc-details-toggle[open] > summary::before { transform: rotate(90deg); }
+  .dc-details-toggle[open] > summary::before { content: "−"; }
   .dc-details-toggle > summary:hover { color: var(--dc-fg); }
-  .dc-details-toggle[open] .dc-metrics { margin-top: 4px; }
+  .dc-details-toggle[open] > summary { color: var(--dc-fg); }
+  .dc-details-toggle[open] .dc-metrics { margin-top: 6px; }
 
   /* ============ §2 PROFILS ============ */
   .dc-profiles-list {
     display: flex; flex-direction: column; gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
   }
   .dc-profiles-empty {
-    background: var(--dc-bg-bubble);
+    background: var(--dc-surface);
     border-radius: var(--dc-radius-sm);
-    padding: 14px;
+    padding: 18px;
     color: var(--dc-muted);
-    font-size: 0.85em;
+    font-size: 13px;
     text-align: center;
     margin-bottom: 10px;
   }
   .dc-profile {
-    background: var(--dc-bg-bubble);
+    background: var(--dc-surface);
     border-radius: var(--dc-radius-sm);
-    padding: 12px;
-    border: 1px solid transparent;
+    padding: 14px 14px 14px 18px;
+    border: 1px solid var(--dc-hairline);
+    position: relative;
+    transition: all 0.2s;
   }
   .dc-profile--active {
-    background: rgba(67,160,71,0.10);
-    border-color: rgba(67,160,71,0.35);
+    background: var(--dc-surface-strong);
+    border-color: rgba(214,255,0,0.28);
+  }
+  .dc-profile--active::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 14px; bottom: 14px;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    background: var(--dc-live);
+    box-shadow: 0 0 12px var(--dc-live);
   }
   .dc-profile-head {
-    display: flex; align-items: center; gap: 8px;
+    display: flex; align-items: center; gap: 10px;
     margin-bottom: 8px;
   }
   .dc-profile-badge {
-    background: var(--dc-success);
-    color: white;
-    font-size: 0.65em; font-weight: 700;
-    padding: 2px 7px;
-    border-radius: var(--dc-radius-pill);
-    letter-spacing: 0.05em;
+    background: var(--dc-live);
+    color: var(--dc-bg);
+    font-family: var(--dc-font-mono);
+    font-size: 9px; font-weight: 700;
+    padding: 3px 7px 2px;
+    border-radius: 4px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
   }
   .dc-profile-name {
     flex: 1;
     font-weight: 600;
     color: var(--dc-fg);
-    font-size: 0.95em;
+    font-size: 14px;
+    letter-spacing: -0.01em;
   }
   .dc-profile-actions {
     display: flex; gap: 4px;
   }
   .dc-profile-actions button {
-    width: 32px; height: 32px;
-    border: none; border-radius: 50%;
-    background: var(--dc-bg-bubble-strong);
+    width: 28px; height: 28px;
+    border: none; border-radius: 8px;
+    background: transparent;
     color: var(--dc-muted);
-    cursor: pointer; font-size: 0.95em; font-weight: 700;
+    cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     transition: all 0.15s;
   }
   .dc-profile-actions button ha-icon { --mdc-icon-size: 16px; }
   .dc-profile-actions button:hover { background: var(--dc-bg-inset); color: var(--dc-fg); }
   .dc-profile-meta {
-    display: flex; flex-wrap: wrap; gap: 4px 10px;
-    font-size: 0.78em; color: var(--dc-muted);
+    display: flex; flex-wrap: wrap;
+    gap: 4px 14px;
+    font-family: var(--dc-font-mono);
+    font-size: 11px;
+    color: var(--dc-muted);
+    letter-spacing: 0.02em;
   }
-  .dc-profile-meta span { display: inline-flex; align-items: center; gap: 5px; }
-  .dc-profile-meta ha-icon { --mdc-icon-size: 14px; color: var(--dc-dim); }
+  .dc-profile-meta span {
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .dc-profile-meta ha-icon { --mdc-icon-size: 13px; color: var(--dc-dim); }
+  .dc-profile-meta .v {
+    color: var(--dc-fg); font-weight: 600;
+  }
 
   /* Profile edit form */
   .dc-profile-edit { display: flex; flex-direction: column; gap: 10px; }
@@ -1365,162 +1876,208 @@ const STYLES = `
   }
 
   /* ============ §3 PILOTAGE ============ */
-  .dc-control { margin-bottom: 14px; }
+  .dc-control { margin-bottom: 16px; }
   .dc-control:last-child { margin-bottom: 0; }
   .dc-control-label {
-    font-size: 0.85em; color: var(--dc-muted); font-weight: 600;
-    margin-bottom: 8px;
+    font-family: var(--dc-font-mono);
+    font-size: 9px; letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--dc-muted); font-weight: 600;
+    margin-bottom: 10px;
   }
   .dc-segmented {
-    display: flex; gap: 6px;
-    background: var(--dc-bg-bubble);
-    border-radius: var(--dc-radius-pill);
-    padding: 5px;
+    display: flex; gap: 4px;
+    background: var(--dc-surface);
+    border-radius: 10px;
+    padding: 4px;
+    border: 1px solid var(--dc-hairline);
   }
   .dc-segmented button {
-    flex: 1; padding: 10px 14px; border: none; background: transparent;
-    color: var(--dc-muted); font-size: 0.9em; font-weight: 600;
+    flex: 1; padding: 9px 14px;
+    border: none; background: transparent;
+    color: var(--dc-muted);
+    font-family: var(--dc-font-body);
+    font-size: 13px; font-weight: 600;
+    letter-spacing: -0.005em;
     cursor: pointer;
-    border-radius: var(--dc-radius-pill);
+    border-radius: 7px;
     transition: all 0.2s;
   }
   .dc-segmented button:hover { color: var(--dc-fg); }
   .dc-segmented button.active {
-    background: var(--dc-bg-bubble-strong);
+    background: var(--dc-bg-inset);
     color: var(--dc-fg);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
   }
-  .dc-segmented.tone-warn button.active[data-mode="boost"],
-  .dc-segmented.tone-warn button.active[data-power="agressif"],
-  .dc-segmented.tone-warn button.active[data-fan-intensity="fort"] {
-    background: var(--dc-warn); color: white;
+  .dc-segmented.tone-warn button.active[data-mode="boost"] {
+    background: var(--dc-warm-soft); color: var(--dc-warm);
   }
   .dc-segmented.tone-danger button.active[data-mode="off"] {
-    background: var(--dc-danger); color: white;
+    background: rgba(242,109,91,0.16); color: var(--dc-danger);
+  }
+  .dc-segmented button.active[data-mode="auto"] {
+    background: var(--dc-live-soft); color: var(--dc-live);
   }
 
   .dc-quick-actions {
     display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   }
   .dc-quick-actions button {
-    padding: 12px 14px; border-radius: var(--dc-radius-pill);
-    border: none; background: var(--dc-bg-bubble);
+    padding: 11px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--dc-hairline);
+    background: var(--dc-surface);
     color: var(--dc-fg); cursor: pointer;
-    font-weight: 600; font-size: 0.9em;
+    font-family: var(--dc-font-body);
+    font-weight: 600; font-size: 13px;
     display: flex; align-items: center; justify-content: center; gap: 8px;
     transition: all 0.2s;
   }
   .dc-quick-actions button ha-icon { --mdc-icon-size: 16px; }
   .dc-quick-actions button:hover:not(:disabled) {
-    background: var(--dc-bg-bubble-strong);
+    background: var(--dc-surface-strong);
+    border-color: rgba(255,255,255,0.12);
   }
   .dc-quick-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
   .dc-quick-actions button[data-bind="boost-btn"] {
-    background: rgba(251,146,35,0.15); color: var(--dc-warn);
+    color: var(--dc-warm);
+    border-color: rgba(245,160,86,0.32);
+    background: var(--dc-warm-soft);
   }
   .dc-quick-actions button[data-bind="boost-btn"]:hover:not(:disabled) {
-    background: rgba(251,146,35,0.25);
+    background: rgba(245,160,86,0.22);
   }
-  .dc-quick-actions button[data-bind="boost-btn"] ha-icon { color: var(--dc-warn); }
+  .dc-quick-actions button[data-bind="boost-btn"] ha-icon { color: var(--dc-warm); }
 
-  /* Force-start actions (idle only) */
+  /* Force-start (idle only) */
   .dc-force-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .dc-force-actions button {
-    padding: 12px 14px; border-radius: var(--dc-radius-pill);
-    border: none; cursor: pointer;
-    font-weight: 700; font-size: 0.95em;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--dc-hairline);
+    cursor: pointer;
+    font-family: var(--dc-font-body);
+    font-weight: 600; font-size: 13px;
     display: flex; align-items: center; justify-content: center; gap: 8px;
-    transition: all 0.2s; color: white;
+    transition: all 0.2s;
   }
-  .dc-force-actions button ha-icon { --mdc-icon-size: 18px; color: white; }
-  .dc-force-actions .force-cool { background: var(--dc-cool); }
-  .dc-force-actions .force-cool:hover { background: #3d76e0; }
-  .dc-force-actions .force-heat { background: var(--dc-heat); }
-  .dc-force-actions .force-heat:hover { background: #f06030; }
+  .dc-force-actions button ha-icon { --mdc-icon-size: 16px; }
+  .dc-force-actions .force-cool {
+    color: var(--dc-cool); background: var(--dc-cool-soft);
+    border-color: rgba(91,200,226,0.28);
+  }
+  .dc-force-actions .force-cool:hover { background: rgba(91,200,226,0.22); }
+  .dc-force-actions .force-cool ha-icon { color: var(--dc-cool); }
+  .dc-force-actions .force-heat {
+    color: var(--dc-warm); background: var(--dc-warm-soft);
+    border-color: rgba(245,160,86,0.28);
+  }
+  .dc-force-actions .force-heat:hover { background: rgba(245,160,86,0.22); }
+  .dc-force-actions .force-heat ha-icon { color: var(--dc-warm); }
 
   /* ============ §4 COMMANDE MANUELLE ============ */
   .dc-subblock {
-    background: var(--dc-bg-bubble);
+    background: var(--dc-surface);
     border-radius: var(--dc-radius-sm);
-    padding: 14px;
+    padding: 16px;
     margin-bottom: 10px;
+    border: 1px solid var(--dc-hairline);
   }
   .dc-subblock:last-child { margin-bottom: 0; }
   .dc-subblock-title {
-    font-size: 0.85em; color: var(--dc-muted); font-weight: 600;
-    margin-bottom: 12px;
+    font-family: var(--dc-font-mono);
+    font-size: 9px; letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--dc-muted); font-weight: 600;
+    margin-bottom: 14px;
     display: flex; align-items: center; gap: 8px;
   }
-  .dc-subblock-title ha-icon { --mdc-icon-size: 16px; color: var(--dc-dim); }
+  .dc-subblock-title ha-icon { --mdc-icon-size: 13px; color: var(--dc-dim); }
 
-  /* HVAC chiclets — colored circular icons like the user's dashboard */
+  /* HVAC mode chips */
   .dc-hvac {
-    display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px;
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px;
   }
   .dc-hvac button {
-    padding: 10px 4px; background: var(--dc-bg-inset);
-    border: none; border-radius: var(--dc-radius-sm);
+    padding: 9px 4px;
+    background: var(--dc-bg-inset);
+    border: 1px solid transparent;
+    border-radius: 10px;
     color: var(--dc-muted); cursor: pointer;
     transition: all 0.2s;
     display: flex; flex-direction: column; align-items: center; gap: 5px;
   }
   .dc-hvac button > div { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 100%; }
   .dc-hvac button .ha-icon-wrap {
-    width: 28px; height: 28px; border-radius: 50%;
-    background: var(--dc-bg-bubble-strong);
+    width: 26px; height: 26px;
     display: flex; align-items: center; justify-content: center;
     color: var(--dc-muted);
     transition: all 0.2s;
   }
-  .dc-hvac button ha-icon { --mdc-icon-size: 16px; }
-  .dc-hvac button span { font-size: 0.7em; font-weight: 600; }
-  .dc-hvac button:hover { background: var(--dc-bg-bubble); }
-  .dc-hvac button:hover .ha-icon-wrap { background: var(--dc-bg-bubble); color: var(--dc-fg); }
-  .dc-hvac button.active { background: var(--dc-bg-bubble); }
-  .dc-hvac button.active .ha-icon-wrap {
-    background: var(--hvac-color, var(--dc-accent));
-    color: white;
+  .dc-hvac button ha-icon { --mdc-icon-size: 18px; }
+  .dc-hvac button span {
+    font-family: var(--dc-font-mono);
+    font-size: 9px; letter-spacing: 0.06em;
+    font-weight: 600; text-transform: uppercase;
   }
-  .dc-hvac button.active span { color: var(--dc-fg); }
-
-  /* Setpoint */
-  .dc-setpoint {
-    display: flex; align-items: center; justify-content: center; gap: 22px;
-    margin-top: 14px;
-  }
-  .dc-setpoint .sp-val {
-    font-size: 2.2em; font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    min-width: 100px; text-align: center;
-    letter-spacing: -0.02em;
+  .dc-hvac button:hover {
+    background: var(--dc-surface-strong);
     color: var(--dc-fg);
   }
-  .dc-setpoint .sp-unit { font-size: 0.45em; color: var(--dc-muted); font-weight: 600; margin-left: 3px; }
+  .dc-hvac button:hover .ha-icon-wrap { color: var(--dc-fg); }
+  .dc-hvac button.active {
+    background: var(--dc-surface-strong);
+    border-color: rgba(255,255,255,0.1);
+  }
+  .dc-hvac button.active .ha-icon-wrap { color: var(--hvac-color, var(--dc-fg)); }
+  .dc-hvac button.active span { color: var(--dc-fg); }
+
+  /* Setpoint stepper */
+  .dc-setpoint {
+    display: flex; align-items: center; justify-content: center; gap: 24px;
+    margin-top: 16px;
+  }
+  .dc-setpoint .sp-val {
+    font-family: var(--dc-font-mono);
+    font-size: 36px; font-weight: 700;
+    min-width: 110px; text-align: center;
+    letter-spacing: -0.03em;
+    color: var(--dc-fg);
+    line-height: 1;
+  }
+  .dc-setpoint .sp-unit { font-size: 14px; color: var(--dc-muted); font-weight: 500; margin-left: 4px; }
   .dc-setpoint button {
-    width: 44px; height: 44px; border-radius: 50%;
-    background: var(--dc-bg-bubble-strong);
-    border: none;
-    color: var(--dc-fg); font-size: 1.4em; font-weight: 600;
+    width: 42px; height: 42px; border-radius: 50%;
+    background: var(--dc-bg-inset);
+    border: 1px solid var(--dc-hairline);
+    color: var(--dc-fg);
+    font-size: 18px; font-weight: 600;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
     transition: all 0.2s;
   }
   .dc-setpoint button:hover {
-    background: var(--dc-cool); color: white;
+    background: var(--dc-cool-soft);
+    color: var(--dc-cool);
+    border-color: rgba(91,200,226,0.3);
   }
 
-  /* Fan + swing */
-  .dc-fanswing { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+  /* Fan + swing selects */
+  .dc-fanswing { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
   .dc-fanswing .field { display: flex; flex-direction: column; gap: 6px; }
   .dc-fanswing label {
-    font-size: 0.8em; color: var(--dc-muted); font-weight: 600;
+    font-family: var(--dc-font-mono);
+    font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--dc-muted); font-weight: 600;
   }
   .dc-fanswing select {
     background: var(--dc-bg-inset);
-    border: none;
-    border-radius: var(--dc-radius-sm); color: var(--dc-fg); padding: 11px 12px;
-    font-size: 0.9em; font-weight: 600;
+    border: 1px solid var(--dc-hairline);
+    border-radius: 10px;
+    color: var(--dc-fg);
+    padding: 10px 12px;
+    font-family: var(--dc-font-body);
+    font-size: 13px; font-weight: 500;
     appearance: none; -webkit-appearance: none;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(255,255,255,0.5)' d='M0 0l5 6 5-6z'/></svg>");
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(138,146,160,0.8)' d='M0 0l5 6 5-6z'/></svg>");
     background-repeat: no-repeat; background-position: right 12px center;
     padding-right: 32px;
     cursor: pointer;
@@ -1590,18 +2147,55 @@ const TEMPLATE = `
     </div>
 
     <div class="dc-hero">
-      <div class="dc-hero-row">
-        <div class="room-block">
-          <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
-          <div class="room-label">T° zone</div>
-        </div>
-        <span class="arrow" data-bind="target-arrow">→</span>
-        <div class="target-block" data-bind="target-block">
-          <span class="target"><span data-bind="target-temp">—</span> °C</span>
-          <span class="target-label">cible</span>
+      <!-- Legacy bindings kept invisible so existing JS setters don't break -->
+      <div class="dc-hero-row" style="display:none">
+        <span data-bind="room-temp"></span>
+        <span data-bind="target-arrow"></span>
+        <div data-bind="target-block">
+          <span data-bind="target-temp"></span>
         </div>
       </div>
+
       <div class="dc-narrative" data-bind="narrative"></div>
+
+      <!-- THERMAL RAIL — signature element -->
+      <div class="dc-rail-wrap" data-bind="rail-wrap">
+        <div class="dc-rail-track">
+          <div class="dc-rail-fill" data-bind="rail-fill" style="left:0;width:0"></div>
+          <div class="dc-rail-target" data-bind="rail-target" data-label="CIBLE" style="left:0"></div>
+        </div>
+        <div class="dc-rail-cursor" data-bind="rail-cursor" style="left:0">
+          <div class="reading"><span data-bind="rail-cursor-val">—</span><span class="unit">°C</span></div>
+          <div class="dot"></div>
+        </div>
+        <div class="dc-rail-bounds">
+          <div class="bound">
+            <span class="v" data-bind="rail-bound-left">—</span>
+            <span>début</span>
+          </div>
+          <div class="bound right">
+            <span class="v" data-bind="rail-bound-right">—</span>
+            <span>cible</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- PHASE RIBBON — ATTAQUE / STABILISATION / COOLDOWN -->
+      <div class="dc-phases" data-bind="phases">
+        <div class="dc-phase" data-bind="phase-attaque">
+          <div class="label">Attaque</div>
+          <div class="val" data-bind="phase-attaque-val">—</div>
+        </div>
+        <div class="dc-phase" data-bind="phase-stab">
+          <div class="label">Stabilisation</div>
+          <div class="val" data-bind="phase-stab-val">—</div>
+        </div>
+        <div class="dc-phase" data-bind="phase-cooldown">
+          <div class="label">Cooldown</div>
+          <div class="val" data-bind="phase-cooldown-val">—</div>
+        </div>
+      </div>
+
       <div class="dc-timeline" data-bind="timeline" style="display:none">
         <div class="dc-timeline-text" data-bind="timeline-text"></div>
         <div class="dc-spark" data-bind="spark"></div>
@@ -1748,7 +2342,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c DELORMEJ-CLIMATE-CARD %c v0.12.0 ",
+  "%c DELORMEJ-CLIMATE-CARD %c v0.13.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

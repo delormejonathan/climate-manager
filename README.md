@@ -13,7 +13,11 @@ Custom_component Home Assistant pour le pilotage intelligent de plusieurs climat
 
 ## État du projet
 
-🚧 En cours de développement. Voir [`docs/architecture.md`](docs/architecture.md) pour le design et [`bd ready`](https://github.com/gastownhall/beads) pour les tâches en cours.
+En production sur HA depuis mai 2026. Architecture stabilisée à la v0.12.0 :
+- Une seule phase d'ATTAQUE pendant RUNNING (la modulation est laissée à l'inverter Daikin)
+- Phase STABILISATION de ~1h après atteinte de la cible
+- Cascade multi-profils par zone (schedule + présence)
+- Journal des cycles persistant (10 dernières sessions par zone)
 
 ## Structure
 
@@ -26,16 +30,18 @@ delormej_climate/
 └── .beads/                                # DAG des tâches (beads)
 ```
 
-## Installation (à terme)
+## Installation via HACS (recommandé)
 
-Déploiement par SSH sur l'instance HA :
+1. HACS → menu ⋮ → **Custom repositories**
+2. Repository : `https://github.com/delormejonathan/delormej_climate`
+3. Category : **Integration**
+4. **Add** → tu retrouves "Delormej Climate" dans la liste HACS → **Download**
+5. Redémarre HA
+6. _Paramètres → Appareils & services → Ajouter une intégration → Delormej Climate_
 
-```bash
-scp -r custom_components/delormej_climate root@ha.delormejonathan.fr:/config/custom_components/
-ha core restart   # ou redémarrage HA depuis l'UI
-```
+Les futures versions remontent automatiquement comme update disponible dans HACS — 1 clic pour installer.
 
-Puis ajouter l'intégration depuis _Paramètres → Appareils et services → Ajouter une intégration → Delormej Climate_.
+La carte Lovelace est embarquée dans le composant : elle est servie automatiquement à `/delormej_climate/delormej-climate-card.js` et enregistrée comme ressource Lovelace dès que l'intégration démarre.
 
 ## Migration depuis l'automation actuelle
 
