@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.15.1
+ * climate-manager-card  v0.16.0
  *
  * Instrument-panel redesign. Five sections for one zone:
  *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
@@ -227,100 +227,74 @@ class DelormejClimateCard extends HTMLElement {
       headIco.style.removeProperty("--dc-state-color");
     }
 
-    // ─────────────────── SECTION 1: ÉTAT ACTUEL
+    // ─────────────────── SECTION 1: ÉTAT ACTUEL — minimal hero
     $("room-temp").textContent = this._fmtTemp(get(ids.roomTemp)?.state);
-    const target = attrs.target_temperature;
-    const targetBlock = $("target-block");
-    const arrowEl = $("target-arrow");
-    const heroRow = this.querySelector(".dc-hero-row");
-    if (target != null) {
-      targetBlock.style.display = "";
-      arrowEl.style.display = "";
-      heroRow.classList.remove("hero-row--idle");
-      $("target-temp").textContent = this._fmtTemp(target);
-      const dir = attrs.direction;
-      arrowEl.textContent = dir === "cool" ? "↓" : dir === "heat" ? "↑" : "→";
-      arrowEl.style.color =
-        dir === "cool" ? "var(--dc-cool)" :
-        dir === "heat" ? "var(--dc-heat)" : "var(--dc-muted)";
+
+    // Cool/warm dynamic accent — swaps the whole card's accent var so the
+    // hero number, pills, segmented active state, controls all follow.
+    const card = this.querySelector("ha-card");
+    const dir = attrs.direction;
+    const cycleActive = ["starting", "running", "stabilizing"].includes(stateVal);
+    const hero = $("hero");
+    if (cycleActive && dir === "heat") {
+      card?.classList.add("accent-warm");
+      hero?.classList.add("active-warm");
+      hero?.classList.remove("active-cool");
+    } else if (cycleActive && dir === "cool") {
+      card?.classList.remove("accent-warm");
+      hero?.classList.add("active-cool");
+      hero?.classList.remove("active-warm");
     } else {
-      // No target → hide the arrow + target block entirely, keep big room temp
-      // centered.  Add idle modifier for the "à l'écoute" badge.
-      targetBlock.style.display = "none";
-      arrowEl.style.display = "none";
-      heroRow.classList.add("hero-row--idle");
+      card?.classList.remove("accent-warm");
+      hero?.classList.remove("active-cool", "active-warm");
     }
 
-    // Narrative
+    // Narrative — 1 line that synthesises everything the user needs:
+    // current direction + target temp + profile + next schedule transition.
     const nar = this._buildNarrative(stateVal, regimeVal, attrs, get, ids);
     const narEl = $("narrative");
     narEl.innerHTML = nar.html;
     narEl.classList.toggle("warn", !!nar.warn);
+    narEl.classList.toggle("warm", dir === "heat");
 
-    // Thermal rail + phase ribbon (signature hero elements)
+    // No-op'd legacy renderers (markup hidden, JS kept for compat).
     this._updateThermalRail(stateVal, attrs, get, ids);
     this._updatePhases(stateVal, attrs);
-
-    // Timeline + sparkline (only during an active cycle)
     this._updateTimeline(stateVal, attrs, get, ids);
 
-    // Status pills — always show, color-coded by state
+    // Pills — ONLY surface what's not redundant with the narrative or state
+    // tag. Windows open is real signal. Override is real signal. Schedule
+    // off when it actually matters. Default to nothing.
     const pills = $("status-pills");
     pills.innerHTML = "";
 
-    // Pilotage (schedule) — with next transition time when available
-    const nextEvt = attrs.schedule_next_event;
-    const nextEvtTxt = nextEvt ? this._fmtTime(nextEvt) : null;
     if (attrs.schedule_on === false) {
+      const nextEvt = attrs.schedule_next_event;
+      const nextEvtTxt = nextEvt ? this._fmtTime(nextEvt) : null;
       pills.appendChild(this._pill(
         "mdi:pause-circle-outline",
-        nextEvtTxt ? `Pilotage en pause · reprise à ${nextEvtTxt}` : "Pilotage en pause",
+        nextEvtTxt ? `Hors planning · reprise ${nextEvtTxt}` : "Hors planning",
         "warn",
       ));
-    } else {
-      pills.appendChild(this._pill(
-        "mdi:play-circle-outline",
-        nextEvtTxt ? `Pilotage actif jusqu'à ${nextEvtTxt}` : "Pilotage actif",
-        "ok",
-      ));
     }
-
-    // Présence maison
-    pills.appendChild(this._pill(
-      attrs.house_is_absent === true ? "mdi:home-export-outline" : "mdi:home",
-      attrs.house_is_absent === true ? "Maison absente" : "Maison présente",
-      attrs.house_is_absent === true ? "info" : "neutral"));
-
-    // Fenêtres — counted + plural agreement
     const wOpen = attrs.windows_open;
     const wTotal = attrs.windows_total;
-    if (typeof wTotal === "number" && wTotal > 0) {
-      if (wOpen === 0) {
-        pills.appendChild(this._pill(
-          "mdi:window-closed-variant",
-          `${wTotal}/${wTotal} fenêtre${wTotal > 1 ? "s" : ""} fermée${wTotal > 1 ? "s" : ""}`,
-          "ok",
-        ));
-      } else {
-        pills.appendChild(this._pill(
-          "mdi:window-open",
-          `${wOpen}/${wTotal} fenêtre${wOpen > 1 ? "s" : ""} ouverte${wOpen > 1 ? "s" : ""}`,
-          "warn",
-        ));
-      }
+    if (typeof wTotal === "number" && wTotal > 0 && wOpen > 0) {
+      pills.appendChild(this._pill(
+        "mdi:window-open",
+        `${wOpen}/${wTotal} fenêtre${wOpen > 1 ? "s" : ""} ouverte${wOpen > 1 ? "s" : ""}`,
+        "warn",
+      ));
     }
-
     if (attrs.in_override === true) {
       pills.appendChild(this._pill("mdi:account-edit", "Override actif", "warn"));
     }
-
-    // Profil actif — surfacing the cascade decision in §1 so the user sees
-    // which profile drives the current cycle without scrolling to §2.
     const activeProfileName = attrs.active_profile_name;
-    if (activeProfileName) {
-      pills.appendChild(this._pill("mdi:tag", `Profil : ${activeProfileName}`, "info"));
-    } else if (Array.isArray(attrs.profiles) && attrs.profiles.length > 0) {
-      pills.appendChild(this._pill("mdi:tag-off", "Aucun profil actif", "warn"));
+    if (activeProfileName && !cycleActive && pills.children.length === 0) {
+      // Show the active profile only when there's no cycle running (during a
+      // cycle it's already obvious which one is driving). Keeps the hero
+      // sparse most of the time.
+      pills.appendChild(this._pill("mdi:tag-outline", activeProfileName, "neutral"));
     }
 
     // Metrics grid (2x2)
@@ -1094,26 +1068,14 @@ class DelormejClimateCard extends HTMLElement {
     const duration = this._fmtDuration(c.duration_min);
     const tStartC = this._fmtTemp(c.temp_start);
     const tEndC = this._fmtTemp(c.temp_end);
-    const tMinC = this._fmtTemp(c.temp_min);
     const profile = c.profile_at_start || c.profile_at_end || "—";
-    const meta = this._cycleEndReasonMeta(c.end_reason);
-    const spark = this._buildCycleSparkline(c);
     const dayLabel = this._fmtDayLabel(c.start_ts);
     return `
       <div class="dc-cycle-row">
-        <div class="dc-cycle-times">
-          ${tStart}
-          <span class="end">${tEnd}</span>
-        </div>
-        <div class="dc-cycle-icon ${meta.klass}" title="${this._escapeHTML(meta.label)}">
-          <ha-icon icon="${meta.icon}"></ha-icon>
-        </div>
-        <div class="dc-cycle-main">
-          <div class="dc-cycle-spark">${spark}</div>
+        <div>
+          <div class="dc-cycle-times">${tStart} → <span class="end">${tEnd}</span></div>
           <div class="dc-cycle-details">
-            <span class="v">${tStartC}°</span> → <span class="v">${tEndC}°</span>
-            · min <span class="v">${tMinC}°</span>
-            · ${this._escapeHTML(profile)}
+            <span class="v">${tStartC}°</span> → <span class="v">${tEndC}°</span> · ${this._escapeHTML(profile)}
           </div>
         </div>
         <div class="dc-cycle-duration">
@@ -1196,106 +1158,90 @@ class DelormejClimateCard extends HTMLElement {
 
 
 const STYLES = `
-  @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
-
   /* ─────────────────────────────────────────────────────────────────
-     Instrument-panel palette : deep neutral surface + glacial cool +
-     amber warm + sharp lime live signal. Mono numerals for readouts.
+     Clean / flat / soft palette — matches bubble-card aesthetic.
+     One accent that swaps cool↔warm with the active direction. No
+     mono numerals. No bright signal colors. Generous breathing room.
      ───────────────────────────────────────────────────────────────── */
   ha-card.dc-card {
+    /* accent — swapped at runtime via --dc-accent (cool by default) */
+    --dc-cool: #00BCD4;
+    --dc-cool-soft: rgba(0,188,212,0.13);
+    --dc-warm: #FF8A65;
+    --dc-warm-soft: rgba(255,138,101,0.13);
+    --dc-accent: var(--dc-cool);
+    --dc-accent-soft: var(--dc-cool-soft);
+
     /* spacing */
     --dc-pad: 20px;
     --dc-radius: 18px;
     --dc-radius-sm: 14px;
     --dc-radius-pill: 999px;
-    --dc-hairline: rgba(255,255,255,0.07);
+    --dc-hairline: rgba(255,255,255,0.06);
 
     /* surfaces */
-    --dc-bg: #0E1014;
-    --dc-surface: #181B22;
-    --dc-surface-strong: #1E222A;
-    --dc-rail-empty: #2A2F3A;
-    --dc-bg-bubble: rgba(255,255,255,0.035);
-    --dc-bg-bubble-strong: rgba(255,255,255,0.06);
-    --dc-bg-inset: rgba(0,0,0,0.22);
+    --dc-surface: rgba(255,255,255,0.04);
+    --dc-surface-strong: rgba(255,255,255,0.07);
+    --dc-bg-bubble: rgba(255,255,255,0.04);
+    --dc-bg-bubble-strong: rgba(255,255,255,0.07);
+    --dc-bg-inset: rgba(0,0,0,0.18);
 
     /* text */
-    --dc-fg: #F2F4F7;
-    --dc-muted: #8A92A0;
-    --dc-dim: #5A6170;
+    --dc-fg: rgba(255,255,255,0.95);
+    --dc-muted: rgba(255,255,255,0.62);
+    --dc-dim: rgba(255,255,255,0.42);
 
-    /* climate semantics */
-    --dc-cool: #5BC8E2;
-    --dc-cool-soft: rgba(91,200,226,0.14);
-    --dc-heat: #F5A056;
-    --dc-warm: #F5A056;
-    --dc-warm-soft: rgba(245,160,86,0.14);
-
-    /* live signal — single bright accent, used VERY sparingly */
-    --dc-live: #D6FF00;
-    --dc-live-soft: rgba(214,255,0,0.16);
-
-    /* alerts / states */
+    /* alerts */
     --dc-warn: #F5A056;
-    --dc-success: #5BC8E2;
-    --dc-danger: #F26D5B;
-    --dc-info: #5BC8E2;
-    --dc-accent: #D6FF00;
+    --dc-danger: #E57373;
 
-    /* typography */
-    --dc-font-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
-    --dc-font-body: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-
-    background: var(--dc-bg);
     color: var(--dc-fg);
-    font-family: var(--dc-font-body);
+    font-family: var(--ha-card-font-family, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif);
     font-size: 14px;
-    line-height: 1.4;
+    line-height: 1.45;
     padding: 0; overflow: hidden;
     border-radius: var(--ha-card-border-radius, var(--dc-radius));
+  }
+  /* When the active cycle is in heating, swap the accent globally */
+  ha-card.dc-card.accent-warm {
+    --dc-accent: var(--dc-warm);
+    --dc-accent-soft: var(--dc-warm-soft);
   }
   ha-card.dc-card * { box-sizing: border-box; }
 
   /* ============ HEADER ============ */
   .dc-header {
-    display: flex; align-items: flex-start; gap: 14px;
-    padding: 24px var(--dc-pad) 12px;
+    display: flex; align-items: center; gap: 14px;
+    padding: 20px var(--dc-pad) 8px;
   }
   .dc-header .head-icon {
-    width: 32px; height: 32px;
+    width: 36px; height: 36px;
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0;
-    color: var(--dc-state-color, var(--dc-muted));
-    margin-top: 4px;
+    color: var(--dc-muted);
     transition: color 0.3s;
   }
-  .dc-header .head-icon ha-icon { --mdc-icon-size: 24px; }
-  .dc-header .head-icon.active { color: var(--dc-state-color, var(--dc-fg)); }
+  .dc-header .head-icon ha-icon { --mdc-icon-size: 26px; }
+  .dc-header .head-icon.active { color: var(--dc-accent); }
   .dc-header .title-block { flex: 1; min-width: 0; }
   .dc-header .title {
-    font-size: 22px; font-weight: 700; line-height: 1.15;
-    letter-spacing: -0.02em;
+    font-size: 18px; font-weight: 600; line-height: 1.2;
     color: var(--dc-fg);
   }
   .dc-header .subtitle {
-    font-size: 11px; color: var(--dc-muted);
-    margin-top: 5px;
-    font-family: var(--dc-font-mono);
-    letter-spacing: 0.04em;
+    font-size: 12px; color: var(--dc-muted);
+    margin-top: 3px;
+    font-weight: 500;
   }
-  /* State tag — small mono uppercase with a "live" dot when active */
+  /* State chip — soft and small */
   .dc-state {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 6px 10px 6px 11px;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px;
     border-radius: var(--dc-radius-pill);
-    font-size: 10px; font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    font-family: var(--dc-font-mono);
+    font-size: 11px; font-weight: 600;
     color: var(--dc-muted);
     background: var(--dc-surface);
     white-space: nowrap;
-    margin-top: 2px;
   }
   .dc-state::before {
     content: ""; width: 6px; height: 6px; border-radius: 50%;
@@ -1303,433 +1249,243 @@ const STYLES = `
     flex-shrink: 0;
   }
   .dc-state.state-active {
-    color: var(--dc-live);
-    background: var(--dc-live-soft);
+    color: var(--dc-accent);
+    background: var(--dc-accent-soft);
   }
-  .dc-state.state-active::before {
-    background: var(--dc-live);
-    box-shadow: 0 0 8px var(--dc-live);
-    animation: dc-pulse 1.8s ease-in-out infinite;
-  }
+  .dc-state.state-active::before { background: var(--dc-accent); }
   .dc-state.state-warn { color: var(--dc-warm); background: var(--dc-warm-soft); }
   .dc-state.state-warn::before { background: var(--dc-warm); }
-  .dc-state.state-alert { color: var(--dc-danger); background: rgba(242,109,91,0.16); }
+  .dc-state.state-alert { color: var(--dc-danger); background: rgba(229,115,115,0.13); }
   .dc-state.state-alert::before { background: var(--dc-danger); }
   .dc-state ha-icon { display: none; }
-  @keyframes dc-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(0.8); }
-  }
 
   /* ============ SECTIONS ============ */
-  .dc-section { padding: 0 var(--dc-pad) 26px; }
+  .dc-section { padding: 0 var(--dc-pad) 20px; }
+  .dc-section:last-of-type { padding-bottom: 24px; }
   .dc-section-head {
-    display: flex; align-items: center; gap: 12px;
-    margin-bottom: 16px;
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 14px;
   }
-  /* Hide the legacy circular bubble icons */
-  .dc-section-head .head-bubble {
-    display: none;
-  }
-  /* Eyebrow label — small mono uppercase, followed by a thin rule */
+  .dc-section-head .head-bubble { display: none; }
   .dc-section-head .lbl {
-    font-family: var(--dc-font-mono);
-    font-size: 10px; font-weight: 600;
-    letter-spacing: 0.18em;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--dc-muted);
     flex-shrink: 0;
   }
-  .dc-section-head::after {
-    content: "";
-    flex: 1; height: 1px;
-    background: var(--dc-hairline);
-  }
 
-  /* ============ §5 SESSIONS RÉCENTES ============ */
+  /* ============ §5 SESSIONS RÉCENTES — clean rows ============ */
   .dc-cycles-empty {
     text-align: center;
     color: var(--dc-muted);
-    font-family: var(--dc-font-body);
     font-size: 13px;
-    padding: 20px;
-    background: var(--dc-surface);
-    border-radius: var(--dc-radius-sm);
-    border: 1px dashed var(--dc-hairline);
+    padding: 18px;
   }
   .dc-cycles-list {
     display: flex; flex-direction: column;
-    background: var(--dc-surface);
-    border-radius: var(--dc-radius-sm);
-    border: 1px solid var(--dc-hairline);
-    overflow: hidden;
   }
   .dc-cycle-row {
     display: grid;
-    grid-template-columns: 64px 70px 1fr 78px;
+    grid-template-columns: 1fr auto;
     gap: 12px;
     align-items: center;
-    padding: 12px 14px;
+    padding: 12px 0;
     border-bottom: 1px solid var(--dc-hairline);
-    transition: background 0.15s;
   }
   .dc-cycle-row:last-child { border-bottom: none; }
-  .dc-cycle-row:hover { background: var(--dc-surface-strong); }
-  /* Time column — start/end times stacked */
   .dc-cycle-times {
-    font-family: var(--dc-font-mono);
-    font-size: 12px;
-    color: var(--dc-fg);
-    font-weight: 600;
-    line-height: 1.3;
-    letter-spacing: 0.02em;
+    font-size: 13px; color: var(--dc-fg); font-weight: 600;
+    line-height: 1.35;
+    font-variant-numeric: tabular-nums;
   }
   .dc-cycle-times .end {
-    display: block;
-    color: var(--dc-dim);
+    color: var(--dc-muted);
     font-weight: 500;
   }
-  /* Compact end-reason icon column */
-  .dc-cycle-icon {
-    display: flex; align-items: center; justify-content: center;
-    width: 24px; height: 24px;
-    color: var(--dc-cool);
-    flex-shrink: 0;
-  }
-  .dc-cycle-icon.success { color: var(--dc-cool); }
-  .dc-cycle-icon.warn { color: var(--dc-warm); }
-  .dc-cycle-icon ha-icon { --mdc-icon-size: 18px; }
-  /* Sparkline + temp details column */
-  .dc-cycle-main {
-    display: flex; flex-direction: column;
-    gap: 4px; min-width: 0;
-  }
-  .dc-cycle-spark {
-    width: 100%; height: 22px;
-    color: var(--dc-cool);
-  }
-  .dc-cycle-spark svg { display: block; width: 100%; height: 100%; }
+  .dc-cycle-icon { display: none; }
+  .dc-cycle-main { display: contents; }
+  .dc-cycle-spark { display: none; }
   .dc-cycle-details {
-    font-family: var(--dc-font-mono);
-    font-size: 10px;
-    color: var(--dc-muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    letter-spacing: 0.04em;
+    font-size: 12px; color: var(--dc-muted);
+    margin-top: 2px;
+    font-variant-numeric: tabular-nums;
   }
-  .dc-cycle-details .v {
-    color: var(--dc-fg);
-    font-weight: 600;
-  }
-  /* Right column — duration */
+  .dc-cycle-details .v { color: var(--dc-fg); font-weight: 600; }
   .dc-cycle-duration {
-    font-family: var(--dc-font-mono);
-    font-size: 12px; font-weight: 600;
-    color: var(--dc-fg);
-    text-align: right;
-    white-space: nowrap;
-    letter-spacing: 0.02em;
+    font-size: 13px; color: var(--dc-fg); font-weight: 600;
+    text-align: right; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
   .dc-cycle-duration .sub {
     display: block;
-    font-size: 9px; color: var(--dc-dim);
+    font-size: 11px; color: var(--dc-muted);
     font-weight: 500;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
     margin-top: 1px;
   }
 
-  /* ============ §1 ÉTAT ACTUEL — instrument-style hero ============ */
+  /* ============ §1 ÉTAT ACTUEL — clean minimal hero ============ */
   .dc-hero {
-    padding: 4px 0 24px;
+    padding: 0 0 8px;
+    text-align: center;
   }
-  /* Narrative — 1 sentence above the rail */
-  .dc-narrative {
-    font-size: 15px; line-height: 1.5;
+  .dc-hero-row {
+    display: flex; align-items: baseline; justify-content: center;
+    gap: 12px; margin-bottom: 8px;
+  }
+  .dc-hero .room {
+    font-size: 56px; font-weight: 600;
+    line-height: 1;
+    letter-spacing: -0.025em;
     color: var(--dc-fg);
-    margin-bottom: 4px;
-    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-hero .room .unit {
+    font-size: 0.36em; font-weight: 500;
+    color: var(--dc-muted);
+    margin-left: 2px;
+  }
+  /* When cooling/heating is active, the hero number takes the accent */
+  .dc-hero.active-cool .room { color: var(--dc-cool); }
+  .dc-hero.active-warm .room { color: var(--dc-warm); }
+  /* Legacy arrow/target — kept hidden, JS still touches them */
+  .dc-hero .arrow,
+  .dc-hero .target-block,
+  .dc-hero .room-label { display: none; }
+
+  .dc-narrative {
+    font-size: 14px; line-height: 1.5;
+    color: var(--dc-muted);
+    margin-bottom: 12px;
+    font-weight: 500;
   }
   .dc-narrative .target,
   .dc-narrative .accent {
-    color: var(--dc-cool);
-    font-family: var(--dc-font-mono);
+    color: var(--dc-fg);
     font-weight: 600;
-    font-size: 0.92em;
   }
   .dc-narrative .until {
-    color: var(--dc-muted);
-    font-family: var(--dc-font-mono);
-    font-size: 0.88em;
+    color: var(--dc-fg);
+    font-weight: 600;
   }
   .dc-narrative.warm .target,
-  .dc-narrative.warm .accent { color: var(--dc-warm); }
+  .dc-narrative.warm .accent { color: var(--dc-fg); }
   .dc-narrative.warn { color: var(--dc-warm); }
 
-  /* Hidden legacy hero-row elements (we don't use them anymore — JS still sets them) */
-  .dc-hero-row { display: none !important; }
+  /* Thermal rail + phases ribbon REMOVED. Hide any legacy markup. */
+  .dc-rail-wrap, .dc-phases, .dc-timeline { display: none !important; }
 
-  /* THERMAL RAIL — the signature element */
-  .dc-rail-wrap {
-    position: relative;
-    margin: 48px 12px 0;
-    height: 56px;
+  /* Pills — minimal, single-line, just the essentials */
+  .dc-pills {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    justify-content: center;
+    margin-bottom: 6px;
   }
-  .dc-rail-wrap.idle { opacity: 0.7; }
-  .dc-rail-track {
-    position: absolute;
-    left: 0; right: 0;
-    top: 22px;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--dc-rail-empty);
-    overflow: visible;
-  }
-  /* Active fill: from the "start" threshold to the cursor position */
-  .dc-rail-fill {
-    position: absolute;
-    top: 0; bottom: 0;
-    background: linear-gradient(90deg, transparent, var(--dc-cool));
-    border-radius: 2px;
-    opacity: 0.5;
-    transition: left 0.6s ease, width 0.6s ease;
-  }
-  .dc-rail-wrap.warm .dc-rail-fill {
-    background: linear-gradient(90deg, transparent, var(--dc-warm));
-  }
-  /* Target marker — vertical line at the target threshold */
-  .dc-rail-target {
-    position: absolute;
-    top: -10px; bottom: -10px;
-    width: 2px;
-    background: var(--dc-cool);
-    opacity: 0.55;
-    transition: left 0.6s ease;
-  }
-  .dc-rail-wrap.warm .dc-rail-target { background: var(--dc-warm); }
-  .dc-rail-target::after {
-    content: attr(data-label);
-    position: absolute;
-    bottom: -22px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-family: var(--dc-font-mono);
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.14em;
-    color: var(--dc-muted);
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  /* Cursor — current T° pièce */
-  .dc-rail-cursor {
-    position: absolute;
-    top: 4px;
-    transform: translateX(-50%);
-    display: flex; flex-direction: column; align-items: center;
-    gap: 6px;
-    transition: left 0.6s ease;
-  }
-  .dc-rail-cursor .reading {
-    font-family: var(--dc-font-mono);
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: var(--dc-fg);
-    white-space: nowrap;
-    line-height: 1;
-  }
-  .dc-rail-cursor .reading .unit {
-    font-size: 12px;
-    color: var(--dc-muted);
-    margin-left: 1px;
-    font-weight: 500;
-  }
-  .dc-rail-cursor .dot {
-    width: 14px; height: 14px;
-    border-radius: 50%;
-    background: var(--dc-live);
-    box-shadow: 0 0 18px var(--dc-live), 0 0 0 4px var(--dc-bg);
-    transition: background 0.3s, box-shadow 0.3s;
-  }
-  .dc-rail-wrap.idle .dc-rail-cursor .dot {
-    background: var(--dc-muted);
-    box-shadow: 0 0 0 4px var(--dc-bg);
-  }
-  /* Bounds row — start/end of the rail */
-  .dc-rail-bounds {
-    position: absolute;
-    left: 0; right: 0;
-    top: 44px;
-    display: flex;
-    justify-content: space-between;
-    font-family: var(--dc-font-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    color: var(--dc-dim);
-  }
-  .dc-rail-bounds .bound {
-    display: flex; flex-direction: column; gap: 1px;
-  }
-  .dc-rail-bounds .bound.right { align-items: flex-end; }
-  .dc-rail-bounds .bound .v {
-    color: var(--dc-muted); font-weight: 600; font-size: 11px;
-  }
-  /* When idle (no cycle running), hide the cursor reading + dot, just show the rail */
-  .dc-rail-wrap.no-rail { display: none; }
-
-  /* PHASE RIBBON — 3 phase cards below the rail */
-  .dc-phases {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 6px;
-    margin-top: 28px;
-  }
-  .dc-phase {
-    padding: 10px 12px 11px;
-    background: var(--dc-surface);
-    border-radius: 10px;
-    border: 1px solid transparent;
-    display: flex; flex-direction: column; gap: 3px;
-    transition: all 0.3s;
-  }
-  .dc-phase .label {
-    font-family: var(--dc-font-mono);
-    font-size: 9px; letter-spacing: 0.16em;
-    font-weight: 600;
-    color: var(--dc-dim);
-    text-transform: uppercase;
-  }
-  .dc-phase .val {
-    font-family: var(--dc-font-mono);
-    font-size: 12px;
-    color: var(--dc-muted);
-    font-weight: 500;
-  }
-  .dc-phase.active {
-    background: var(--dc-live-soft);
-    border-color: rgba(214,255,0,0.32);
-  }
-  .dc-phase.active .label { color: var(--dc-live); }
-  .dc-phase.active .val { color: var(--dc-fg); font-weight: 600; }
-  .dc-phase.done .label { color: var(--dc-muted); }
-  .dc-phase.done .val { color: var(--dc-fg); }
-  .dc-phase.upcoming { opacity: 0.45; }
-  .dc-phases.hidden { display: none; }
-
-  /* Timeline + sparkline (visible during an active cycle, below phases) */
-  .dc-timeline {
-    margin-top: 20px;
-    padding-top: 14px;
-    border-top: 1px solid var(--dc-hairline);
-  }
-  .dc-timeline-text {
-    font-family: var(--dc-font-mono);
-    font-size: 11px;
-    color: var(--dc-muted);
-    margin-bottom: 8px;
-    letter-spacing: 0.04em;
-  }
-  .dc-timeline-text .dc-delta {
-    color: var(--dc-cool);
-    font-weight: 600;
-  }
-  .dc-spark { width: 100%; }
-  .dc-spark svg { display: block; }
-
-  /* Compact info row below hero — replaces the old pills row */
-  .dc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
   .dc-pill {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 9px;
+    padding: 5px 11px;
     border-radius: var(--dc-radius-pill);
-    font-family: var(--dc-font-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    font-weight: 500;
+    font-size: 11px; font-weight: 600;
     background: var(--dc-surface);
     color: var(--dc-muted);
-    border: 1px solid var(--dc-hairline);
   }
-  .dc-pill ha-icon { --mdc-icon-size: 12px; opacity: 0.8; }
-  .dc-pill--ok    { color: var(--dc-cool); border-color: rgba(91,200,226,0.25); background: var(--dc-cool-soft); }
-  .dc-pill--warn  { color: var(--dc-warm); border-color: rgba(245,160,86,0.28); background: var(--dc-warm-soft); }
-  .dc-pill--info  { color: var(--dc-cool); border-color: rgba(91,200,226,0.25); background: var(--dc-cool-soft); }
-  .dc-pill--neutral { background: var(--dc-surface); color: var(--dc-muted); }
+  .dc-pill ha-icon { --mdc-icon-size: 13px; opacity: 0.7; }
+  .dc-pill--ok    { color: var(--dc-accent); background: var(--dc-accent-soft); }
+  .dc-pill--warn  { color: var(--dc-warm); background: var(--dc-warm-soft); }
+  .dc-pill--info  { color: var(--dc-accent); background: var(--dc-accent-soft); }
+  .dc-pill--neutral { color: var(--dc-muted); background: var(--dc-surface); }
 
   /* Metrics list (in Détails techniques) */
-  .dc-metrics {
-    background: transparent;
-    padding: 0;
-  }
+  .dc-metrics { background: transparent; padding: 0; }
   .dc-metric-row {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 11px 0;
+    padding: 10px 0;
     border-bottom: 1px solid var(--dc-hairline);
   }
   .dc-metric-row:last-child { border-bottom: none; }
   .dc-metric-row .label {
     display: flex; align-items: center; gap: 8px;
-    font-size: 12px; color: var(--dc-muted); font-weight: 500;
+    font-size: 13px; color: var(--dc-muted); font-weight: 500;
   }
-  .dc-metric-row .label ha-icon { --mdc-icon-size: 14px; color: var(--dc-dim); }
+  .dc-metric-row .label ha-icon { --mdc-icon-size: 15px; color: var(--dc-dim); }
   .dc-metric-row .value {
-    font-family: var(--dc-font-mono);
     font-size: 13px; font-weight: 600;
     color: var(--dc-fg);
+    font-variant-numeric: tabular-nums;
   }
   .dc-override-row {
-    margin-top: 14px; padding: 12px 14px;
-    background: rgba(242,109,91,0.10);
-    border: 1px solid rgba(242,109,91,0.28);
+    margin-top: 12px; padding: 12px 14px;
+    background: rgba(229,115,115,0.10);
     border-radius: var(--dc-radius-sm);
     display: flex; justify-content: space-between; align-items: center;
-    font-size: 12px;
+    font-size: 13px;
   }
   .dc-override-row .lbl {
     color: var(--dc-danger); font-weight: 600;
     display: flex; align-items: center; gap: 8px;
-    font-family: var(--dc-font-mono);
-    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+    text-transform: none; letter-spacing: 0;
+    font-size: 13px;
   }
   .dc-override-row .val {
-    font-family: var(--dc-font-mono);
-    font-weight: 700;
-    color: var(--dc-danger);
+    font-weight: 600; color: var(--dc-danger);
+    font-variant-numeric: tabular-nums;
   }
 
-  /* Collapsible 'Détails techniques' — hidden by default */
+  /* Collapsible sections (Détails techniques + Sessions + Manuel) */
+  .dc-collapsible {
+    margin-top: 10px;
+    border-radius: var(--dc-radius-sm);
+    background: var(--dc-surface);
+    overflow: hidden;
+  }
+  .dc-collapsible > summary {
+    cursor: pointer; list-style: none;
+    padding: 12px 14px;
+    font-size: 13px; font-weight: 600;
+    color: var(--dc-muted);
+    display: flex; align-items: center; justify-content: space-between;
+    user-select: none;
+  }
+  .dc-collapsible > summary::-webkit-details-marker { display: none; }
+  .dc-collapsible > summary::after {
+    content: "›";
+    transition: transform 0.2s ease;
+    color: var(--dc-dim);
+    font-size: 18px; line-height: 1;
+  }
+  .dc-collapsible[open] > summary { color: var(--dc-fg); }
+  .dc-collapsible[open] > summary::after { transform: rotate(90deg); }
+  .dc-collapsible > .body { padding: 6px 14px 14px; }
+  /* Détails techniques — kept inline in §1 hero */
   .dc-details-toggle {
-    margin-top: 20px;
-    padding: 0;
+    margin: 14px auto 0;
+    max-width: 240px;
   }
   .dc-details-toggle > summary {
     cursor: pointer; list-style: none;
-    padding: 10px 0;
-    font-family: var(--dc-font-mono);
-    font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
-    color: var(--dc-muted); font-weight: 600;
-    display: flex; align-items: center; gap: 8px;
+    padding: 8px 14px;
+    font-size: 12px; font-weight: 500;
+    color: var(--dc-muted);
+    display: flex; align-items: center; justify-content: center; gap: 6px;
     user-select: none;
-    border-top: 1px solid var(--dc-hairline);
+    border-radius: var(--dc-radius-pill);
+    background: var(--dc-surface);
   }
   .dc-details-toggle > summary::-webkit-details-marker { display: none; }
   .dc-details-toggle > summary::before {
     content: "+";
-    display: inline-block;
-    transition: transform 0.2s ease;
     color: var(--dc-dim);
-    font-size: 14px;
-    line-height: 1;
+    font-size: 13px; line-height: 1;
   }
   .dc-details-toggle[open] > summary::before { content: "−"; }
   .dc-details-toggle > summary:hover { color: var(--dc-fg); }
   .dc-details-toggle[open] > summary { color: var(--dc-fg); }
-  .dc-details-toggle[open] .dc-metrics { margin-top: 6px; }
+  .dc-details-toggle[open] .dc-metrics { margin-top: 10px; }
 
-  /* ============ §2 PROFILS ============ */
+  /* ============ §2 PROFILS — compact & clean ============ */
   .dc-profiles-list {
     display: flex; flex-direction: column; gap: 8px;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
   .dc-profiles-empty {
     background: var(--dc-surface);
@@ -1743,36 +1499,24 @@ const STYLES = `
   .dc-profile {
     background: var(--dc-surface);
     border-radius: var(--dc-radius-sm);
-    padding: 14px 14px 14px 18px;
-    border: 1px solid var(--dc-hairline);
-    position: relative;
-    transition: all 0.2s;
+    padding: 14px 16px;
+    transition: background 0.2s;
   }
   .dc-profile--active {
-    background: var(--dc-surface-strong);
-    border-color: rgba(214,255,0,0.28);
+    background: var(--dc-accent-soft);
   }
-  .dc-profile--active::before {
-    content: "";
-    position: absolute;
-    left: 0; top: 14px; bottom: 14px;
-    width: 3px;
-    border-radius: 0 2px 2px 0;
-    background: var(--dc-live);
-    box-shadow: 0 0 12px var(--dc-live);
-  }
+  .dc-profile--active::before { content: none; }
   .dc-profile-head {
     display: flex; align-items: center; gap: 10px;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
   .dc-profile-badge {
-    background: var(--dc-live);
-    color: var(--dc-bg);
-    font-family: var(--dc-font-mono);
-    font-size: 9px; font-weight: 700;
-    padding: 3px 7px 2px;
+    background: var(--dc-accent);
+    color: rgba(0,0,0,0.85);
+    font-size: 10px; font-weight: 700;
+    padding: 2px 7px;
     border-radius: 4px;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
   }
   .dc-profile-name {
@@ -1780,10 +1524,9 @@ const STYLES = `
     font-weight: 600;
     color: var(--dc-fg);
     font-size: 14px;
-    letter-spacing: -0.01em;
   }
   .dc-profile-actions {
-    display: flex; gap: 4px;
+    display: flex; gap: 2px;
   }
   .dc-profile-actions button {
     width: 28px; height: 28px;
@@ -1795,14 +1538,13 @@ const STYLES = `
     transition: all 0.15s;
   }
   .dc-profile-actions button ha-icon { --mdc-icon-size: 16px; }
-  .dc-profile-actions button:hover { background: var(--dc-bg-inset); color: var(--dc-fg); }
+  .dc-profile-actions button:hover { background: var(--dc-bg-bubble-strong); color: var(--dc-fg); }
   .dc-profile-meta {
     display: flex; flex-wrap: wrap;
     gap: 4px 14px;
-    font-family: var(--dc-font-mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--dc-muted);
-    letter-spacing: 0.02em;
+    line-height: 1.5;
   }
   .dc-profile-meta span {
     display: inline-flex; align-items: center; gap: 5px;
@@ -1810,6 +1552,7 @@ const STYLES = `
   .dc-profile-meta ha-icon { --mdc-icon-size: 13px; color: var(--dc-dim); }
   .dc-profile-meta .v {
     color: var(--dc-fg); font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
 
   /* Profile edit form */
@@ -1876,11 +1619,11 @@ const STYLES = `
   }
 
   /* ============ §3 PILOTAGE ============ */
-  .dc-control { margin-bottom: 16px; }
+  .dc-control { margin-bottom: 14px; }
   .dc-control:last-child { margin-bottom: 0; }
   .dc-control-label {
-    font-family: var(--dc-font-mono);
-    font-size: 9px; letter-spacing: 0.16em;
+    font-size: 12px;
+    letter-spacing: 0;
     text-transform: uppercase;
     color: var(--dc-muted); font-weight: 600;
     margin-bottom: 10px;
@@ -1896,26 +1639,24 @@ const STYLES = `
     flex: 1; padding: 9px 14px;
     border: none; background: transparent;
     color: var(--dc-muted);
-    font-family: var(--dc-font-body);
     font-size: 13px; font-weight: 600;
-    letter-spacing: -0.005em;
     cursor: pointer;
     border-radius: 7px;
     transition: all 0.2s;
   }
   .dc-segmented button:hover { color: var(--dc-fg); }
   .dc-segmented button.active {
-    background: var(--dc-bg-inset);
+    background: var(--dc-bg-bubble-strong);
     color: var(--dc-fg);
   }
   .dc-segmented.tone-warn button.active[data-mode="boost"] {
     background: var(--dc-warm-soft); color: var(--dc-warm);
   }
   .dc-segmented.tone-danger button.active[data-mode="off"] {
-    background: rgba(242,109,91,0.16); color: var(--dc-danger);
+    background: rgba(229,115,115,0.13); color: var(--dc-danger);
   }
   .dc-segmented button.active[data-mode="auto"] {
-    background: var(--dc-live-soft); color: var(--dc-live);
+    background: var(--dc-accent-soft); color: var(--dc-accent);
   }
 
   .dc-quick-actions {
@@ -1924,27 +1665,24 @@ const STYLES = `
   .dc-quick-actions button {
     padding: 11px 14px;
     border-radius: 10px;
-    border: 1px solid var(--dc-hairline);
+    border: none;
     background: var(--dc-surface);
     color: var(--dc-fg); cursor: pointer;
-    font-family: var(--dc-font-body);
     font-weight: 600; font-size: 13px;
     display: flex; align-items: center; justify-content: center; gap: 8px;
     transition: all 0.2s;
   }
   .dc-quick-actions button ha-icon { --mdc-icon-size: 16px; }
   .dc-quick-actions button:hover:not(:disabled) {
-    background: var(--dc-surface-strong);
-    border-color: rgba(255,255,255,0.12);
+    background: var(--dc-bg-bubble-strong);
   }
   .dc-quick-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
   .dc-quick-actions button[data-bind="boost-btn"] {
     color: var(--dc-warm);
-    border-color: rgba(245,160,86,0.32);
     background: var(--dc-warm-soft);
   }
   .dc-quick-actions button[data-bind="boost-btn"]:hover:not(:disabled) {
-    background: rgba(245,160,86,0.22);
+    background: rgba(255,138,101,0.20);
   }
   .dc-quick-actions button[data-bind="boost-btn"] ha-icon { color: var(--dc-warm); }
 
@@ -1953,9 +1691,8 @@ const STYLES = `
   .dc-force-actions button {
     padding: 12px 14px;
     border-radius: 10px;
-    border: 1px solid var(--dc-hairline);
+    border: none;
     cursor: pointer;
-    font-family: var(--dc-font-body);
     font-weight: 600; font-size: 13px;
     display: flex; align-items: center; justify-content: center; gap: 8px;
     transition: all 0.2s;
@@ -1963,50 +1700,43 @@ const STYLES = `
   .dc-force-actions button ha-icon { --mdc-icon-size: 16px; }
   .dc-force-actions .force-cool {
     color: var(--dc-cool); background: var(--dc-cool-soft);
-    border-color: rgba(91,200,226,0.28);
   }
-  .dc-force-actions .force-cool:hover { background: rgba(91,200,226,0.22); }
+  .dc-force-actions .force-cool:hover { background: rgba(0,188,212,0.20); }
   .dc-force-actions .force-cool ha-icon { color: var(--dc-cool); }
   .dc-force-actions .force-heat {
     color: var(--dc-warm); background: var(--dc-warm-soft);
-    border-color: rgba(245,160,86,0.28);
   }
-  .dc-force-actions .force-heat:hover { background: rgba(245,160,86,0.22); }
+  .dc-force-actions .force-heat:hover { background: rgba(255,138,101,0.20); }
   .dc-force-actions .force-heat ha-icon { color: var(--dc-warm); }
 
   /* ============ §4 COMMANDE MANUELLE ============ */
   .dc-subblock {
     background: var(--dc-surface);
     border-radius: var(--dc-radius-sm);
-    padding: 16px;
+    padding: 14px;
     margin-bottom: 10px;
-    border: 1px solid var(--dc-hairline);
   }
   .dc-subblock:last-child { margin-bottom: 0; }
   .dc-subblock-title {
-    font-family: var(--dc-font-mono);
-    font-size: 9px; letter-spacing: 0.16em;
-    text-transform: uppercase;
+    font-size: 12px;
     color: var(--dc-muted); font-weight: 600;
-    margin-bottom: 14px;
+    margin-bottom: 12px;
     display: flex; align-items: center; gap: 8px;
   }
-  .dc-subblock-title ha-icon { --mdc-icon-size: 13px; color: var(--dc-dim); }
+  .dc-subblock-title ha-icon { --mdc-icon-size: 16px; color: var(--dc-dim); }
 
   /* HVAC mode chips */
-  .dc-hvac {
-    display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px;
-  }
+  .dc-hvac { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; }
   .dc-hvac button {
     padding: 9px 4px;
     background: var(--dc-bg-inset);
-    border: 1px solid transparent;
+    border: none;
     border-radius: 10px;
     color: var(--dc-muted); cursor: pointer;
     transition: all 0.2s;
-    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
   }
-  .dc-hvac button > div { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 100%; }
+  .dc-hvac button > div { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; }
   .dc-hvac button .ha-icon-wrap {
     width: 26px; height: 26px;
     display: flex; align-items: center; justify-content: center;
@@ -2014,67 +1744,54 @@ const STYLES = `
     transition: all 0.2s;
   }
   .dc-hvac button ha-icon { --mdc-icon-size: 18px; }
-  .dc-hvac button span {
-    font-family: var(--dc-font-mono);
-    font-size: 9px; letter-spacing: 0.06em;
-    font-weight: 600; text-transform: uppercase;
-  }
+  .dc-hvac button span { font-size: 11px; font-weight: 500; }
   .dc-hvac button:hover {
-    background: var(--dc-surface-strong);
+    background: var(--dc-bg-bubble-strong);
     color: var(--dc-fg);
   }
   .dc-hvac button:hover .ha-icon-wrap { color: var(--dc-fg); }
-  .dc-hvac button.active {
-    background: var(--dc-surface-strong);
-    border-color: rgba(255,255,255,0.1);
-  }
+  .dc-hvac button.active { background: var(--dc-bg-bubble-strong); }
   .dc-hvac button.active .ha-icon-wrap { color: var(--hvac-color, var(--dc-fg)); }
   .dc-hvac button.active span { color: var(--dc-fg); }
 
   /* Setpoint stepper */
   .dc-setpoint {
-    display: flex; align-items: center; justify-content: center; gap: 24px;
-    margin-top: 16px;
+    display: flex; align-items: center; justify-content: center; gap: 22px;
+    margin-top: 14px;
   }
   .dc-setpoint .sp-val {
-    font-family: var(--dc-font-mono);
-    font-size: 36px; font-weight: 700;
+    font-size: 32px; font-weight: 600;
     min-width: 110px; text-align: center;
-    letter-spacing: -0.03em;
+    letter-spacing: -0.025em;
     color: var(--dc-fg);
     line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
-  .dc-setpoint .sp-unit { font-size: 14px; color: var(--dc-muted); font-weight: 500; margin-left: 4px; }
+  .dc-setpoint .sp-unit { font-size: 14px; color: var(--dc-muted); font-weight: 500; margin-left: 3px; }
   .dc-setpoint button {
-    width: 42px; height: 42px; border-radius: 50%;
+    width: 40px; height: 40px; border-radius: 50%;
     background: var(--dc-bg-inset);
-    border: 1px solid var(--dc-hairline);
+    border: none;
     color: var(--dc-fg);
     font-size: 18px; font-weight: 600;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
     transition: all 0.2s;
   }
   .dc-setpoint button:hover {
-    background: var(--dc-cool-soft);
-    color: var(--dc-cool);
-    border-color: rgba(91,200,226,0.3);
+    background: var(--dc-accent-soft);
+    color: var(--dc-accent);
   }
 
   /* Fan + swing selects */
-  .dc-fanswing { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+  .dc-fanswing { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
   .dc-fanswing .field { display: flex; flex-direction: column; gap: 6px; }
-  .dc-fanswing label {
-    font-family: var(--dc-font-mono);
-    font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--dc-muted); font-weight: 600;
-  }
+  .dc-fanswing label { font-size: 12px; color: var(--dc-muted); font-weight: 500; }
   .dc-fanswing select {
     background: var(--dc-bg-inset);
-    border: 1px solid var(--dc-hairline);
+    border: none;
     border-radius: 10px;
     color: var(--dc-fg);
     padding: 10px 12px;
-    font-family: var(--dc-font-body);
     font-size: 13px; font-weight: 500;
     appearance: none; -webkit-appearance: none;
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(138,146,160,0.8)' d='M0 0l5 6 5-6z'/></svg>");
@@ -2082,7 +1799,7 @@ const STYLES = `
     padding-right: 32px;
     cursor: pointer;
   }
-  .dc-fanswing select:focus { outline: 2px solid var(--dc-cool); outline-offset: -2px; }
+  .dc-fanswing select:focus { outline: 2px solid var(--dc-accent); outline-offset: -2px; }
 
   /* Threshold pairs (start/stop side by side) */
   .dc-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -2146,67 +1863,40 @@ const TEMPLATE = `
       <span class="lbl">État actuel</span>
     </div>
 
-    <div class="dc-hero">
-      <!-- Legacy bindings kept invisible so existing JS setters don't break -->
-      <div class="dc-hero-row" style="display:none">
-        <span data-bind="room-temp"></span>
-        <span data-bind="target-arrow"></span>
-        <div data-bind="target-block">
-          <span data-bind="target-temp"></span>
+    <div class="dc-hero" data-bind="hero">
+      <div class="dc-hero-row">
+        <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
+        <!-- Legacy bindings hidden via CSS (.dc-hero .arrow, .target-block, .room-label) -->
+        <span class="arrow" data-bind="target-arrow"></span>
+        <div class="target-block" data-bind="target-block">
+          <span class="target"><span data-bind="target-temp"></span></span>
         </div>
       </div>
 
       <div class="dc-narrative" data-bind="narrative"></div>
 
-      <!-- THERMAL RAIL — signature element -->
-      <div class="dc-rail-wrap" data-bind="rail-wrap">
-        <div class="dc-rail-track">
-          <div class="dc-rail-fill" data-bind="rail-fill" style="left:0;width:0"></div>
-          <div class="dc-rail-target" data-bind="rail-target" data-label="CIBLE" style="left:0"></div>
-        </div>
-        <div class="dc-rail-cursor" data-bind="rail-cursor" style="left:0">
-          <div class="reading"><span data-bind="rail-cursor-val">—</span><span class="unit">°C</span></div>
-          <div class="dot"></div>
-        </div>
-        <div class="dc-rail-bounds">
-          <div class="bound">
-            <span class="v" data-bind="rail-bound-left">—</span>
-            <span>début</span>
-          </div>
-          <div class="bound right">
-            <span class="v" data-bind="rail-bound-right">—</span>
-            <span>cible</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- PHASE RIBBON — ATTAQUE / STABILISATION / COOLDOWN -->
-      <div class="dc-phases" data-bind="phases">
-        <div class="dc-phase" data-bind="phase-attaque">
-          <div class="label">Attaque</div>
-          <div class="val" data-bind="phase-attaque-val">—</div>
-        </div>
-        <div class="dc-phase" data-bind="phase-stab">
-          <div class="label">Stabilisation</div>
-          <div class="val" data-bind="phase-stab-val">—</div>
-        </div>
-        <div class="dc-phase" data-bind="phase-cooldown">
-          <div class="label">Cooldown</div>
-          <div class="val" data-bind="phase-cooldown-val">—</div>
-        </div>
-      </div>
-
-      <div class="dc-timeline" data-bind="timeline" style="display:none">
-        <div class="dc-timeline-text" data-bind="timeline-text"></div>
-        <div class="dc-spark" data-bind="spark"></div>
-      </div>
+      <div class="dc-pills" data-bind="status-pills"></div>
     </div>
-
-    <div class="dc-pills" data-bind="status-pills"></div>
 
     <div class="dc-override-row" data-bind="override-row" style="display:none">
       <span class="lbl"><ha-icon icon="mdi:account-clock"></ha-icon>Override jusqu'à</span>
       <span class="val" data-bind="override-until-val">—</span>
+    </div>
+
+    <!-- Hidden legacy hero elements kept for JS compat (no-op'd) -->
+    <div class="dc-rail-wrap" data-bind="rail-wrap" style="display:none">
+      <span data-bind="rail-fill"></span>
+      <span data-bind="rail-target"></span>
+      <span data-bind="rail-cursor"><span data-bind="rail-cursor-val"></span></span>
+      <span data-bind="rail-bound-left"></span><span data-bind="rail-bound-right"></span>
+    </div>
+    <div class="dc-phases" data-bind="phases" style="display:none">
+      <div data-bind="phase-attaque"><span data-bind="phase-attaque-val"></span></div>
+      <div data-bind="phase-stab"><span data-bind="phase-stab-val"></span></div>
+      <div data-bind="phase-cooldown"><span data-bind="phase-cooldown-val"></span></div>
+    </div>
+    <div class="dc-timeline" data-bind="timeline" style="display:none">
+      <span data-bind="timeline-text"></span><span data-bind="spark"></span>
     </div>
 
     <details class="dc-details-toggle">
@@ -2276,56 +1966,57 @@ const TEMPLATE = `
     </div>
   </section>
 
-  <!-- ════════════════════════════════════ §4 COMMANDE MANUELLE -->
+  <!-- ════════════════════════════════════ §4 COMMANDE MANUELLE (collapsed) -->
   <section class="dc-section section-manual">
-    <div class="dc-section-head">
-      <div class="head-bubble"><ha-icon icon="mdi:hand-back-right"></ha-icon></div>
-      <span class="lbl">Commande manuelle</span>
-    </div>
+    <details class="dc-collapsible">
+      <summary><span>Commande manuelle</span></summary>
+      <div class="body">
+        <div class="dc-control">
+          <div class="dc-control-label">Actions rapides</div>
+          <div class="dc-quick-actions">
+            <button data-bind="boost-btn"><ha-icon icon="mdi:rocket-launch"></ha-icon> Boost 15 min</button>
+            <button data-bind="resume-btn"><ha-icon icon="mdi:restore"></ha-icon> Reprendre auto</button>
+          </div>
+        </div>
 
-    <div class="dc-control">
-      <div class="dc-control-label">Actions rapides</div>
-      <div class="dc-quick-actions">
-        <button data-bind="boost-btn"><ha-icon icon="mdi:rocket-launch"></ha-icon> Boost 15 min</button>
-        <button data-bind="resume-btn"><ha-icon icon="mdi:restore"></ha-icon> Reprendre auto</button>
-      </div>
-    </div>
-
-    <div class="dc-subblock" data-bind="manual-clim-block">
-      <div class="dc-subblock-title">
-        <ha-icon icon="mdi:air-conditioner"></ha-icon> Contrôle direct climatisation
-      </div>
-      <div class="dc-hvac" data-bind="hvac-modes"></div>
-      <div class="dc-setpoint">
-        <button data-bind="sp-dec" title="Diminuer">−</button>
-        <div>
-          <div class="sp-val"><span data-bind="setpoint">—</span><span class="sp-unit"> °C</span></div>
-        </div>
-        <button data-bind="sp-inc" title="Augmenter">+</button>
-      </div>
-      <div class="dc-fanswing">
-        <div class="field">
-          <label>Ventilation</label>
-          <select data-bind="fan-select"></select>
-        </div>
-        <div class="field">
-          <label>Swing</label>
-          <select data-bind="swing-select"></select>
+        <div class="dc-subblock" data-bind="manual-clim-block">
+          <div class="dc-subblock-title">
+            <ha-icon icon="mdi:air-conditioner"></ha-icon> Contrôle direct climatisation
+          </div>
+          <div class="dc-hvac" data-bind="hvac-modes"></div>
+          <div class="dc-setpoint">
+            <button data-bind="sp-dec" title="Diminuer">−</button>
+            <div>
+              <div class="sp-val"><span data-bind="setpoint">—</span><span class="sp-unit"> °C</span></div>
+            </div>
+            <button data-bind="sp-inc" title="Augmenter">+</button>
+          </div>
+          <div class="dc-fanswing">
+            <div class="field">
+              <label>Ventilation</label>
+              <select data-bind="fan-select"></select>
+            </div>
+            <div class="field">
+              <label>Swing</label>
+              <select data-bind="swing-select"></select>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+    </details>
   </section>
 
-  <!-- ════════════════════════════════════ §5 SESSIONS RÉCENTES -->
+  <!-- ════════════════════════════════════ §5 SESSIONS RÉCENTES (collapsed) -->
   <section class="dc-section section-cycles">
-    <div class="dc-section-head">
-      <div class="head-bubble"><ha-icon icon="mdi:history"></ha-icon></div>
-      <span class="lbl">Sessions récentes</span>
-    </div>
-    <div class="dc-cycles-empty" data-bind="cycles-empty" style="display:none">
-      Aucune session terminée. La prochaine apparaîtra ici dès que le cycle se boucle.
-    </div>
-    <div class="dc-cycles-list" data-bind="cycles-list"></div>
+    <details class="dc-collapsible">
+      <summary><span>Sessions récentes</span></summary>
+      <div class="body">
+        <div class="dc-cycles-empty" data-bind="cycles-empty" style="display:none">
+          Aucune session terminée pour l'instant.
+        </div>
+        <div class="dc-cycles-list" data-bind="cycles-list"></div>
+      </div>
+    </details>
   </section>
 
   <div class="dc-err" data-bind="error"></div>
@@ -2342,7 +2033,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.15.1 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.16.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
