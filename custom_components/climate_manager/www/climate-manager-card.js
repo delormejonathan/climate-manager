@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.16.2
+ * climate-manager-card  v0.17.0
  *
  * Instrument-panel redesign. Five sections for one zone:
  *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
@@ -413,18 +413,29 @@ class DelormejClimateCard extends HTMLElement {
       const room = parseFloat(get(ids.roomTemp)?.state);
       const supportsCool = attrs.supports_cool !== false;
       const supportsHeat = attrs.supports_heat !== false;
+
+      // Pick the most likely next action from the current month. Transitional
+      // months (April / October) keep both; the rest show only the relevant
+      // one so the user doesn't read a sentence about heating in July.
+      const month = new Date().getMonth() + 1;
+      const coolSeason = [5, 6, 7, 8, 9].includes(month);
+      const heatSeason = [11, 12, 1, 2, 3].includes(month);
+      const showCool = supportsCool && !Number.isNaN(coolStart) && !heatSeason;
+      const showHeat = supportsHeat && !Number.isNaN(heatStart) && !coolSeason;
+
       const parts = [];
-      if (supportsCool && !Number.isNaN(coolStart)) parts.push(`refroidissement à ${coolStart}°C`);
-      if (supportsHeat && !Number.isNaN(heatStart)) parts.push(`chauffage à ${heatStart}°C`);
+      if (showCool) parts.push(`refroidissement à ${coolStart}°C`);
+      if (showHeat) parts.push(`chauffage à ${heatStart}°C`);
+
       let hint = "";
       if (!Number.isNaN(room)) {
-        const dToCool = supportsCool && !Number.isNaN(coolStart) ? coolStart - room : null;
-        const dToHeat = supportsHeat && !Number.isNaN(heatStart) ? room - heatStart : null;
-        const both = dToCool !== null && dToHeat !== null;
-        if (both && dToCool > 0 && dToCool < dToHeat) hint = ` <span class="until">(encore ${dToCool.toFixed(1)}°C avant refroidissement)</span>`;
-        else if (both && dToHeat > 0 && dToHeat < dToCool) hint = ` <span class="until">(encore ${dToHeat.toFixed(1)}°C avant chauffage)</span>`;
-        else if (!both && dToCool !== null && dToCool > 0) hint = ` <span class="until">(encore ${dToCool.toFixed(1)}°C avant refroidissement)</span>`;
-        else if (!both && dToHeat !== null && dToHeat > 0) hint = ` <span class="until">(encore ${dToHeat.toFixed(1)}°C avant chauffage)</span>`;
+        if (showCool && !showHeat) {
+          const d = coolStart - room;
+          if (d > 0) hint = ` <span class="until">(encore ${d.toFixed(1)}°C)</span>`;
+        } else if (showHeat && !showCool) {
+          const d = room - heatStart;
+          if (d > 0) hint = ` <span class="until">(encore ${d.toFixed(1)}°C)</span>`;
+        }
       }
       const lead = parts.length === 2
         ? `Démarre le ${parts[0]} ou le ${parts[1]}`
@@ -1922,21 +1933,6 @@ const TEMPLATE = `
     </details>
   </section>
 
-  <!-- ════════════════════════════════════ §2 PROFILS -->
-  <section class="dc-section section-profiles">
-    <div class="dc-section-head">
-      <div class="head-bubble"><ha-icon icon="mdi:layers-triple"></ha-icon></div>
-      <span class="lbl">Profils</span>
-    </div>
-    <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
-      Aucun profil configuré. Tant qu'aucun profil ne match, la zone reste OFF.
-    </div>
-    <div class="dc-profiles-list" data-bind="profiles-list"></div>
-    <button class="dc-profile-add" data-bind="profile-add">
-      <ha-icon icon="mdi:plus-circle"></ha-icon> Nouveau profil
-    </button>
-  </section>
-
   <!-- ════════════════════════════════════ §3 PILOTAGE -->
   <section class="dc-section section-auto">
     <div class="dc-section-head">
@@ -2019,6 +2015,22 @@ const TEMPLATE = `
     </details>
   </section>
 
+  <!-- ════════════════════════════════════ PROFILS (collapsed, en bas) -->
+  <section class="dc-section section-profiles">
+    <details class="dc-collapsible">
+      <summary><span>Profils</span></summary>
+      <div class="body">
+        <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
+          Aucun profil configuré. Tant qu'aucun profil ne match, la zone reste OFF.
+        </div>
+        <div class="dc-profiles-list" data-bind="profiles-list"></div>
+        <button class="dc-profile-add" data-bind="profile-add">
+          <ha-icon icon="mdi:plus-circle"></ha-icon> Nouveau profil
+        </button>
+      </div>
+    </details>
+  </section>
+
   <div class="dc-err" data-bind="error"></div>
 `;
 
@@ -2033,7 +2045,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.16.2 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.17.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
