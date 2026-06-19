@@ -217,8 +217,17 @@ def _find_zone(hass: HomeAssistant, zone_ref: str):
 
 
 def _slug(s: str) -> str:
+    """Slugify with accent folding so 'Étage' → 'etage' (not 'tage').
+
+    The previous implementation just replaced any non-[a-z0-9] character
+    with '_' and then stripped, which dropped the 'É' entirely and broke
+    every API call that referenced the zone by its expected slug.
+    """
     import re
-    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+    import unicodedata
+    normalized = unicodedata.normalize("NFD", s.lower())
+    ascii_only = "".join(c for c in normalized if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "_", ascii_only).strip("_")
 
 
 def _register_services(hass: HomeAssistant) -> None:

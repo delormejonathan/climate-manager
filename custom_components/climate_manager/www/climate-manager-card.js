@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.16.1
+ * climate-manager-card  v0.16.2
  *
  * Instrument-panel redesign. Five sections for one zone:
  *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
@@ -1793,8 +1793,16 @@ const STYLES = `
   .dc-fanswing select:focus { outline: 2px solid var(--dc-accent); outline-offset: -2px; }
 
   /* Threshold pairs (start/stop side by side) */
-  .dc-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .dc-field { display: flex; flex-direction: column; gap: 6px; }
+  /* Pair grid: side-by-side on wide, stacked on narrow viewports — the
+     right-hand field used to fall off the popup width on mobile, making
+     the input untappable. auto-fit + minmax handles both cases without a
+     media query. */
+  .dc-pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .dc-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .dc-field label {
     font-size: 0.8em; color: var(--dc-muted); font-weight: 600;
   }
@@ -1803,8 +1811,9 @@ const STYLES = `
     background: var(--dc-bg-inset);
     border-radius: var(--dc-radius-sm); padding: 0 14px;
     transition: outline 0.2s;
+    min-width: 0;
   }
-  .dc-input-wrap:focus-within { outline: 2px solid var(--dc-cool); outline-offset: -2px; }
+  .dc-input-wrap:focus-within { outline: 2px solid var(--dc-accent); outline-offset: -2px; }
   .dc-input-wrap input {
     flex: 1; min-width: 0; padding: 11px 0; background: transparent; border: none;
     color: var(--dc-fg); font-size: 1em; font-weight: 700;
@@ -2024,7 +2033,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.16.1 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.16.2 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
