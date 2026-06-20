@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.17.0
+ * climate-manager-card  v0.17.1
  *
  * Instrument-panel redesign. Five sections for one zone:
  *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
@@ -728,7 +728,7 @@ class DelormejClimateCard extends HTMLElement {
     const target = attrs.target_temperature;
 
     // Fetch (or reuse cached) history of the room temp sensor since cycle start.
-    this._ensureSparkData(ids.roomTemp, startMs).then((points) => {
+    this._ensureHistoryData(ids.roomTemp, startMs, Date.now()).then((points) => {
       this._renderSpark($("spark"), points, target, attrs.direction);
       // Text line: "Démarré il y a 23min · -2.0°C"
       const txtEl = $("timeline-text");
@@ -749,19 +749,17 @@ class DelormejClimateCard extends HTMLElement {
     return `${sign}${Math.abs(d).toFixed(1)}°C`;
   }
 
-  async _ensureSparkData(entityId, cycleStartMs) {
+  async _ensureHistoryData(entityId, startMs, endMs = Date.now()) {
     const now = Date.now();
-    const cache = this._sparkCache;
-    if (
-      cache
-      && cache.entityId === entityId
-      && cache.cycleStartMs === cycleStartMs
-      && now - cache.fetchedAt < 30_000
-    ) {
+    if (!this._historyCache) this._historyCache = new Map();
+    const endBucket = Math.round(endMs / 30_000); // avoids refetching every HA tick
+    const cacheKey = `${entityId}|${startMs}|${endBucket}`;
+    const cache = this._historyCache.get(cacheKey);
+    if (cache && now - cache.fetchedAt < 30_000) {
       return cache.points;
     }
-    const startIso = new Date(cycleStartMs).toISOString();
-    const endIso = new Date(now).toISOString();
+    const startIso = new Date(startMs).toISOString();
+    const endIso = new Date(endMs).toISOString();
     let raw;
     try {
       raw = await this._hass.callWS({
@@ -780,15 +778,25 @@ class DelormejClimateCard extends HTMLElement {
     const points = [];
     for (const s of series) {
       const v = parseFloat(s.s ?? s.state);
-      // Each row's timestamp is either `lu` (minimal) or `last_updated`
+      // Each row's timestamp is either `lu` (minimal) or `last_updated`.
       const ts = (s.lu ?? s.last_updated);
       if (!Number.isNaN(v) && ts != null) {
         const ms = typeof ts === "number" ? ts * 1000 : Date.parse(ts);
         points.push({ ms, t: v });
       }
     }
-    this._sparkCache = { entityId, cycleStartMs, fetchedAt: now, points };
+    this._historyCache.set(cacheKey, { fetchedAt: now, points });
+    // Keep the cache bounded. A dashboard can stay open for days.
+    if (this._historyCache.size > 24) {
+      const oldestKey = this._historyCache.keys().next().value;
+      this._historyCache.delete(oldestKey);
+    }
     return points;
+  }
+
+  // Backward-compatible name for older call sites / browser cache edge cases.
+  async _ensureSparkData(entityId, cycleStartMs) {
+    return this._ensureHistoryData(entityId, cycleStartMs, Date.now());
   }
 
   _renderSpark(el, points, target, direction) {
@@ -802,7 +810,8 @@ class DelormejClimateCard extends HTMLElement {
     const ys = points.map(p => p.t);
     const xMin = xs[0], xMax = Math.max(xs[xs.length - 1], xs[0] + 60_000);
     const tValues = [...ys];
-    if (typeof target === "number") tValues.push(target);
+    const targetNum = parseFloat(target);
+    if (!Number.isNaN(targetNum)) tValues.push(targetNum);
     let yMin = Math.min(...tValues) - 0.3;
     let yMax = Math.max(...tValues) + 0.3;
     if (yMax - yMin < 1) { yMax = yMin + 1; }
@@ -815,8 +824,8 @@ class DelormejClimateCard extends HTMLElement {
     ).join(" ");
 
     let targetLine = "";
-    if (typeof target === "number") {
-      const ty = sy(target).toFixed(1);
+    if (!Number.isNaN(targetNum)) {
+      const ty = sy(targetNum).toFixed(1);
       targetLine =
         `<line x1="${padX}" y1="${ty}" x2="${W - padX}" y2="${ty}" `
         + `stroke="#fd9853" stroke-width="1" stroke-dasharray="3 3" opacity="0.7"/>`;
@@ -1061,31 +1070,79 @@ class DelormejClimateCard extends HTMLElement {
     const sig = JSON.stringify(newest);
     if (list.dataset.sig === sig) return;
     list.dataset.sig = sig;
-    list.innerHTML = newest.map((c) => this._buildCycleRow(c)).join("");
+    list.innerHTML = newest.map((c, idx) => this._buildCycleRow(c, idx)).join("");
+    this._hydrateCycleSparklines(newest);
   }
 
-  _buildCycleRow(c) {
+  _buildCycleRow(c, idx) {
     const tStart = this._fmtTimeFromTs(c.start_ts);
     const tEnd = this._fmtTimeFromTs(c.end_ts);
     const duration = this._fmtDuration(c.duration_min);
     const tStartC = this._fmtTemp(c.temp_start);
     const tEndC = this._fmtTemp(c.temp_end);
+    const tMinC = this._fmtTemp(c.temp_min);
     const profile = c.profile_at_start || c.profile_at_end || "—";
     const dayLabel = this._fmtDayLabel(c.start_ts);
+    const reason = this._cycleEndReasonMeta(c.end_reason);
+    const delta = this._cycleDeltaLabel(c);
     return `
       <div class="dc-cycle-row">
-        <div>
-          <div class="dc-cycle-times">${tStart} → <span class="end">${tEnd}</span></div>
-          <div class="dc-cycle-details">
-            <span class="v">${tStartC}°</span> → <span class="v">${tEndC}°</span> · ${this._escapeHTML(profile)}
+        <div class="dc-cycle-main">
+          <div class="dc-cycle-top">
+            <div class="dc-cycle-times">${tStart} → <span class="end">${tEnd}</span></div>
+            <div class="dc-cycle-duration">
+              ${duration}
+              <span class="sub">${dayLabel}</span>
+            </div>
           </div>
-        </div>
-        <div class="dc-cycle-duration">
-          ${duration}
-          <span class="sub">${dayLabel}</span>
+          <div class="dc-cycle-spark" data-cycle-idx="${idx}">
+            ${this._buildCycleSparkline(c)}
+          </div>
+          <div class="dc-cycle-details">
+            <span class="v">${tStartC}°</span> → <span class="v">${tEndC}°</span>
+            ${tMinC !== "—" ? ` · min <span class="v">${tMinC}°</span>` : ""}
+            ${delta ? ` · <span class="delta">${delta}</span>` : ""}
+            <br>
+            <span class="profile">${this._escapeHTML(profile)}</span>
+            <span class="reason ${reason.klass}"><ha-icon icon="${reason.icon}"></ha-icon>${reason.label}</span>
+          </div>
         </div>
       </div>
     `;
+  }
+
+  _hydrateCycleSparklines(cycles) {
+    if (!this._hass) return;
+    const ids = this._ids();
+    cycles.slice(0, 6).forEach((c, idx) => {
+      if (c.start_ts == null || c.end_ts == null) return;
+      const el = this.querySelector(`.dc-cycle-spark[data-cycle-idx="${idx}"]`);
+      if (!el) return;
+      const startMs = c.start_ts * 1000;
+      const endMs = c.end_ts * 1000;
+      this._ensureHistoryData(ids.roomTemp, startMs, endMs).then((points) => {
+        if (!points || points.length < 2) return; // keep 3-point fallback
+        const direction = this._cycleDirection(c);
+        this._renderSpark(el, points, null, direction);
+      });
+    });
+  }
+
+  _cycleDirection(c) {
+    const s = parseFloat(c.temp_start);
+    const e = parseFloat(c.temp_end);
+    if (!Number.isNaN(s) && !Number.isNaN(e)) return e >= s ? "heat" : "cool";
+    return "cool";
+  }
+
+  _cycleDeltaLabel(c) {
+    const s = parseFloat(c.temp_start);
+    const e = parseFloat(c.temp_end);
+    if (Number.isNaN(s) || Number.isNaN(e)) return "";
+    const d = e - s;
+    if (Math.abs(d) < 0.1) return "stable";
+    const sign = d > 0 ? "+" : "−";
+    return `${sign}${Math.abs(d).toFixed(1)}°C`;
   }
 
   /**
@@ -1288,14 +1345,18 @@ const STYLES = `
     display: flex; flex-direction: column;
   }
   .dc-cycle-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 12px;
-    align-items: center;
-    padding: 12px 0;
+    padding: 14px 0 16px;
     border-bottom: 1px solid var(--dc-hairline);
   }
   .dc-cycle-row:last-child { border-bottom: none; }
+  .dc-cycle-main { display: block; }
+  .dc-cycle-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+    margin-bottom: 8px;
+  }
   .dc-cycle-times {
     font-size: 13px; color: var(--dc-fg); font-weight: 600;
     line-height: 1.35;
@@ -1306,14 +1367,32 @@ const STYLES = `
     font-weight: 500;
   }
   .dc-cycle-icon { display: none; }
-  .dc-cycle-main { display: contents; }
-  .dc-cycle-spark { display: none; }
+  .dc-cycle-spark {
+    height: 58px;
+    margin: 2px 0 8px;
+    color: var(--dc-accent);
+    background: linear-gradient(180deg, var(--dc-accent-soft), transparent 70%);
+    border-radius: var(--dc-radius-sm);
+    overflow: hidden;
+  }
+  .dc-cycle-spark svg { width: 100%; height: 58px; display: block; }
   .dc-cycle-details {
     font-size: 12px; color: var(--dc-muted);
     margin-top: 2px;
     font-variant-numeric: tabular-nums;
+    line-height: 1.55;
   }
-  .dc-cycle-details .v { color: var(--dc-fg); font-weight: 600; }
+  .dc-cycle-details .v,
+  .dc-cycle-details .delta { color: var(--dc-fg); font-weight: 600; }
+  .dc-cycle-details .profile { color: var(--dc-muted); }
+  .dc-cycle-details .reason {
+    display: inline-flex; align-items: center; gap: 4px;
+    margin-left: 8px;
+    color: var(--dc-muted);
+  }
+  .dc-cycle-details .reason.success { color: var(--dc-accent); }
+  .dc-cycle-details .reason.warn { color: var(--dc-warm); }
+  .dc-cycle-details .reason ha-icon { --mdc-icon-size: 13px; }
   .dc-cycle-duration {
     font-size: 13px; color: var(--dc-fg); font-weight: 600;
     text-align: right; white-space: nowrap;
@@ -1374,8 +1453,64 @@ const STYLES = `
   .dc-narrative.warm .accent { color: var(--dc-fg); }
   .dc-narrative.warn { color: var(--dc-warm); }
 
-  /* Thermal rail + phases ribbon REMOVED. Hide any legacy markup. */
-  .dc-rail-wrap, .dc-phases, .dc-timeline { display: none !important; }
+  /* Thermal rail kept hidden; phase ribbon + live curve are now first-class. */
+  .dc-rail-wrap { display: none !important; }
+  .dc-phases.hidden { display: none; }
+  .dc-phases {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin: 8px 0 10px;
+  }
+  .dc-phase {
+    padding: 8px 6px;
+    border-radius: var(--dc-radius-sm);
+    background: var(--dc-surface);
+    color: var(--dc-muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    line-height: 1.25;
+  }
+  .dc-phase::before {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dc-dim);
+    margin-bottom: 3px;
+  }
+  .dc-phase:nth-child(1)::before { content: "Attaque"; }
+  .dc-phase:nth-child(2)::before { content: "Stabilisation"; }
+  .dc-phase:nth-child(3)::before { content: "Cooldown"; }
+  .dc-phase.done { color: var(--dc-muted); background: rgba(138,146,160,0.10); }
+  .dc-phase.active {
+    color: var(--dc-fg);
+    background: var(--dc-accent-soft);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dc-accent), transparent 60%);
+  }
+  .dc-phase.upcoming { opacity: 0.68; }
+  .dc-timeline {
+    display: block;
+    margin: 8px 0 14px;
+    padding: 10px 12px 8px;
+    border-radius: var(--dc-radius-sm);
+    background: var(--dc-surface);
+    text-align: left;
+  }
+  .dc-timeline span[data-bind="timeline-text"] {
+    display: block;
+    color: var(--dc-muted);
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .dc-timeline .dc-delta { color: var(--dc-fg); }
+  .dc-timeline span[data-bind="spark"] {
+    display: block;
+    height: 56px;
+    color: var(--dc-accent);
+  }
 
   /* Pills — minimal, single-line, just the essentials */
   .dc-pills {
@@ -1901,10 +2036,10 @@ const TEMPLATE = `
       <span data-bind="rail-cursor"><span data-bind="rail-cursor-val"></span></span>
       <span data-bind="rail-bound-left"></span><span data-bind="rail-bound-right"></span>
     </div>
-    <div class="dc-phases" data-bind="phases" style="display:none">
-      <div data-bind="phase-attaque"><span data-bind="phase-attaque-val"></span></div>
-      <div data-bind="phase-stab"><span data-bind="phase-stab-val"></span></div>
-      <div data-bind="phase-cooldown"><span data-bind="phase-cooldown-val"></span></div>
+    <div class="dc-phases hidden" data-bind="phases">
+      <div class="dc-phase" data-bind="phase-attaque"><span data-bind="phase-attaque-val"></span></div>
+      <div class="dc-phase" data-bind="phase-stab"><span data-bind="phase-stab-val"></span></div>
+      <div class="dc-phase" data-bind="phase-cooldown"><span data-bind="phase-cooldown-val"></span></div>
     </div>
     <div class="dc-timeline" data-bind="timeline" style="display:none">
       <span data-bind="timeline-text"></span><span data-bind="spark"></span>
@@ -2004,7 +2139,7 @@ const TEMPLATE = `
 
   <!-- ════════════════════════════════════ §5 SESSIONS RÉCENTES (collapsed) -->
   <section class="dc-section section-cycles">
-    <details class="dc-collapsible">
+    <details class="dc-collapsible" open>
       <summary><span>Sessions récentes</span></summary>
       <div class="body">
         <div class="dc-cycles-empty" data-bind="cycles-empty" style="display:none">
@@ -2045,7 +2180,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.17.0 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.17.1 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
