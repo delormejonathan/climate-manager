@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.17.1
+ * climate-manager-card  v0.17.2
  *
  * Instrument-panel redesign. Five sections for one zone:
  *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
@@ -512,7 +512,7 @@ class DelormejClimateCard extends HTMLElement {
     const head = document.createElement("div");
     head.className = "dc-profile-head";
     head.innerHTML = `
-      ${isActive ? '<span class="dc-profile-badge">ACTIF</span>' : ''}
+      ${isActive ? '<span class="dc-profile-badge">ACTIF</span>' : '<span class="dc-profile-badge ghost"></span>'}
       <span class="dc-profile-name">${this._escapeHTML(profile.name || "Sans nom")}</span>
       <div class="dc-profile-actions">
         <button data-action="up" title="Monter">↑</button>
@@ -524,18 +524,100 @@ class DelormejClimateCard extends HTMLElement {
 
     const meta = document.createElement("div");
     meta.className = "dc-profile-meta";
-    const schedule = profile.schedule_entity || "—";
-    const presence = profile.presence_entity
-      ? `${profile.presence_entity}${profile.presence_required_state ? " = " + profile.presence_required_state : ""}`
-      : null;
     meta.innerHTML = `
-      <span><ha-icon icon="mdi:calendar-clock"></ha-icon>${this._escapeHTML(schedule)}</span>
-      ${presence ? `<span><ha-icon icon="mdi:shield-account"></ha-icon>${this._escapeHTML(presence)}</span>` : ''}
-      <span><ha-icon icon="mdi:snowflake"></ha-icon>cible ${this._fmtTemp(profile.seuil_fin_refroidissement)}°C</span>
-      <span><ha-icon icon="mdi:flash"></ha-icon>${this._capitalize(profile.power || "normal")}</span>
-      <span><ha-icon icon="mdi:fan"></ha-icon>${this._capitalize(profile.fan_intensity || "normal")}</span>`;
+      <span class="primary"><ha-icon icon="${this._profileGateIcon(profile)}"></ha-icon>${this._escapeHTML(this._profileGateLabel(profile))}</span>
+      <span><ha-icon icon="mdi:snowflake"></ha-icon>${this._escapeHTML(this._profileCoolLabel(profile))}</span>
+      <span><ha-icon icon="mdi:tune-variant"></ha-icon>${this._escapeHTML(this._profileDriverLabel(profile))}</span>`;
     card.appendChild(meta);
+    const detail = this._profileDetailLabel(profile);
+    if (detail) {
+      const more = document.createElement("div");
+      more.className = "dc-profile-detail";
+      more.textContent = detail;
+      card.appendChild(more);
+    }
     return card;
+  }
+
+  _profileGateIcon(profile) {
+    if (profile.presence_entity) return "mdi:shield-account";
+    if (profile.schedule_entity) return "mdi:calendar-clock";
+    return "mdi:infinity";
+  }
+
+  _profileGateLabel(profile) {
+    if (profile.presence_entity) {
+      const state = profile.presence_required_state;
+      const stateLabel = this._presenceStateLabel(state);
+      const entity = this._friendlyEntityName(profile.presence_entity);
+      return stateLabel ? stateLabel : entity;
+    }
+    if (profile.schedule_entity) return this._friendlyScheduleName(profile.schedule_entity);
+    return "Toujours actif";
+  }
+
+  _profileCoolLabel(profile) {
+    const start = this._fmtTemp(profile.seuil_debut_refroidissement);
+    const end = this._fmtTemp(profile.seuil_fin_refroidissement);
+    if (start === "—" && end === "—") return "Froid —";
+    if (start === "—") return `Cible ${end}°`;
+    return `${start}→${end}°`;
+  }
+
+  _profileDriverLabel(profile) {
+    const power = this._profilePowerLabel(profile.power || "normal");
+    const fan = this._profileFanLabel(profile.fan_intensity || "normal");
+    return power === fan ? power : `${power} · ${fan}`;
+  }
+
+  _profileDetailLabel(profile) {
+    const parts = [];
+    if (profile.schedule_entity && profile.presence_entity) {
+      parts.push(`${this._friendlyScheduleName(profile.schedule_entity)} + ${this._presenceStateLabel(profile.presence_required_state) || this._friendlyEntityName(profile.presence_entity)}`);
+    } else if (profile.presence_entity) {
+      parts.push(this._friendlyEntityName(profile.presence_entity));
+    }
+    const heatStart = this._fmtTemp(profile.seuil_debut_chauffage);
+    const heatEnd = this._fmtTemp(profile.seuil_fin_chauffage);
+    if (heatStart !== "—" || heatEnd !== "—") parts.push(`Chaud ${heatStart}→${heatEnd}°`);
+    return parts.join(" · ");
+  }
+
+  _friendlyEntityName(entityId) {
+    const st = this._hass?.states?.[entityId];
+    return st?.attributes?.friendly_name || entityId;
+  }
+
+  _friendlyScheduleName(entityId) {
+    const name = this._friendlyEntityName(entityId)
+      .replace(/^Delormej Climate\s*/i, "")
+      .replace(/^Climate Manager\s*[·-]?\s*/i, "");
+    return name || "Planning";
+  }
+
+  _presenceStateLabel(state) {
+    if (Array.isArray(state)) return state.map((s) => this._presenceStateLabel(s)).join(" ou ");
+    const s = String(state || "").toLowerCase();
+    const labels = {
+      armed_away: "Maison vide",
+      armed_vacation: "Vacances",
+      armed_night: "Nuit",
+      armed_home: "Maison armée",
+      not_home: "Absent",
+      away: "Absent",
+      home: "Présent",
+      on: "Actif",
+      off: "Inactif",
+    };
+    return labels[s] || (state ? String(state) : "Condition présence");
+  }
+
+  _profilePowerLabel(power) {
+    return ({ doux: "Doux", normal: "Normal", agressif: "Agressif" })[power] || this._capitalize(power);
+  }
+
+  _profileFanLabel(fan) {
+    return ({ doux: "Ventil. douce", normal: "Ventil. normale", fort: "Ventil. forte" })[fan] || this._capitalize(fan);
   }
 
   _buildProfileEditForm(profile, idx) {
@@ -1636,60 +1718,92 @@ const STYLES = `
   .dc-profile {
     background: var(--dc-surface);
     border-radius: var(--dc-radius-sm);
-    padding: 14px 16px;
+    padding: 12px 14px;
     transition: background 0.2s;
   }
   .dc-profile--active {
     background: var(--dc-accent-soft);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dc-accent), transparent 62%);
   }
   .dc-profile--active::before { content: none; }
   .dc-profile-head {
-    display: flex; align-items: center; gap: 10px;
-    margin-bottom: 6px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
   }
   .dc-profile-badge {
     background: var(--dc-accent);
     color: rgba(0,0,0,0.85);
     font-size: 10px; font-weight: 700;
     padding: 2px 7px;
-    border-radius: 4px;
+    border-radius: var(--dc-radius-pill);
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }
+  .dc-profile-badge.ghost {
+    visibility: hidden;
+    width: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
   .dc-profile-name {
-    flex: 1;
-    font-weight: 600;
+    min-width: 0;
+    font-weight: 650;
     color: var(--dc-fg);
     font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .dc-profile-actions {
-    display: flex; gap: 2px;
+    display: flex; gap: 0;
+    opacity: 0.58;
   }
+  .dc-profile:hover .dc-profile-actions { opacity: 1; }
   .dc-profile-actions button {
-    width: 28px; height: 28px;
+    width: 26px; height: 26px;
     border: none; border-radius: 8px;
     background: transparent;
     color: var(--dc-muted);
     cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     transition: all 0.15s;
+    font-size: 13px;
   }
-  .dc-profile-actions button ha-icon { --mdc-icon-size: 16px; }
+  .dc-profile-actions button ha-icon { --mdc-icon-size: 15px; }
   .dc-profile-actions button:hover { background: var(--dc-bg-bubble-strong); color: var(--dc-fg); }
   .dc-profile-meta {
     display: flex; flex-wrap: wrap;
-    gap: 4px 14px;
+    gap: 6px;
     font-size: 12px;
     color: var(--dc-muted);
-    line-height: 1.5;
+    line-height: 1.35;
   }
   .dc-profile-meta span {
     display: inline-flex; align-items: center; gap: 5px;
+    min-width: 0;
+    padding: 4px 8px;
+    border-radius: var(--dc-radius-pill);
+    background: rgba(255,255,255,0.045);
+    white-space: nowrap;
+    max-width: 100%;
   }
-  .dc-profile-meta ha-icon { --mdc-icon-size: 13px; color: var(--dc-dim); }
+  .dc-profile-meta span.primary { color: var(--dc-fg); }
+  .dc-profile-meta ha-icon { --mdc-icon-size: 13px; color: var(--dc-dim); flex: 0 0 auto; }
   .dc-profile-meta .v {
     color: var(--dc-fg); font-weight: 600;
     font-variant-numeric: tabular-nums;
+  }
+  .dc-profile-detail {
+    margin-top: 7px;
+    color: var(--dc-dim);
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* Profile edit form */
@@ -2180,7 +2294,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.17.1 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.17.2 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
