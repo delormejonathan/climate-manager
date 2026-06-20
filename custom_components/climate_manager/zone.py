@@ -109,7 +109,12 @@ ACTIVE_CYCLE_STATES = frozenset(
 
 @dataclass
 class ZoneRuntimeState:
-    """Mutable runtime state of a zone (lives in memory)."""
+    """Mutable runtime state of a zone.
+
+    This state is intentionally serialisable: HA restarts must not turn an
+    in-progress STABILIZING phase back into a brand-new RUNNING/STARTING cycle.
+    The coordinator persists it through Home Assistant Store after each tick.
+    """
 
     state: str = ZoneState.IDLE
     regime: str = Regime.NONE
@@ -135,6 +140,71 @@ class ZoneRuntimeState:
     # Rolling history of completed cycles (most recent at the end).
     # Persisted by the coordinator via HA Store across restarts.
     completed_cycles: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe snapshot for Home Assistant Store."""
+        return {
+            "state": self.state,
+            "regime": self.regime,
+            "last_state_transition_ts": self.last_state_transition_ts,
+            "last_command_ts": self.last_command_ts,
+            "last_setpoint_sent": self.last_setpoint_sent,
+            "last_fan_sent": self.last_fan_sent,
+            "last_hvac_sent": self.last_hvac_sent,
+            "override_until_ts": self.override_until_ts,
+            "boost_until_ts": self.boost_until_ts,
+            "mode": self.mode,
+            "forced_direction": self.forced_direction,
+            "cycle_started_ts": self.cycle_started_ts,
+            "cycle_start_room_temp": self.cycle_start_room_temp,
+            "cycle_start_profile_name": self.cycle_start_profile_name,
+            "cycle_min_room_temp": self.cycle_min_room_temp,
+            "cycle_regimes_seen": list(self.cycle_regimes_seen),
+            "completed_cycles": list(self.completed_cycles),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> ZoneRuntimeState:
+        """Restore a runtime snapshot, tolerating older/partial store payloads."""
+        if not isinstance(data, dict):
+            return cls()
+        valid_states = ZoneState.ALL
+        valid_modes = ZoneMode.ALL
+        state = str(data.get("state") or ZoneState.IDLE)
+        mode = str(data.get("mode") or ZoneMode.AUTO)
+        return cls(
+            state=state if state in valid_states else ZoneState.IDLE,
+            regime=str(data.get("regime") or Regime.NONE),
+            last_state_transition_ts=_as_float_or_zero(data.get("last_state_transition_ts")),
+            last_command_ts=_as_float_or_zero(data.get("last_command_ts")),
+            last_setpoint_sent=_as_optional_float(data.get("last_setpoint_sent")),
+            last_fan_sent=data.get("last_fan_sent"),
+            last_hvac_sent=data.get("last_hvac_sent"),
+            override_until_ts=_as_optional_float(data.get("override_until_ts")),
+            boost_until_ts=_as_optional_float(data.get("boost_until_ts")),
+            mode=mode if mode in valid_modes else ZoneMode.AUTO,
+            forced_direction=data.get("forced_direction"),
+            cycle_started_ts=_as_optional_float(data.get("cycle_started_ts")),
+            cycle_start_room_temp=_as_optional_float(data.get("cycle_start_room_temp")),
+            cycle_start_profile_name=data.get("cycle_start_profile_name"),
+            cycle_min_room_temp=_as_optional_float(data.get("cycle_min_room_temp")),
+            cycle_regimes_seen=list(data.get("cycle_regimes_seen") or []),
+            completed_cycles=list(data.get("completed_cycles") or []),
+        )
+
+
+def _as_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float_or_zero(value: Any) -> float:
+    parsed = _as_optional_float(value)
+    return parsed if parsed is not None else 0.0
 
 
 @dataclass

@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.17.2
+ * climate-manager-card  v0.17.3
  *
  * Instrument-panel redesign. Five sections for one zone:
  *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
@@ -2294,7 +2294,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.17.2 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.17.3 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

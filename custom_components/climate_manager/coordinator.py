@@ -54,13 +54,18 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         # old_state (from the first event in a flap burst), the latest new_state,
         # and the asyncio TimerHandle that will fire _resolve_pending_override.
         self._pending_overrides: dict[str, dict[str, Any]] = {}
-        # Cycle history persistence — one Store per entry, keyed by zone_id.
-        # Loaded once in _async_setup; written after any tick that produced a
-        # newly-completed cycle (detected by per-zone length comparison).
-        self._cycle_store: Store = Store(
+        # Runtime persistence — one Store per entry, keyed by zone_id.
+        # The completed cycle history used to be the only persisted payload; now
+        # we also persist in-progress state (RUNNING/STABILIZING/COOLDOWN and
+        # timestamps) so HA restarts are idempotent.
+        self._runtime_store: Store = Store(
+            hass, 2, f"{DOMAIN}_runtime_{entry.entry_id}"
+        )
+        # Backward-compat reader for pre-v0.17.3 history-only payloads.
+        self._legacy_cycle_store: Store = Store(
             hass, 1, f"{DOMAIN}_cycles_{entry.entry_id}"
         )
-        self._cycle_counts: dict[str, int] = {}
+        self._last_runtime_payload: dict[str, Any] | None = None
         self._rebuild_zones()
 
     # === Public API for platforms ===
@@ -106,7 +111,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     async def _async_setup(self) -> None:
         """Register state-change listeners — called once before first refresh."""
-        await self._load_cycle_history()
+        await self._load_runtime_state()
         await self._setup_state_listeners()
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -116,29 +121,49 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             commands = zone.tick(inputs)
             for cmd in commands:
                 await self._apply_command(cmd)
-        await self._save_cycle_history_if_changed()
+        await self._save_runtime_state_if_changed()
         return self._build_coordinator_data()
 
-    async def _load_cycle_history(self) -> None:
-        """Restore per-zone completed cycles from disk into runtime state."""
-        data = await self._cycle_store.async_load() or {}
-        zones_data = data.get("zones", {}) if isinstance(data, dict) else {}
-        for zid, zone in self._zones.items():
-            zone.state.completed_cycles = list(zones_data.get(zid, []))
-            self._cycle_counts[zid] = len(zone.state.completed_cycles)
+    async def _load_runtime_state(self) -> None:
+        """Restore per-zone runtime state from disk.
 
-    async def _save_cycle_history_if_changed(self) -> None:
-        """Persist if any zone's completed_cycles grew during this tick."""
-        changed = False
-        out: dict[str, list[dict[str, Any]]] = {}
+        v0.17.3+ stores the full ZoneRuntimeState under ``zones``. Older
+        releases stored only completed cycle history in ``*_cycles_*``; if no
+        runtime payload exists yet, import that history so the UI does not lose
+        past sessions on upgrade.
+        """
+        data = await self._runtime_store.async_load() or {}
+        zones_data = data.get("zones", {}) if isinstance(data, dict) else {}
+
+        if zones_data:
+            for zid, zone in self._zones.items():
+                restored = ZoneRuntimeState.from_dict(zones_data.get(zid))
+                # Keep the fresh ZoneConfig, restore only runtime.
+                zone.state = restored
+            self._last_runtime_payload = self._runtime_payload()
+            return
+
+        legacy = await self._legacy_cycle_store.async_load() or {}
+        legacy_zones = legacy.get("zones", {}) if isinstance(legacy, dict) else {}
         for zid, zone in self._zones.items():
-            out[zid] = zone.state.completed_cycles
-            prev_count = self._cycle_counts.get(zid, 0)
-            if len(zone.state.completed_cycles) != prev_count:
-                changed = True
-                self._cycle_counts[zid] = len(zone.state.completed_cycles)
-        if changed:
-            await self._cycle_store.async_save({"zones": out})
+            zone.state.completed_cycles = list(legacy_zones.get(zid, []))
+        self._last_runtime_payload = self._runtime_payload()
+
+    def _runtime_payload(self) -> dict[str, Any]:
+        return {
+            "zones": {zid: zone.state.to_dict() for zid, zone in self._zones.items()}
+        }
+
+    async def _save_runtime_state_if_changed(self) -> None:
+        """Persist runtime state when it changed since the last tick.
+
+        This is deliberately broader than completed-history persistence: timed
+        phases and cycle anchors are safety-critical after a HA restart.
+        """
+        payload = self._runtime_payload()
+        if payload != self._last_runtime_payload:
+            await self._runtime_store.async_save(payload)
+            self._last_runtime_payload = payload
 
     # === Zone setup / rebuild ===
 
