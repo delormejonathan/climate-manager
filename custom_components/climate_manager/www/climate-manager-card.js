@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.18.3
+ * climate-manager-card  v0.18.4
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -85,7 +85,7 @@ class DelormejClimateCard extends HTMLElement {
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
   getCardSize() {
     // Legacy masonry estimate.
-    return ({ status: 3, pilotage: 5, manual: 4, profiles: 4, sessions: 4 })[this._variant] || 12;
+    return ({ status: 3, pilotage: 7, manual: 6, profiles: 7, sessions: 7 })[this._variant] || 12;
   }
   getGridOptions() {
     // Home Assistant Sections dashboards use grid options, not just
@@ -93,10 +93,10 @@ class DelormejClimateCard extends HTMLElement {
     // compact split widgets on mobile.
     return ({
       status:   { columns: 12, rows: 3, min_rows: 2 },
-      pilotage: { columns: 12, rows: 5, min_rows: 4 },
-      manual:   { columns: 12, rows: 5, min_rows: 4 },
-      profiles: { columns: 12, rows: 4, min_rows: 3 },
-      sessions: { columns: 12, rows: 4, min_rows: 3 },
+      pilotage: { columns: 12, rows: 7, min_rows: 6 },
+      manual:   { columns: 12, rows: 6, min_rows: 5 },
+      profiles: { columns: 12, rows: 7, min_rows: 5 },
+      sessions: { columns: 12, rows: 7, min_rows: 6 },
     })[this._variant] || { columns: 12, rows: 10, min_rows: 6 };
   }
 
@@ -2150,6 +2150,9 @@ const STYLES = `
   ha-card.dc-split-widget .dc-header .subtitle { display: none; }
   ha-card.dc-split-widget .dc-section { padding-bottom: 18px; }
   ha-card.dc-split-widget .dc-section-head { margin-top: 2px; }
+  ha-card.dc-widget-pilotage .dc-section-head { display: none; }
+  ha-card.dc-widget-pilotage .section-status { padding-top: 2px; }
+  ha-card.dc-widget-pilotage .section-auto { padding-top: 0; }
   ha-card.dc-split-widget .dc-err:empty { display: none; }
   ha-card.dc-split-widget .dc-collapsible { margin-top: 0; }
   ha-card.dc-widget-status .section-auto,
@@ -2406,7 +2409,7 @@ window.customCards = window.customCards || [];
 ].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.18.3 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.18.4 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
