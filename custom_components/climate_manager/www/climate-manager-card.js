@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.18.1
+ * climate-manager-card  v0.18.2
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * four separate widgets for dashboards:
@@ -82,13 +82,19 @@ class DelormejClimateCard extends HTMLElement {
   }
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
   getCardSize() {
-    // Home Assistant's Sections layout uses this value to reserve vertical
-    // space before the custom element has fully measured itself. The split
-    // widgets are intentionally compact; over-estimating here creates huge
-    // blank white cards on mobile. Keep the estimates close to the rendered
-    // content so the card height follows the widget instead of the fallback
-    // masonry reservation.
+    // Legacy masonry estimate.
     return ({ status: 3, pilotage: 3, profiles: 3, sessions: 3 })[this._variant] || 12;
+  }
+  getGridOptions() {
+    // Home Assistant Sections dashboards use grid options, not just
+    // getCardSize(). Without this, HA can reserve a huge empty tile around
+    // compact split widgets on mobile.
+    return ({
+      status:   { columns: 12, rows: 3, min_rows: 2 },
+      pilotage: { columns: 12, rows: 4, min_rows: 3 },
+      profiles: { columns: 12, rows: 4, min_rows: 3 },
+      sessions: { columns: 12, rows: 4, min_rows: 3 },
+    })[this._variant] || { columns: 12, rows: 10, min_rows: 6 };
   }
 
   _ent(kind, suffix) { return `${kind}.climate_manager_${this._zone}_${suffix}`; }
@@ -1365,22 +1371,11 @@ const STYLES = `
     border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, rgba(36,40,50,0.07));
     box-shadow: var(--ha-card-box-shadow, none);
   }
-  @media (prefers-color-scheme: dark) {
-    ha-card.dc-card {
-      --dc-card-bg: var(--card-background-color, #1c1c1e);
-      --dc-surface: rgba(255,255,255,0.04);
-      --dc-surface-strong: rgba(255,255,255,0.07);
-      --dc-bg-bubble: rgba(255,255,255,0.04);
-      --dc-bg-bubble-strong: rgba(255,255,255,0.07);
-      --dc-bg-inset: rgba(0,0,0,0.18);
-      --dc-hairline: rgba(255,255,255,0.06);
-      --dc-fg: rgba(255,255,255,0.95);
-      --dc-muted: rgba(255,255,255,0.62);
-      --dc-dim: rgba(255,255,255,0.42);
-      --dc-warn: #F5A056;
-      --dc-danger: #E57373;
-    }
-  }
+  /* Do not use prefers-color-scheme here: HA dashboards can force a white
+     card while the phone/browser is in dark mode. In that case OS dark-mode
+     media queries make the text white on white. Keep this card's own Apple-ish
+     light palette stable; dashboards that want dark cards can override these
+     CSS vars explicitly. */
   /* When the active cycle is in heating, swap the accent globally */
   ha-card.dc-card.accent-warm {
     --dc-accent: var(--dc-warm);
@@ -2396,7 +2391,7 @@ window.customCards = window.customCards || [];
 ].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.18.1 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.18.2 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
