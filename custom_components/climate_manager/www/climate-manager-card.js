@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.18.0
+ * climate-manager-card  v0.18.1
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * four separate widgets for dashboards:
@@ -82,7 +82,13 @@ class DelormejClimateCard extends HTMLElement {
   }
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
   getCardSize() {
-    return ({ status: 5, pilotage: 7, profiles: 8, sessions: 7 })[this._variant] || 14;
+    // Home Assistant's Sections layout uses this value to reserve vertical
+    // space before the custom element has fully measured itself. The split
+    // widgets are intentionally compact; over-estimating here creates huge
+    // blank white cards on mobile. Keep the estimates close to the rendered
+    // content so the card height follows the widget instead of the fallback
+    // masonry reservation.
+    return ({ status: 3, pilotage: 3, profiles: 3, sessions: 3 })[this._variant] || 12;
   }
 
   _ent(kind, suffix) { return `${kind}.climate_manager_${this._zone}_${suffix}`; }
@@ -2133,12 +2139,19 @@ const STYLES = `
   .dc-err:empty { display: none; }
 
   /* ============ SPLIT WIDGETS ============ */
-  ha-card.dc-split-widget { --dc-pad: 18px; }
+  :host { display: block; }
+  ha-card.dc-split-widget {
+    --dc-pad: 18px;
+    height: auto !important;
+    min-height: 0 !important;
+  }
   ha-card.dc-split-widget .dc-header { padding: 16px var(--dc-pad) 8px; }
   ha-card.dc-split-widget .dc-header .title { font-size: 17px; font-weight: 760; letter-spacing: -0.02em; }
   ha-card.dc-split-widget .dc-header .subtitle { display: none; }
   ha-card.dc-split-widget .dc-section { padding-bottom: 18px; }
   ha-card.dc-split-widget .dc-section-head { margin-top: 2px; }
+  ha-card.dc-split-widget .dc-err:empty { display: none; }
+  ha-card.dc-split-widget .dc-collapsible { margin-top: 0; }
   ha-card.dc-widget-status .section-auto,
   ha-card.dc-widget-status .section-manual,
   ha-card.dc-widget-status .section-profiles,
@@ -2383,7 +2396,7 @@ window.customCards = window.customCards || [];
 ].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.18.0 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.18.1 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
