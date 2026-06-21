@@ -1,12 +1,12 @@
 /**
- * climate-manager-card  v0.17.3
+ * climate-manager-card  v0.18.0
  *
- * Instrument-panel redesign. Five sections for one zone:
- *   1. ÉTAT ACTUEL       — narrative + thermal rail + phase ribbon (signature)
- *   2. PROFILS           — cascade of driver profiles (add/edit/reorder)
- *   3. PILOTAGE          — mode (auto/off/boost) + force start
- *   4. COMMANDE MANUELLE — boost/resume + direct climate.* controls
- *   5. SESSIONS RÉCENTES — last N completed cycles with per-row sparklines
+ * Instrument-panel redesign. Can be used as an all-in-one card or as
+ * four separate widgets for dashboards:
+ *   - custom:climate-manager-status-card
+ *   - custom:climate-manager-pilotage-card
+ *   - custom:climate-manager-profiles-card
+ *   - custom:climate-manager-sessions-card
  *
  * Usage:
  *   type: custom:climate-manager-card
@@ -67,12 +67,23 @@ class DelormejClimateCard extends HTMLElement {
     if (!config?.zone) throw new Error("Required: `zone` (e.g. 'rdc')");
     this._config = config;
     this._zone = config.zone;
-    this._title = config.title || this._capitalize(config.zone);
+    this._variant = this.constructor.widgetVariant || config.widget || config.variant || "full";
+    this._split = this._variant !== "full";
+    const fallbackTitles = {
+      status: "État actuel",
+      pilotage: "Pilotage",
+      profiles: "Profils",
+      sessions: "Sessions",
+      full: this._capitalize(config.zone),
+    };
+    this._title = config.title || fallbackTitles[this._variant] || this._capitalize(config.zone);
     this._climateEntity = config.climate_entity || null;
     this._rendered = false;
   }
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
-  getCardSize() { return 14; }
+  getCardSize() {
+    return ({ status: 5, pilotage: 7, profiles: 8, sessions: 7 })[this._variant] || 14;
+  }
 
   _ent(kind, suffix) { return `${kind}.climate_manager_${this._zone}_${suffix}`; }
 
@@ -110,7 +121,8 @@ class DelormejClimateCard extends HTMLElement {
 
   _render() {
     const card = document.createElement("ha-card");
-    card.classList.add("dc-card");
+    card.classList.add("dc-card", `dc-widget-${this._variant}`);
+    if (this._split) card.classList.add("dc-split-widget");
     const style = document.createElement("style");
     style.textContent = STYLES;
     card.appendChild(style);
@@ -1315,33 +1327,53 @@ const STYLES = `
 
     /* spacing */
     --dc-pad: 20px;
-    --dc-radius: 18px;
-    --dc-radius-sm: 14px;
+    --dc-radius: 26px;
+    --dc-radius-sm: 16px;
     --dc-radius-pill: 999px;
-    --dc-hairline: rgba(255,255,255,0.06);
 
-    /* surfaces */
-    --dc-surface: rgba(255,255,255,0.04);
-    --dc-surface-strong: rgba(255,255,255,0.07);
-    --dc-bg-bubble: rgba(255,255,255,0.04);
-    --dc-bg-bubble-strong: rgba(255,255,255,0.07);
-    --dc-bg-inset: rgba(0,0,0,0.18);
+    /* Light-mode first: Home Assistant dashboards are often white cards. */
+    --dc-card-bg: var(--card-background-color, #ffffff);
+    --dc-surface: rgba(36,40,50,0.045);
+    --dc-surface-strong: rgba(36,40,50,0.07);
+    --dc-bg-bubble: rgba(36,40,50,0.045);
+    --dc-bg-bubble-strong: rgba(36,40,50,0.07);
+    --dc-bg-inset: rgba(36,40,50,0.035);
+    --dc-hairline: rgba(36,40,50,0.08);
 
     /* text */
-    --dc-fg: rgba(255,255,255,0.95);
-    --dc-muted: rgba(255,255,255,0.62);
-    --dc-dim: rgba(255,255,255,0.42);
+    --dc-fg: rgba(36,40,50,0.94);
+    --dc-muted: rgba(36,40,50,0.58);
+    --dc-dim: rgba(36,40,50,0.36);
 
     /* alerts */
-    --dc-warn: #F5A056;
-    --dc-danger: #E57373;
+    --dc-warn: #B86F2F;
+    --dc-danger: #D05B50;
 
+    background: var(--dc-card-bg);
     color: var(--dc-fg);
     font-family: var(--ha-card-font-family, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif);
     font-size: 14px;
     line-height: 1.45;
     padding: 0; overflow: hidden;
     border-radius: var(--ha-card-border-radius, var(--dc-radius));
+    border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, rgba(36,40,50,0.07));
+    box-shadow: var(--ha-card-box-shadow, none);
+  }
+  @media (prefers-color-scheme: dark) {
+    ha-card.dc-card {
+      --dc-card-bg: var(--card-background-color, #1c1c1e);
+      --dc-surface: rgba(255,255,255,0.04);
+      --dc-surface-strong: rgba(255,255,255,0.07);
+      --dc-bg-bubble: rgba(255,255,255,0.04);
+      --dc-bg-bubble-strong: rgba(255,255,255,0.07);
+      --dc-bg-inset: rgba(0,0,0,0.18);
+      --dc-hairline: rgba(255,255,255,0.06);
+      --dc-fg: rgba(255,255,255,0.95);
+      --dc-muted: rgba(255,255,255,0.62);
+      --dc-dim: rgba(255,255,255,0.42);
+      --dc-warn: #F5A056;
+      --dc-danger: #E57373;
+    }
   }
   /* When the active cycle is in heating, swap the accent globally */
   ha-card.dc-card.accent-warm {
@@ -2099,6 +2131,29 @@ const STYLES = `
     color: var(--dc-danger); font-size: 0.9em; font-weight: 600;
   }
   .dc-err:empty { display: none; }
+
+  /* ============ SPLIT WIDGETS ============ */
+  ha-card.dc-split-widget { --dc-pad: 18px; }
+  ha-card.dc-split-widget .dc-header { padding: 16px var(--dc-pad) 8px; }
+  ha-card.dc-split-widget .dc-header .title { font-size: 17px; font-weight: 760; letter-spacing: -0.02em; }
+  ha-card.dc-split-widget .dc-header .subtitle { display: none; }
+  ha-card.dc-split-widget .dc-section { padding-bottom: 18px; }
+  ha-card.dc-split-widget .dc-section-head { margin-top: 2px; }
+  ha-card.dc-widget-status .section-auto,
+  ha-card.dc-widget-status .section-manual,
+  ha-card.dc-widget-status .section-profiles,
+  ha-card.dc-widget-status .section-cycles { display: none; }
+  ha-card.dc-widget-pilotage .section-status,
+  ha-card.dc-widget-pilotage .section-profiles,
+  ha-card.dc-widget-pilotage .section-cycles { display: none; }
+  ha-card.dc-widget-profiles .section-status,
+  ha-card.dc-widget-profiles .section-auto,
+  ha-card.dc-widget-profiles .section-manual,
+  ha-card.dc-widget-profiles .section-cycles { display: none; }
+  ha-card.dc-widget-sessions .section-status,
+  ha-card.dc-widget-sessions .section-auto,
+  ha-card.dc-widget-sessions .section-manual,
+  ha-card.dc-widget-sessions .section-profiles { display: none; }
 `;
 
 const TEMPLATE = `
@@ -2283,18 +2338,52 @@ const TEMPLATE = `
   <div class="dc-err" data-bind="error"></div>
 `;
 
+class DelormejClimateStatusCard extends DelormejClimateCard {}
+DelormejClimateStatusCard.widgetVariant = "status";
+class DelormejClimatePilotageCard extends DelormejClimateCard {}
+DelormejClimatePilotageCard.widgetVariant = "pilotage";
+class DelormejClimateProfilesCard extends DelormejClimateCard {}
+DelormejClimateProfilesCard.widgetVariant = "profiles";
+class DelormejClimateSessionsCard extends DelormejClimateCard {}
+DelormejClimateSessionsCard.widgetVariant = "sessions";
+
 customElements.define("climate-manager-card", DelormejClimateCard);
+customElements.define("climate-manager-status-card", DelormejClimateStatusCard);
+customElements.define("climate-manager-pilotage-card", DelormejClimatePilotageCard);
+customElements.define("climate-manager-profiles-card", DelormejClimateProfilesCard);
+customElements.define("climate-manager-sessions-card", DelormejClimateSessionsCard);
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "climate-manager-card",
-  name: "Climate Manager Card",
-  description: "Carte tout-en-un en 4 sections : état, profils, pilotage, commande manuelle.",
-  preview: false,
-});
+[
+  {
+    type: "climate-manager-card",
+    name: "Climate Manager Card",
+    description: "Carte tout-en-un Climate Manager.",
+  },
+  {
+    type: "climate-manager-status-card",
+    name: "Climate Manager — État actuel",
+    description: "Widget Climate Manager séparé : état actuel.",
+  },
+  {
+    type: "climate-manager-pilotage-card",
+    name: "Climate Manager — Pilotage",
+    description: "Widget Climate Manager séparé : pilotage + commande manuelle.",
+  },
+  {
+    type: "climate-manager-profiles-card",
+    name: "Climate Manager — Profils",
+    description: "Widget Climate Manager séparé : profils.",
+  },
+  {
+    type: "climate-manager-sessions-card",
+    name: "Climate Manager — Sessions",
+    description: "Widget Climate Manager séparé : sessions récentes.",
+  },
+].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.17.3 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.18.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

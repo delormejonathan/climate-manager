@@ -43,6 +43,43 @@ Les futures versions remontent automatiquement comme update disponible dans HACS
 
 La carte Lovelace est embarquée dans le composant : elle est servie automatiquement à `/climate_manager/climate-manager-card.js` et enregistrée comme ressource Lovelace dès que l'intégration démarre.
 
+### Cartes Lovelace disponibles
+
+Carte complète historique :
+
+```yaml
+type: custom:climate-manager-card
+zone: rdc
+title: RDC
+climate_entity: climate.salon
+```
+
+Widgets séparés, plus faciles à intégrer dans un dashboard clair / éditorial :
+
+```yaml
+- type: custom:climate-manager-status-card
+  zone: rdc
+  title: État actuel
+  climate_entity: climate.salon
+
+- type: custom:climate-manager-pilotage-card
+  zone: rdc
+  title: Pilotage
+  climate_entity: climate.salon
+
+- type: custom:climate-manager-profiles-card
+  zone: rdc
+  title: Profils
+  climate_entity: climate.salon
+
+- type: custom:climate-manager-sessions-card
+  zone: rdc
+  title: Sessions
+  climate_entity: climate.salon
+```
+
+Alternative équivalente avec la carte principale : `widget: status`, `widget: pilotage`, `widget: profiles` ou `widget: sessions`.
+
 ## Migration depuis l'automation actuelle
 
 Une fois le composant en production stable, supprimer :
