@@ -1,10 +1,11 @@
 /**
- * climate-manager-card  v0.18.2
+ * climate-manager-card  v0.18.3
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
- * four separate widgets for dashboards:
+ * five separate widgets for dashboards:
  *   - custom:climate-manager-status-card
  *   - custom:climate-manager-pilotage-card
+ *   - custom:climate-manager-manual-card
  *   - custom:climate-manager-profiles-card
  *   - custom:climate-manager-sessions-card
  *
@@ -71,7 +72,8 @@ class DelormejClimateCard extends HTMLElement {
     this._split = this._variant !== "full";
     const fallbackTitles = {
       status: "État actuel",
-      pilotage: "Pilotage",
+      pilotage: "Pilotage & état",
+      manual: "Commande manuelle",
       profiles: "Profils",
       sessions: "Sessions",
       full: this._capitalize(config.zone),
@@ -83,7 +85,7 @@ class DelormejClimateCard extends HTMLElement {
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
   getCardSize() {
     // Legacy masonry estimate.
-    return ({ status: 3, pilotage: 3, profiles: 3, sessions: 3 })[this._variant] || 12;
+    return ({ status: 3, pilotage: 5, manual: 4, profiles: 4, sessions: 4 })[this._variant] || 12;
   }
   getGridOptions() {
     // Home Assistant Sections dashboards use grid options, not just
@@ -91,7 +93,8 @@ class DelormejClimateCard extends HTMLElement {
     // compact split widgets on mobile.
     return ({
       status:   { columns: 12, rows: 3, min_rows: 2 },
-      pilotage: { columns: 12, rows: 4, min_rows: 3 },
+      pilotage: { columns: 12, rows: 5, min_rows: 4 },
+      manual:   { columns: 12, rows: 5, min_rows: 4 },
       profiles: { columns: 12, rows: 4, min_rows: 3 },
       sessions: { columns: 12, rows: 4, min_rows: 3 },
     })[this._variant] || { columns: 12, rows: 10, min_rows: 6 };
@@ -223,6 +226,7 @@ class DelormejClimateCard extends HTMLElement {
     const badge = $("state-badge");
     badge.style.setProperty("--dc-state-color", meta.color);
     badge.className = `dc-state state-${meta.tone}`;
+    badge.style.display = (this._split && stateVal === "idle") ? "none" : "";
     $("state-icon").setAttribute("icon", meta.icon);
     $("state-label").textContent = meta.label;
     const attrs = stateObj?.attributes || {};
@@ -466,7 +470,7 @@ class DelormejClimateCard extends HTMLElement {
         : parts.length === 1
           ? `Démarre le ${parts[0]}`
           : "Pas de seuil configuré";
-      return { html: `En veille. ${lead}.${hint}`, warn: false };
+      return { html: `${lead}.${hint}`, warn: false };
     }
     if (state === "starting")
       return { html: `Démarrage ${dir === "heat" ? "chauffage" : "refroidissement"} vers ${targetSpan(target)}.`, warn: false };
@@ -1684,7 +1688,8 @@ const STYLES = `
   }
 
   /* Collapsible sections (Détails techniques + Sessions + Manuel) */
-  .dc-collapsible {
+  .dc-collapsible,
+  .dc-panel {
     margin-top: 10px;
     border-radius: var(--dc-radius-sm);
     background: var(--dc-surface);
@@ -1707,7 +1712,7 @@ const STYLES = `
   }
   .dc-collapsible[open] > summary { color: var(--dc-fg); }
   .dc-collapsible[open] > summary::after { transform: rotate(90deg); }
-  .dc-collapsible > .body { padding: 6px 14px 14px; }
+  .dc-collapsible > .body, .dc-panel > .body { padding: 14px; }
   /* Détails techniques — kept inline in §1 hero */
   .dc-details-toggle {
     margin: 14px auto 0;
@@ -2151,9 +2156,14 @@ const STYLES = `
   ha-card.dc-widget-status .section-manual,
   ha-card.dc-widget-status .section-profiles,
   ha-card.dc-widget-status .section-cycles { display: none; }
-  ha-card.dc-widget-pilotage .section-status,
+  /* Pilotage is now the daily widget: current state + automation controls together. */
+  ha-card.dc-widget-pilotage .section-manual,
   ha-card.dc-widget-pilotage .section-profiles,
   ha-card.dc-widget-pilotage .section-cycles { display: none; }
+  ha-card.dc-widget-manual .section-status,
+  ha-card.dc-widget-manual .section-auto,
+  ha-card.dc-widget-manual .section-profiles,
+  ha-card.dc-widget-manual .section-cycles { display: none; }
   ha-card.dc-widget-profiles .section-status,
   ha-card.dc-widget-profiles .section-auto,
   ha-card.dc-widget-profiles .section-manual,
@@ -2274,10 +2284,9 @@ const TEMPLATE = `
     </div>
   </section>
 
-  <!-- ════════════════════════════════════ §4 COMMANDE MANUELLE (collapsed) -->
+  <!-- ════════════════════════════════════ §4 COMMANDE MANUELLE -->
   <section class="dc-section section-manual">
-    <details class="dc-collapsible">
-      <summary><span>Commande manuelle</span></summary>
+    <div class="dc-panel">
       <div class="body">
         <div class="dc-control">
           <div class="dc-control-label">Actions rapides</div>
@@ -2311,26 +2320,24 @@ const TEMPLATE = `
           </div>
         </div>
       </div>
-    </details>
+    </div>
   </section>
 
-  <!-- ════════════════════════════════════ §5 SESSIONS RÉCENTES (collapsed) -->
+  <!-- ════════════════════════════════════ §5 SESSIONS RÉCENTES -->
   <section class="dc-section section-cycles">
-    <details class="dc-collapsible" open>
-      <summary><span>Sessions récentes</span></summary>
+    <div class="dc-panel">
       <div class="body">
         <div class="dc-cycles-empty" data-bind="cycles-empty" style="display:none">
           Aucune session terminée pour l'instant.
         </div>
         <div class="dc-cycles-list" data-bind="cycles-list"></div>
       </div>
-    </details>
+    </div>
   </section>
 
-  <!-- ════════════════════════════════════ PROFILS (collapsed, en bas) -->
+  <!-- ════════════════════════════════════ PROFILS -->
   <section class="dc-section section-profiles">
-    <details class="dc-collapsible">
-      <summary><span>Profils</span></summary>
+    <div class="dc-panel">
       <div class="body">
         <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
           Aucun profil configuré. Tant qu'aucun profil ne match, la zone reste OFF.
@@ -2340,7 +2347,7 @@ const TEMPLATE = `
           <ha-icon icon="mdi:plus-circle"></ha-icon> Nouveau profil
         </button>
       </div>
-    </details>
+    </div>
   </section>
 
   <div class="dc-err" data-bind="error"></div>
@@ -2350,6 +2357,8 @@ class DelormejClimateStatusCard extends DelormejClimateCard {}
 DelormejClimateStatusCard.widgetVariant = "status";
 class DelormejClimatePilotageCard extends DelormejClimateCard {}
 DelormejClimatePilotageCard.widgetVariant = "pilotage";
+class DelormejClimateManualCard extends DelormejClimateCard {}
+DelormejClimateManualCard.widgetVariant = "manual";
 class DelormejClimateProfilesCard extends DelormejClimateCard {}
 DelormejClimateProfilesCard.widgetVariant = "profiles";
 class DelormejClimateSessionsCard extends DelormejClimateCard {}
@@ -2358,6 +2367,7 @@ DelormejClimateSessionsCard.widgetVariant = "sessions";
 customElements.define("climate-manager-card", DelormejClimateCard);
 customElements.define("climate-manager-status-card", DelormejClimateStatusCard);
 customElements.define("climate-manager-pilotage-card", DelormejClimatePilotageCard);
+customElements.define("climate-manager-manual-card", DelormejClimateManualCard);
 customElements.define("climate-manager-profiles-card", DelormejClimateProfilesCard);
 customElements.define("climate-manager-sessions-card", DelormejClimateSessionsCard);
 
@@ -2375,8 +2385,13 @@ window.customCards = window.customCards || [];
   },
   {
     type: "climate-manager-pilotage-card",
-    name: "Climate Manager — Pilotage",
-    description: "Widget Climate Manager séparé : pilotage + commande manuelle.",
+    name: "Climate Manager — Pilotage & état",
+    description: "Widget Climate Manager séparé : état actuel + pilotage automatique.",
+  },
+  {
+    type: "climate-manager-manual-card",
+    name: "Climate Manager — Commande manuelle",
+    description: "Widget Climate Manager séparé : actions directes sur la climatisation.",
   },
   {
     type: "climate-manager-profiles-card",
@@ -2391,7 +2406,7 @@ window.customCards = window.customCards || [];
 ].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.18.2 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.18.3 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
