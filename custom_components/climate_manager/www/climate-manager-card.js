@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.18.5
+ * climate-manager-card  v0.18.6
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -2405,7 +2405,7 @@ window.customCards = window.customCards || [];
 ].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.18.5 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.18.6 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );

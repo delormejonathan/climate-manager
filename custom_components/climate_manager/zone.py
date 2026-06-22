@@ -909,7 +909,7 @@ def _offset_for_regime(regime: str, power_profile: dict) -> float:
     if regime == Regime.ATTAQUE:
         return power_profile["attaque"]
     if regime == Regime.STABILISATION:
-        return 0.0
+        return power_profile.get("stabilisation", 0.0)
     if regime == Regime.BOOST:
         return BOOST_OFFSET
     return 0.0

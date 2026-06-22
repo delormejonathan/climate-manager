@@ -172,9 +172,9 @@ class Aggressivity:
 
 # Offsets °C par régime, signe appliqué au moment du pilotage selon hvac_mode.
 POWER_PROFILES: dict[str, dict] = {
-    "doux":     {"attaque": 3.0},
-    "normal":   {"attaque": 5.0},
-    "agressif": {"attaque": 7.0},
+    "doux":     {"attaque": 3.0, "stabilisation": 1.0},
+    "normal":   {"attaque": 5.0, "stabilisation": 1.5},
+    "agressif": {"attaque": 7.0, "stabilisation": 2.0},
 }
 
 # fan_mode pendant RUNNING (clé "attaque"). Valeurs Daikin : auto, quiet, 1..5.

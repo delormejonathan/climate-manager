@@ -32,7 +32,7 @@ La consigne **envoyée** à la clim n'est **jamais** la consigne réelle souhait
 
 ### 2.3. Inertie thermique
 
-Quand on coupe la clim au seuil cible, la chaleur stockée dans murs/meubles ressort dans les ~30 min suivantes → la T° pièce remonte. D'où la phase de **stabilisation** (consigne = T°_interne, ventilation quiet) avant le `turn_off` complet.
+Quand on coupe la clim au seuil cible, la chaleur stockée dans murs/meubles ressort dans les ~30 min suivantes → la T° pièce remonte. D'où la phase de **stabilisation** (consigne proche de T°_interne mais avec un léger offset de maintien, ventilation quiet) avant le `turn_off` complet.
 
 ### 2.4. Modes Daikin pertinents
 
@@ -160,8 +160,8 @@ sinon si RUNNING et ecart > 0:
     fan = quiet
 
 sinon si STABILIZING:
-    régime = STABILISATION (pendule)
-    consigne_envoyée = T_int
+    régime = STABILISATION (maintien doux)
+    consigne_envoyée = T_int ± offset_stabilisation
     fan = quiet
 ```
 

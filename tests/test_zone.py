@@ -182,8 +182,16 @@ def test_running_uses_constant_attaque_offset_close_to_target():
     assert zone.state.regime == Regime.ATTAQUE
 
 
-def test_stabilisation_uses_pendulum_neutral():
-    zone = Zone(_config(seuil_fin_refroidissement=25.0))
+@pytest.mark.parametrize(
+    ("power", "expected_offset"),
+    [
+        ("doux", 1.0),
+        ("normal", 1.5),
+        ("agressif", 2.0),
+    ],
+)
+def test_stabilisation_uses_soft_maintenance_offset_in_cool(power, expected_offset):
+    zone = Zone(_config(seuil_fin_refroidissement=25.0, power=power))
     inp = _inputs(
         room_temperature=24.8,  # below seuil_fin → STABILIZING
         clim_internal_temperature=24.8,
@@ -193,7 +201,24 @@ def test_stabilisation_uses_pendulum_neutral():
     zone.state.last_state_transition_ts = inp.now_ts  # just entered STABILIZING
     cmds = zone.tick(inp)
     sp = _find_setpoint(cmds)
-    expected = 24.8  # pendulum: setpoint = internal
+    expected = 24.8 - expected_offset
+    assert sp is not None
+    assert abs(sp - expected) < 0.5
+    assert zone.state.regime == Regime.STABILISATION
+
+
+def test_stabilisation_uses_soft_maintenance_offset_in_heat():
+    zone = Zone(_config(seuil_fin_chauffage=21.0, power="normal"))
+    inp = _inputs(
+        room_temperature=21.2,  # above seuil_fin → STABILIZING
+        clim_internal_temperature=20.0,
+        clim_current_hvac_mode=HVAC_HEAT,
+    )
+    zone.state.state = ZoneState.STABILIZING
+    zone.state.last_state_transition_ts = inp.now_ts
+    cmds = zone.tick(inp)
+    sp = _find_setpoint(cmds)
+    expected = 20.0 + 1.5
     assert sp is not None
     assert abs(sp - expected) < 0.5
     assert zone.state.regime == Regime.STABILISATION
