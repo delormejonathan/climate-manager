@@ -1,4 +1,10 @@
-"""Number platform: per-zone thresholds + durations (editable from the UI)."""
+"""Number platform: per-zone durations (editable from the UI).
+
+Thresholds live in the active profiles. Exposing zone-level threshold NumberEntity
+helpers is misleading once profiles are configured: those helpers edit the base
+zone fallback config, while the runtime controller and card use the active
+profile thresholds.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,6 @@ from typing import Any
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -15,17 +20,11 @@ from .const import (
     CONF_DUREE_COOLDOWN_MIN,
     CONF_DUREE_STABILISATION_MIN,
     CONF_OVERRIDE_DUREE_MIN,
-    CONF_SEUIL_DEBUT_CHAUFFAGE,
-    CONF_SEUIL_DEBUT_REFROIDISSEMENT,
-    CONF_SEUIL_FIN_CHAUFFAGE,
-    CONF_SEUIL_FIN_REFROIDISSEMENT,
     DOMAIN,
     MAX_DUREE_MIN,
     MAX_OVERRIDE_DUREE_MIN,
-    MAX_SEUIL,
     MIN_DUREE_MIN,
     MIN_OVERRIDE_DUREE_MIN,
-    MIN_SEUIL,
 )
 from .coordinator import DelormejClimateCoordinator
 from .entity_base import DelormejClimateZoneEntity
@@ -43,47 +42,7 @@ class _NumberSpec:
     icon: str
 
 
-_TEMP_SPECS: tuple[_NumberSpec, ...] = (
-    _NumberSpec(
-        "seuil_debut_chauffage",
-        "seuil_debut_chauffage",
-        CONF_SEUIL_DEBUT_CHAUFFAGE,
-        MIN_SEUIL,
-        MAX_SEUIL,
-        0.5,
-        UnitOfTemperature.CELSIUS,
-        "mdi:thermometer-chevron-up",
-    ),
-    _NumberSpec(
-        "seuil_fin_chauffage",
-        "seuil_fin_chauffage",
-        CONF_SEUIL_FIN_CHAUFFAGE,
-        MIN_SEUIL,
-        MAX_SEUIL,
-        0.5,
-        UnitOfTemperature.CELSIUS,
-        "mdi:thermometer-check",
-    ),
-    _NumberSpec(
-        "seuil_debut_refroidissement",
-        "seuil_debut_refroidissement",
-        CONF_SEUIL_DEBUT_REFROIDISSEMENT,
-        MIN_SEUIL,
-        MAX_SEUIL,
-        0.5,
-        UnitOfTemperature.CELSIUS,
-        "mdi:thermometer-chevron-down",
-    ),
-    _NumberSpec(
-        "seuil_fin_refroidissement",
-        "seuil_fin_refroidissement",
-        CONF_SEUIL_FIN_REFROIDISSEMENT,
-        MIN_SEUIL,
-        MAX_SEUIL,
-        0.5,
-        UnitOfTemperature.CELSIUS,
-        "mdi:thermometer-check",
-    ),
+_DURATION_SPECS: tuple[_NumberSpec, ...] = (
     _NumberSpec(
         "duree_stabilisation_min",
         "duree_stabilisation_min",
@@ -123,7 +82,7 @@ async def async_setup_entry(
     coord: DelormejClimateCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[NumberEntity] = []
     for zid in coord.zones:
-        for spec in _TEMP_SPECS:
+        for spec in _DURATION_SPECS:
             entities.append(ZoneNumber(coord, zid, spec))
     async_add_entities(entities)
 

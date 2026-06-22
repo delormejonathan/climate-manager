@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.18.6
+ * climate-manager-card  v0.18.7
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -447,8 +447,10 @@ class DelormejClimateCard extends HTMLElement {
     const verb = dir === "heat" ? "Chauffage" : "Refroidissement";
 
     if (state === "idle") {
-      const heatStart = parseFloat(get(ids.heatStart)?.state);
-      const coolStart = parseFloat(get(ids.coolStart)?.state);
+      const profiles = Array.isArray(attrs.profiles) ? attrs.profiles : [];
+      const active = profiles.find((p) => p && p.name === attrs.active_profile_name) || profiles[0] || {};
+      const heatStart = parseFloat(active.seuil_debut_chauffage);
+      const coolStart = parseFloat(active.seuil_debut_refroidissement);
       const room = parseFloat(get(ids.roomTemp)?.state);
       const supportsCool = attrs.supports_cool !== false;
       const supportsHeat = attrs.supports_heat !== false;
@@ -463,8 +465,8 @@ class DelormejClimateCard extends HTMLElement {
       const showHeat = supportsHeat && !Number.isNaN(heatStart) && !coolSeason;
 
       const parts = [];
-      if (showCool) parts.push(`refroidissement à ${coolStart}°C`);
-      if (showHeat) parts.push(`chauffage à ${heatStart}°C`);
+      if (showCool) parts.push(`refroidissement à ${this._fmtTemp(coolStart)}°C`);
+      if (showHeat) parts.push(`chauffage à ${this._fmtTemp(heatStart)}°C`);
 
       let hint = "";
       if (!Number.isNaN(room)) {
@@ -2405,7 +2407,7 @@ window.customCards = window.customCards || [];
 ].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.18.6 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.18.7 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
