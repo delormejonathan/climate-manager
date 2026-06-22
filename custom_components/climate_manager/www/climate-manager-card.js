@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.18.4
+ * climate-manager-card  v0.18.5
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -85,7 +85,7 @@ class DelormejClimateCard extends HTMLElement {
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
   getCardSize() {
     // Legacy masonry estimate.
-    return ({ status: 3, pilotage: 7, manual: 6, profiles: 7, sessions: 7 })[this._variant] || 12;
+    return ({ status: 3, pilotage: 7, manual: 5, profiles: 6, sessions: 6 })[this._variant] || 12;
   }
   getGridOptions() {
     // Home Assistant Sections dashboards use grid options, not just
@@ -94,9 +94,9 @@ class DelormejClimateCard extends HTMLElement {
     return ({
       status:   { columns: 12, rows: 3, min_rows: 2 },
       pilotage: { columns: 12, rows: 7, min_rows: 6 },
-      manual:   { columns: 12, rows: 6, min_rows: 5 },
-      profiles: { columns: 12, rows: 7, min_rows: 5 },
-      sessions: { columns: 12, rows: 7, min_rows: 6 },
+      manual:   { columns: 12, rows: 5, min_rows: 4 },
+      profiles: { columns: 12, rows: 6, min_rows: 5 },
+      sessions: { columns: 12, rows: 6, min_rows: 5 },
     })[this._variant] || { columns: 12, rows: 10, min_rows: 6 };
   }
 
@@ -192,6 +192,11 @@ class DelormejClimateCard extends HTMLElement {
           { entity_id: this._climateEntity, swing_mode: e.target.value }));
     }
 
+    // Technical details are intentionally available only during an active cycle.
+    $("details-toggle").addEventListener("click", (e) => {
+      if ($("details-toggle").classList.contains("no-details")) e.preventDefault();
+    });
+
     // Profiles — single delegate on the list, plus "add" button
     $("profiles-list").addEventListener("click", (e) => this._onProfileListClick(e));
     $("profiles-list").addEventListener("change", (e) => this._onProfileFieldChange(e));
@@ -263,6 +268,12 @@ class DelormejClimateCard extends HTMLElement {
     const card = this.querySelector("ha-card");
     const dir = attrs.direction;
     const cycleActive = ["starting", "running", "stabilizing"].includes(stateVal);
+    const detailsToggle = $("details-toggle");
+    if (detailsToggle) {
+      detailsToggle.classList.toggle("no-details", !cycleActive);
+      detailsToggle.title = cycleActive ? "Voir les détails techniques" : "Détails disponibles quand la climatisation tourne";
+      if (!cycleActive) detailsToggle.removeAttribute("open");
+    }
     const hero = $("hero");
     if (cycleActive && dir === "heat") {
       card?.classList.add("accent-warm");
@@ -1713,31 +1724,29 @@ const STYLES = `
   .dc-collapsible[open] > summary { color: var(--dc-fg); }
   .dc-collapsible[open] > summary::after { transform: rotate(90deg); }
   .dc-collapsible > .body, .dc-panel > .body { padding: 14px; }
-  /* Détails techniques — kept inline in §1 hero */
-  .dc-details-toggle {
-    margin: 14px auto 0;
-    max-width: 240px;
-  }
-  .dc-details-toggle > summary {
+  /* Détails techniques — opened directly from the temperature readout. */
+  .dc-temp-details-toggle { margin: 0; }
+  .dc-temp-details-toggle > summary {
     cursor: pointer; list-style: none;
-    padding: 8px 14px;
-    font-size: 12px; font-weight: 500;
-    color: var(--dc-muted);
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-    user-select: none;
-    border-radius: var(--dc-radius-pill);
-    background: var(--dc-surface);
+    position: relative;
   }
-  .dc-details-toggle > summary::-webkit-details-marker { display: none; }
-  .dc-details-toggle > summary::before {
-    content: "+";
-    color: var(--dc-dim);
-    font-size: 13px; line-height: 1;
+  .dc-temp-details-toggle > summary::-webkit-details-marker { display: none; }
+  .dc-temp-details-toggle > summary::after {
+    content: "Détails";
+    position: absolute; left: 50%; bottom: -10px; transform: translateX(-50%);
+    font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--dc-dim); opacity: .72;
   }
-  .dc-details-toggle[open] > summary::before { content: "−"; }
-  .dc-details-toggle > summary:hover { color: var(--dc-fg); }
-  .dc-details-toggle[open] > summary { color: var(--dc-fg); }
-  .dc-details-toggle[open] .dc-metrics { margin-top: 10px; }
+  .dc-temp-details-toggle:not(.no-details) > summary:hover::after,
+  .dc-temp-details-toggle[open] > summary::after { color: var(--dc-accent); opacity: 1; }
+  .dc-temp-details-toggle.no-details > summary { cursor: default; }
+  .dc-temp-details-toggle.no-details > summary::after { content: ""; }
+  .dc-temp-details-toggle[open] .dc-metrics {
+    margin: 18px 0 8px;
+    padding: 2px 0 0;
+    border-top: 1px solid var(--dc-hairline);
+    text-align: left;
+  }
 
   /* ============ §2 PROFILS — compact & clean ============ */
   .dc-profiles-list {
@@ -2200,14 +2209,34 @@ const TEMPLATE = `
     </div>
 
     <div class="dc-hero" data-bind="hero">
-      <div class="dc-hero-row">
-        <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
-        <!-- Legacy bindings hidden via CSS (.dc-hero .arrow, .target-block, .room-label) -->
-        <span class="arrow" data-bind="target-arrow"></span>
-        <div class="target-block" data-bind="target-block">
-          <span class="target"><span data-bind="target-temp"></span></span>
+      <details class="dc-temp-details-toggle no-details" data-bind="details-toggle">
+        <summary class="dc-hero-row">
+          <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
+          <!-- Legacy bindings hidden via CSS (.dc-hero .arrow, .target-block, .room-label) -->
+          <span class="arrow" data-bind="target-arrow"></span>
+          <div class="target-block" data-bind="target-block">
+            <span class="target"><span data-bind="target-temp"></span></span>
+          </div>
+        </summary>
+        <div class="dc-metrics">
+          <div class="dc-metric-row">
+            <span class="label"><ha-icon icon="mdi:send"></ha-icon>Consigne envoyée par le module</span>
+            <span class="value" data-bind="metric-setpoint-sent">—</span>
+          </div>
+          <div class="dc-metric-row">
+            <span class="label"><ha-icon icon="mdi:thermostat"></ha-icon>Consigne actuelle de la clim</span>
+            <span class="value" data-bind="metric-clim-setpoint">—</span>
+          </div>
+          <div class="dc-metric-row">
+            <span class="label"><ha-icon icon="mdi:thermometer"></ha-icon>Sonde interne clim</span>
+            <span class="value" data-bind="metric-clim-sonde">—</span>
+          </div>
+          <div class="dc-metric-row">
+            <span class="label"><ha-icon icon="mdi:gauge"></ha-icon>Régime de pilotage</span>
+            <span class="value" data-bind="metric-regime">—</span>
+          </div>
         </div>
-      </div>
+      </details>
 
       <div class="dc-narrative" data-bind="narrative"></div>
 
@@ -2235,27 +2264,6 @@ const TEMPLATE = `
       <span data-bind="timeline-text"></span><span data-bind="spark"></span>
     </div>
 
-    <details class="dc-details-toggle">
-      <summary>Détails techniques</summary>
-      <div class="dc-metrics">
-        <div class="dc-metric-row">
-          <span class="label"><ha-icon icon="mdi:send"></ha-icon>Consigne envoyée par le module</span>
-          <span class="value" data-bind="metric-setpoint-sent">—</span>
-        </div>
-        <div class="dc-metric-row">
-          <span class="label"><ha-icon icon="mdi:thermostat"></ha-icon>Consigne actuelle de la clim</span>
-          <span class="value" data-bind="metric-clim-setpoint">—</span>
-        </div>
-        <div class="dc-metric-row">
-          <span class="label"><ha-icon icon="mdi:thermometer"></ha-icon>Sonde interne clim</span>
-          <span class="value" data-bind="metric-clim-sonde">—</span>
-        </div>
-        <div class="dc-metric-row">
-          <span class="label"><ha-icon icon="mdi:gauge"></ha-icon>Régime de pilotage</span>
-          <span class="value" data-bind="metric-regime">—</span>
-        </div>
-      </div>
-    </details>
   </section>
 
   <!-- ════════════════════════════════════ §3 PILOTAGE -->
@@ -2289,38 +2297,34 @@ const TEMPLATE = `
 
   <!-- ════════════════════════════════════ §4 COMMANDE MANUELLE -->
   <section class="dc-section section-manual">
-    <div class="dc-panel">
-      <div class="body">
-        <div class="dc-control">
-          <div class="dc-control-label">Actions rapides</div>
-          <div class="dc-quick-actions">
-            <button data-bind="boost-btn"><ha-icon icon="mdi:rocket-launch"></ha-icon> Boost 15 min</button>
-            <button data-bind="resume-btn"><ha-icon icon="mdi:restore"></ha-icon> Reprendre auto</button>
-          </div>
-        </div>
+    <div class="dc-control">
+      <div class="dc-control-label">Actions rapides</div>
+      <div class="dc-quick-actions">
+        <button data-bind="boost-btn"><ha-icon icon="mdi:rocket-launch"></ha-icon> Boost 15 min</button>
+        <button data-bind="resume-btn"><ha-icon icon="mdi:restore"></ha-icon> Reprendre auto</button>
+      </div>
+    </div>
 
-        <div class="dc-subblock" data-bind="manual-clim-block">
-          <div class="dc-subblock-title">
-            <ha-icon icon="mdi:air-conditioner"></ha-icon> Contrôle direct climatisation
-          </div>
-          <div class="dc-hvac" data-bind="hvac-modes"></div>
-          <div class="dc-setpoint">
-            <button data-bind="sp-dec" title="Diminuer">−</button>
-            <div>
-              <div class="sp-val"><span data-bind="setpoint">—</span><span class="sp-unit"> °C</span></div>
-            </div>
-            <button data-bind="sp-inc" title="Augmenter">+</button>
-          </div>
-          <div class="dc-fanswing">
-            <div class="field">
-              <label>Ventilation</label>
-              <select data-bind="fan-select"></select>
-            </div>
-            <div class="field">
-              <label>Swing</label>
-              <select data-bind="swing-select"></select>
-            </div>
-          </div>
+    <div class="dc-subblock" data-bind="manual-clim-block">
+      <div class="dc-subblock-title">
+        <ha-icon icon="mdi:air-conditioner"></ha-icon> Contrôle direct climatisation
+      </div>
+      <div class="dc-hvac" data-bind="hvac-modes"></div>
+      <div class="dc-setpoint">
+        <button data-bind="sp-dec" title="Diminuer">−</button>
+        <div>
+          <div class="sp-val"><span data-bind="setpoint">—</span><span class="sp-unit"> °C</span></div>
+        </div>
+        <button data-bind="sp-inc" title="Augmenter">+</button>
+      </div>
+      <div class="dc-fanswing">
+        <div class="field">
+          <label>Ventilation</label>
+          <select data-bind="fan-select"></select>
+        </div>
+        <div class="field">
+          <label>Swing</label>
+          <select data-bind="swing-select"></select>
         </div>
       </div>
     </div>
@@ -2328,29 +2332,21 @@ const TEMPLATE = `
 
   <!-- ════════════════════════════════════ §5 SESSIONS RÉCENTES -->
   <section class="dc-section section-cycles">
-    <div class="dc-panel">
-      <div class="body">
-        <div class="dc-cycles-empty" data-bind="cycles-empty" style="display:none">
-          Aucune session terminée pour l'instant.
-        </div>
-        <div class="dc-cycles-list" data-bind="cycles-list"></div>
-      </div>
+    <div class="dc-cycles-empty" data-bind="cycles-empty" style="display:none">
+      Aucune session terminée pour l'instant.
     </div>
+    <div class="dc-cycles-list" data-bind="cycles-list"></div>
   </section>
 
   <!-- ════════════════════════════════════ PROFILS -->
   <section class="dc-section section-profiles">
-    <div class="dc-panel">
-      <div class="body">
-        <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
-          Aucun profil configuré. Tant qu'aucun profil ne match, la zone reste OFF.
-        </div>
-        <div class="dc-profiles-list" data-bind="profiles-list"></div>
-        <button class="dc-profile-add" data-bind="profile-add">
-          <ha-icon icon="mdi:plus-circle"></ha-icon> Nouveau profil
-        </button>
-      </div>
+    <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
+      Aucun profil configuré. Tant qu'aucun profil ne match, la zone reste OFF.
     </div>
+    <div class="dc-profiles-list" data-bind="profiles-list"></div>
+    <button class="dc-profile-add" data-bind="profile-add">
+      <ha-icon icon="mdi:plus-circle"></ha-icon> Nouveau profil
+    </button>
   </section>
 
   <div class="dc-err" data-bind="error"></div>
@@ -2409,7 +2405,7 @@ window.customCards = window.customCards || [];
 ].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.18.4 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.18.5 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
