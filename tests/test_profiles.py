@@ -151,3 +151,96 @@ def test_active_profile_drives_power_offset() -> None:
     # Expected = 24.0 - 7.0 = 17.0 (then clamped to CLIM_MIN_SETPOINT=18.0)
     assert setpoint is not None
     assert setpoint <= 18.5, f"Agressif profile must apply 7°C offset; got {setpoint}"
+
+
+# ---------- Profile time window ----------
+
+
+def test_time_window_no_bounds_always_on() -> None:
+    p = Profile(name="default")
+    assert p.time_window_contains(0, 0) is True
+    assert p.time_window_contains(12, 0) is True
+    assert p.time_window_contains(23, 59) is True
+
+
+def test_time_window_partial_bounds_disabled() -> None:
+    """Only one of from/to set → fail open (treat as no window)."""
+    p = Profile(name="X", active_from="08:00")
+    assert p.time_window_contains(2, 0) is True
+    p = Profile(name="X", active_to="22:00")
+    assert p.time_window_contains(2, 0) is True
+
+
+def test_time_window_same_day() -> None:
+    p = Profile(name="day", active_from="08:00", active_to="22:00")
+    assert p.time_window_contains(7, 59) is False
+    assert p.time_window_contains(8, 0) is True
+    assert p.time_window_contains(15, 0) is True
+    assert p.time_window_contains(21, 59) is True
+    assert p.time_window_contains(22, 0) is False  # half-open interval
+    assert p.time_window_contains(23, 0) is False
+
+
+def test_time_window_wraps_midnight() -> None:
+    p = Profile(name="night", active_from="22:00", active_to="06:00")
+    assert p.time_window_contains(22, 0) is True
+    assert p.time_window_contains(23, 30) is True
+    assert p.time_window_contains(0, 0) is True
+    assert p.time_window_contains(5, 59) is True
+    assert p.time_window_contains(6, 0) is False
+    assert p.time_window_contains(7, 0) is False
+    assert p.time_window_contains(21, 59) is False
+
+
+def test_time_window_malformed_strings_dont_crash() -> None:
+    p = Profile(name="bad", active_from="not a time", active_to="08:00")
+    # Fail open rather than throw
+    assert p.time_window_contains(12, 0) is True
+
+
+# ---------- Profile per-instance stabilization override ----------
+
+
+def test_profile_stab_override_takes_precedence() -> None:
+    """A profile with its own duree_stabilisation_min wins over the zone."""
+    cfg = _cfg(duree_stabilisation_min=60)
+    zone = Zone(cfg)
+    zone.state.state = ZoneState.STABILIZING
+    zone.state.last_state_transition_ts = 0.0
+    # 10-min profile override: at t=11min STAB must have ended (→ COOLDOWN)
+    short = Profile(name="précool", duree_stabilisation_min=10,
+                    seuil_debut_refroidissement=24.0, seuil_fin_refroidissement=21.0)
+    zone.tick(_inp(now_ts=11 * 60, active_profile=short))
+    assert zone.state.state == ZoneState.COOLDOWN, "Profile's 10min STAB must have ended by now"
+
+
+def test_profile_stab_falls_back_to_zone_when_none() -> None:
+    """Profile with duree_stabilisation_min=None → uses zone's value."""
+    cfg = _cfg(duree_stabilisation_min=30)
+    zone = Zone(cfg)
+    zone.state.state = ZoneState.STABILIZING
+    zone.state.last_state_transition_ts = 0.0
+    p = Profile(name="default", duree_stabilisation_min=None,
+                seuil_debut_refroidissement=24.0, seuil_fin_refroidissement=21.0)
+    # At t=10min: zone STAB is 30min, profile is None → still STABILIZING
+    zone.tick(_inp(now_ts=10 * 60, active_profile=p))
+    assert zone.state.state == ZoneState.STABILIZING
+    # At t=31min: zone's 30min limit reached
+    zone.tick(_inp(now_ts=31 * 60, active_profile=p))
+    assert zone.state.state == ZoneState.COOLDOWN
+
+
+def test_profile_stab_roundtrip_via_dict() -> None:
+    """The new fields survive a from_dict/to_dict cycle."""
+    p = Profile(name="custom", active_from="09:00", active_to="22:00",
+                duree_stabilisation_min=45)
+    p2 = Profile.from_dict(p.to_dict())
+    assert p2.active_from == "09:00"
+    assert p2.active_to == "22:00"
+    assert p2.duree_stabilisation_min == 45
+
+
+def test_profile_stab_empty_string_treated_as_none() -> None:
+    """Empty string from the form input UI must round-trip to None, not crash."""
+    p = Profile.from_dict({"name": "X", "duree_stabilisation_min": ""})
+    assert p.duree_stabilisation_min is None

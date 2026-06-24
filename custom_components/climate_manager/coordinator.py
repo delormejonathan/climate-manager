@@ -18,6 +18,7 @@ from homeassistant.core import Context, Event, EventStateChangedData, HomeAssist
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_PRESENCE_ABSENT_STATES,
@@ -340,6 +341,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         return None
 
     def _profile_schedule_on(self, p: Profile) -> bool:
+        # Inline time window — independent of schedule_entity. Both must
+        # be ON when both are set, so users can combine "weekdays from a
+        # schedule.* helper" with "between 08:00 and 22:00 only".
+        if p.active_from or p.active_to:
+            now_local = dt_util.now()
+            if not p.time_window_contains(now_local.hour, now_local.minute):
+                return False
         if not p.schedule_entity:
             return True
         st = self.hass.states.get(p.schedule_entity)
@@ -499,7 +507,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             stabilization_ends_ts = None
             cooldown_ends_ts = None
             if zone.state.state == ZoneState.STABILIZING and entered_ts:
-                stabilization_ends_ts = entered_ts + zone.config.duree_stabilisation_min * 60
+                # Match the per-profile override used in Zone._maybe_advance_…
+                stab_minutes = zone.config.duree_stabilisation_min
+                if inputs.active_profile and inputs.active_profile.duree_stabilisation_min is not None:
+                    stab_minutes = inputs.active_profile.duree_stabilisation_min
+                stabilization_ends_ts = entered_ts + stab_minutes * 60
             if zone.state.state == ZoneState.COOLDOWN and entered_ts:
                 cooldown_ends_ts = entered_ts + zone.config.duree_cooldown_min * 60
 

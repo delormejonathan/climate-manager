@@ -220,6 +220,12 @@ class Profile:
 
     name: str
     schedule_entity: str | None = None
+    # Inline daily time window (HH:MM strings, local time). Independent of
+    # schedule_entity: if both are set, the profile is on only when BOTH
+    # match. Wraps midnight when `active_to` < `active_from` (e.g.
+    # 22:00 → 06:00). Either being None disables the window check.
+    active_from: str | None = None
+    active_to: str | None = None
     # Optional presence condition: profile matches only if the entity is in
     # the required state. State can be a single string or a list of accepted
     # strings (e.g. ["armed_away", "armed_night"] to mean "absent however").
@@ -231,12 +237,33 @@ class Profile:
     seuil_fin_refroidissement: float = DEFAULT_SEUIL_FIN_REFROIDISSEMENT
     power: str = DEFAULT_POWER
     fan_intensity: str = DEFAULT_FAN_INTENSITY
+    # None → fallback to ZoneConfig.duree_stabilisation_min. Lets a "Maison
+    # vide (pré-cool)" cut its STAB short while "Journée présent" keeps the
+    # standard 60 min for comfort hold.
+    duree_stabilisation_min: int | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Profile:
+        raw_stab = d.get("duree_stabilisation_min")
+        stab: int | None
+        if raw_stab is None or raw_stab == "":
+            stab = None
+        else:
+            try:
+                stab = int(raw_stab)
+            except (TypeError, ValueError):
+                stab = None
+        def _hhmm(v: Any) -> str | None:
+            if v is None or v == "":
+                return None
+            s = str(v).strip()
+            return s or None
+
         return cls(
             name=str(d.get("name", "Profil")),
             schedule_entity=d.get("schedule_entity"),
+            active_from=_hhmm(d.get("active_from")),
+            active_to=_hhmm(d.get("active_to")),
             presence_entity=d.get("presence_entity"),
             presence_required_state=d.get("presence_required_state"),
             seuil_debut_chauffage=float(
@@ -251,12 +278,15 @@ class Profile:
             ),
             power=str(d.get("power", DEFAULT_POWER)),
             fan_intensity=str(d.get("fan_intensity", DEFAULT_FAN_INTENSITY)),
+            duree_stabilisation_min=stab,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "schedule_entity": self.schedule_entity,
+            "active_from": self.active_from,
+            "active_to": self.active_to,
             "presence_entity": self.presence_entity,
             "presence_required_state": self.presence_required_state,
             "seuil_debut_chauffage": self.seuil_debut_chauffage,
@@ -265,7 +295,29 @@ class Profile:
             "seuil_fin_refroidissement": self.seuil_fin_refroidissement,
             "power": self.power,
             "fan_intensity": self.fan_intensity,
+            "duree_stabilisation_min": self.duree_stabilisation_min,
         }
+
+    def time_window_contains(self, hour: int, minute: int) -> bool:
+        """Return True when the given local hh:mm falls inside [active_from,
+        active_to). When either bound is missing → no window check, returns
+        True. Wraps midnight when `active_to` <= `active_from`."""
+        if not self.active_from or not self.active_to:
+            return True
+        try:
+            fh, fm = (int(x) for x in self.active_from.split(":"))
+            th, tm = (int(x) for x in self.active_to.split(":"))
+        except (ValueError, AttributeError):
+            return True  # malformed → fail open (matches old behaviour without window)
+        now = hour * 60 + minute
+        start = fh * 60 + fm
+        end = th * 60 + tm
+        if start == end:
+            return True  # same instant on both sides = always on
+        if start < end:
+            return start <= now < end
+        # Wraps midnight (e.g. 22:00 → 06:00)
+        return now >= start or now < end
 
 
 @dataclass
@@ -670,10 +722,20 @@ class Zone:
         return None  # fall through to regular flow
 
     def _maybe_advance_timed_transitions(self, inp: ZoneInputs) -> None:
-        """STABILIZING → COOLDOWN → IDLE based on elapsed time."""
+        """STABILIZING → COOLDOWN → IDLE based on elapsed time.
+
+        STAB duration is read from the active profile first (so a "pré-cool"
+        profile can cut its hold short while "Journée présent" keeps the
+        comfort hold), falling back to the zone default when the profile
+        leaves the field empty or when no profile is active.
+        """
         if self.state.state == ZoneState.STABILIZING:
             elapsed = inp.now_ts - self.state.last_state_transition_ts
-            if elapsed >= self.config.duree_stabilisation_min * 60:
+            stab_minutes = self.config.duree_stabilisation_min
+            active = inp.active_profile
+            if active and active.duree_stabilisation_min is not None:
+                stab_minutes = active.duree_stabilisation_min
+            if elapsed >= stab_minutes * 60:
                 self._transition(ZoneState.COOLDOWN, inp.now_ts)
         if self.state.state == ZoneState.COOLDOWN:
             elapsed = inp.now_ts - self.state.last_state_transition_ts

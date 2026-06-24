@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.18.7
+ * climate-manager-card  v0.19.0
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -582,6 +582,7 @@ class DelormejClimateCard extends HTMLElement {
 
   _profileGateIcon(profile) {
     if (profile.presence_entity) return "mdi:shield-account";
+    if (profile.active_from || profile.active_to) return "mdi:clock-outline";
     if (profile.schedule_entity) return "mdi:calendar-clock";
     return "mdi:infinity";
   }
@@ -592,6 +593,9 @@ class DelormejClimateCard extends HTMLElement {
       const stateLabel = this._presenceStateLabel(state);
       const entity = this._friendlyEntityName(profile.presence_entity);
       return stateLabel ? stateLabel : entity;
+    }
+    if (profile.active_from && profile.active_to) {
+      return `${profile.active_from} → ${profile.active_to}`;
     }
     if (profile.schedule_entity) return this._friendlyScheduleName(profile.schedule_entity);
     return "Toujours actif";
@@ -613,10 +617,19 @@ class DelormejClimateCard extends HTMLElement {
 
   _profileDetailLabel(profile) {
     const parts = [];
+    // When the gate icon shows presence, surface the time window as a
+    // secondary fact (and vice versa) so the user sees both rules without
+    // opening the form.
+    if (profile.presence_entity && profile.active_from && profile.active_to) {
+      parts.push(`${profile.active_from} → ${profile.active_to}`);
+    }
     if (profile.schedule_entity && profile.presence_entity) {
       parts.push(`${this._friendlyScheduleName(profile.schedule_entity)} + ${this._presenceStateLabel(profile.presence_required_state) || this._friendlyEntityName(profile.presence_entity)}`);
-    } else if (profile.presence_entity) {
+    } else if (profile.presence_entity && !(profile.active_from && profile.active_to)) {
       parts.push(this._friendlyEntityName(profile.presence_entity));
+    }
+    if (profile.duree_stabilisation_min != null) {
+      parts.push(`Stab ${profile.duree_stabilisation_min} min`);
     }
     const heatStart = this._fmtTemp(profile.seuil_debut_chauffage);
     const heatEnd = this._fmtTemp(profile.seuil_fin_chauffage);
@@ -674,11 +687,13 @@ class DelormejClimateCard extends HTMLElement {
       <div class="dc-field"><label>Nom</label>
         <input type="text" data-field="name" value="${this._escapeHTML(profile.name || "")}">
       </div>
-      <div class="dc-field"><label>Schedule (gate horaire)</label>
-        <select data-field="schedule_entity">
-          ${opt("", "— Aucun (toujours actif) —", profile.schedule_entity || "")}
-          ${scheduleEntities.map(e => opt(e, e, profile.schedule_entity || "")).join("")}
-        </select>
+      <div class="dc-pair">
+        <div class="dc-field"><label>Actif à partir de</label>
+          <input type="time" data-field="active_from" value="${this._escapeHTML(profile.active_from || "")}">
+        </div>
+        <div class="dc-field"><label>Jusqu'à</label>
+          <input type="time" data-field="active_to" value="${this._escapeHTML(profile.active_to || "")}">
+        </div>
       </div>
       <div class="dc-field"><label>Entité présence (condition optionnelle)</label>
         <select data-field="presence_entity">
@@ -689,6 +704,15 @@ class DelormejClimateCard extends HTMLElement {
       <div class="dc-field"><label>État requis (ex: armed_away, home, on)</label>
         <input type="text" data-field="presence_required_state" value="${this._escapeHTML(profile.presence_required_state || "")}">
       </div>
+      <details class="dc-profile-advanced">
+        <summary>Avancé : entité schedule.* (optionnel)</summary>
+        <div class="dc-field"><label>Schedule (combiné avec la fenêtre horaire)</label>
+          <select data-field="schedule_entity">
+            ${opt("", "— Aucun —", profile.schedule_entity || "")}
+            ${scheduleEntities.map(e => opt(e, e, profile.schedule_entity || "")).join("")}
+          </select>
+        </div>
+      </details>
       <div class="dc-pair">
         <div class="dc-field"><label>Démarrage froid</label>
           <div class="dc-input-wrap"><input type="number" step="0.5" data-field="seuil_debut_refroidissement" value="${profile.seuil_debut_refroidissement}"><span class="unit">°C</span></div>
@@ -716,6 +740,9 @@ class DelormejClimateCard extends HTMLElement {
             ${["doux","normal","fort"].map(o => opt(o, this._capitalize(o), profile.fan_intensity || "normal")).join("")}
           </select>
         </div>
+      </div>
+      <div class="dc-field"><label>Durée stabilisation (min, vide = défaut zone)</label>
+        <div class="dc-input-wrap"><input type="number" min="0" step="1" data-field="duree_stabilisation_min" value="${profile.duree_stabilisation_min ?? ""}"><span class="unit">min</span></div>
       </div>
       <div class="dc-profile-edit-actions">
         <button data-action="cancel">Annuler</button>
@@ -806,6 +833,12 @@ class DelormejClimateCard extends HTMLElement {
       const v = parseFloat(get(field));
       return Number.isFinite(v) ? v : def;
     };
+    const i = (field) => {
+      const raw = get(field).trim();
+      if (raw === "") return null;
+      const v = parseInt(raw, 10);
+      return Number.isFinite(v) ? v : null;
+    };
     const s = (field) => {
       const v = get(field);
       return v === "" ? null : v;
@@ -813,6 +846,8 @@ class DelormejClimateCard extends HTMLElement {
     return {
       name: get("name") || "Sans nom",
       schedule_entity: s("schedule_entity"),
+      active_from: s("active_from"),
+      active_to: s("active_to"),
       presence_entity: s("presence_entity"),
       presence_required_state: s("presence_required_state"),
       seuil_debut_chauffage: f("seuil_debut_chauffage", fallback?.seuil_debut_chauffage ?? 19.5),
@@ -821,6 +856,7 @@ class DelormejClimateCard extends HTMLElement {
       seuil_fin_refroidissement: f("seuil_fin_refroidissement", fallback?.seuil_fin_refroidissement ?? 24.0),
       power: get("power") || "normal",
       fan_intensity: get("fan_intensity") || "normal",
+      duree_stabilisation_min: i("duree_stabilisation_min"),
     };
   }
 
@@ -1868,6 +1904,7 @@ const STYLES = `
   }
   .dc-profile-edit input[type="text"],
   .dc-profile-edit input[type="number"],
+  .dc-profile-edit input[type="time"],
   .dc-profile-edit select {
     background: var(--dc-bg-inset); border: none;
     border-radius: var(--dc-radius-sm);
@@ -1875,6 +1912,25 @@ const STYLES = `
     font-size: 0.9em; font-weight: 500;
     appearance: none; -webkit-appearance: none;
   }
+  /* Advanced section (schedule entity picker) — collapsed by default,
+     reachable for users who already had a schedule.* setup before time
+     windows existed. */
+  .dc-profile-advanced { margin-top: 2px; }
+  .dc-profile-advanced > summary {
+    cursor: pointer; list-style: none;
+    font-size: 0.78em; color: var(--dc-muted); font-weight: 600;
+    padding: 6px 0;
+    user-select: none;
+  }
+  .dc-profile-advanced > summary::-webkit-details-marker { display: none; }
+  .dc-profile-advanced > summary::before {
+    content: "›"; display: inline-block;
+    transition: transform 0.15s ease;
+    color: var(--dc-dim); margin-right: 4px;
+  }
+  .dc-profile-advanced[open] > summary::before { transform: rotate(90deg); }
+  .dc-profile-advanced > summary:hover { color: var(--dc-fg); }
+  .dc-profile-advanced[open] > summary { color: var(--dc-fg); }
   .dc-profile-edit select {
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(255,255,255,0.5)' d='M0 0l5 6 5-6z'/></svg>");
     background-repeat: no-repeat; background-position: right 10px center;
@@ -2407,7 +2463,7 @@ window.customCards = window.customCards || [];
 ].forEach((card) => window.customCards.push({ ...card, preview: false }));
 
 console.info(
-  "%c CLIMATE-MANAGER-CARD %c v0.18.7 ",
+  "%c CLIMATE-MANAGER-CARD %c v0.19.0 ",
   "color: white; background: #28a745; font-weight: 700;",
   "color: #28a745; background: white; font-weight: 700;"
 );
