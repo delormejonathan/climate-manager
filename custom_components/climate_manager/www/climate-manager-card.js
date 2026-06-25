@@ -23,18 +23,10 @@
 //   idle   = gray (no animation)
 const STATE_META = {
   idle:        { label: "En veille",       color: "#8A92A0", icon: "mdi:power-sleep", tone: "idle" },
-  starting:    { label: "Démarrage",       color: "#F5A056", icon: "mdi:play-circle", tone: "warn" },
   running:     { label: "Actif",           color: "#D6FF00", icon: "mdi:fan", tone: "active" },
-  stabilizing: { label: "Stabilisation",   color: "#D6FF00", icon: "mdi:waves", tone: "active" },
-  cooldown:    { label: "Cooldown",        color: "#5BC8E2", icon: "mdi:timer-sand", tone: "warn" },
-  schedule_off:{ label: "Hors planning",   color: "#8A92A0", icon: "mdi:clock-outline", tone: "idle" },
   manual_override_timed: { label: "Override", color: "#F26D5B", icon: "mdi:account-clock", tone: "alert" },
   manual_override_free:  { label: "Manuel",   color: "#F26D5B", icon: "mdi:account-edit", tone: "alert" },
   window_open: { label: "Fenêtre ouverte", color: "#F5A056", icon: "mdi:window-open", tone: "warn" },
-};
-
-const REGIME_LABELS = {
-  none: "—", attaque: "Attaque", stabilisation: "Stabilisation", boost: "Boost",
 };
 
 const HVAC_ICONS = {
@@ -235,8 +227,6 @@ class DelormejClimateCard extends HTMLElement {
     $("state-icon").setAttribute("icon", meta.icon);
     $("state-label").textContent = meta.label;
     const attrs = stateObj?.attributes || {};
-    const regimeVal = get(ids.regime)?.state;
-    const regimeLabel = REGIME_LABELS[regimeVal] || "—";
 
     // Header icon bubble — represents the AC device.
     // Active (cool/heat): colored bubble with snowflake/fire icon.
@@ -290,15 +280,13 @@ class DelormejClimateCard extends HTMLElement {
 
     // Narrative — 1 line that synthesises everything the user needs:
     // current direction + target temp + profile + next schedule transition.
-    const nar = this._buildNarrative(stateVal, regimeVal, attrs, get, ids);
+    const nar = this._buildNarrative(stateVal, null, attrs, get, ids);
     const narEl = $("narrative");
     narEl.innerHTML = nar.html;
     narEl.classList.toggle("warn", !!nar.warn);
     narEl.classList.toggle("warm", dir === "heat");
 
-    // No-op'd legacy renderers (markup hidden, JS kept for compat).
     this._updateThermalRail(stateVal, attrs, get, ids);
-    this._updatePhases(stateVal, attrs);
     this._updateTimeline(stateVal, attrs, get, ids);
 
     // Pills — ONLY surface what's not redundant with the narrative or state
@@ -336,7 +324,6 @@ class DelormejClimateCard extends HTMLElement {
       climObj ? this._fmtTempUnit(climObj.attributes.temperature) : "—";
     $("metric-clim-sonde").textContent =
       climObj ? this._fmtTempUnit(climObj.attributes.current_temperature) : "—";
-    $("metric-regime").textContent = regimeLabel;
 
     // Override row
     const overrideUntil = get(ids.overrideUntil);
@@ -1042,86 +1029,6 @@ class DelormejClimateCard extends HTMLElement {
     fill.style.width = `${roomPct}%`;
   }
 
-  /* =================================================================== phases */
-
-  /**
-   * Highlight the active phase in the 3-card ribbon. Phases:
-   *   ATTAQUE (state in starting/running) → first card lights up
-   *   STABILISATION (state == stabilizing) → second card lights up
-   *   COOLDOWN (state == cooldown) → third card lights up
-   *
-   * Each card shows a small relevant value:
-   *   - attaque: elapsed time since cycle started
-   *   - stab: remaining time before STAB ends
-   *   - cooldown: remaining time before COOLDOWN ends
-   */
-  _updatePhases(stateVal, attrs) {
-    const wrap = this.querySelector('[data-bind="phases"]');
-    if (!wrap) return;
-
-    const active = ["starting", "running", "stabilizing", "cooldown"].includes(stateVal);
-    wrap.classList.toggle("hidden", !active);
-    if (!active) return;
-
-    const cards = {
-      attaque:  this.querySelector('[data-bind="phase-attaque"]'),
-      stab:     this.querySelector('[data-bind="phase-stab"]'),
-      cooldown: this.querySelector('[data-bind="phase-cooldown"]'),
-    };
-    const vals = {
-      attaque:  this.querySelector('[data-bind="phase-attaque-val"]'),
-      stab:     this.querySelector('[data-bind="phase-stab-val"]'),
-      cooldown: this.querySelector('[data-bind="phase-cooldown-val"]'),
-    };
-    Object.values(cards).forEach((c) => c && (c.className = "dc-phase upcoming"));
-
-    const now = Date.now() / 1000;
-    const cycleStart = attrs.cycle_started_at
-      ? new Date(attrs.cycle_started_at).getTime() / 1000 : null;
-    const stabEnds = attrs.stabilization_ends_at
-      ? new Date(attrs.stabilization_ends_at).getTime() / 1000 : null;
-    const cooldownEnds = attrs.cooldown_ends_at
-      ? new Date(attrs.cooldown_ends_at).getTime() / 1000 : null;
-
-    const fmtMin = (s) => {
-      if (s == null || s < 0) return "—";
-      const m = Math.round(s / 60);
-      if (m < 60) return `${m} min`;
-      const h = Math.floor(m / 60);
-      return `${h}h ${(m % 60).toString().padStart(2, "0")}`;
-    };
-
-    if (stateVal === "starting" || stateVal === "running") {
-      cards.attaque.className = "dc-phase active";
-      if (vals.attaque) {
-        vals.attaque.textContent = cycleStart != null
-          ? fmtMin(now - cycleStart) : "en cours";
-      }
-      if (vals.stab) vals.stab.textContent = "—";
-      if (vals.cooldown) vals.cooldown.textContent = "—";
-    } else if (stateVal === "stabilizing") {
-      cards.attaque.className = "dc-phase done";
-      if (vals.attaque && cycleStart != null && attrs.state_entered_at) {
-        const stabStart = new Date(attrs.state_entered_at).getTime() / 1000;
-        vals.attaque.textContent = fmtMin(stabStart - cycleStart);
-      }
-      cards.stab.className = "dc-phase active";
-      if (vals.stab) {
-        vals.stab.textContent = stabEnds != null
-          ? `${fmtMin(stabEnds - now)} restantes` : "en cours";
-      }
-      if (vals.cooldown) vals.cooldown.textContent = "—";
-    } else if (stateVal === "cooldown") {
-      cards.attaque.className = "dc-phase done";
-      cards.stab.className = "dc-phase done";
-      cards.cooldown.className = "dc-phase active";
-      if (vals.cooldown) {
-        vals.cooldown.textContent = cooldownEnds != null
-          ? `${fmtMin(cooldownEnds - now)} restantes` : "en cours";
-      }
-    }
-  }
-
   /* =================================================================== helpers */
 
   _pill(icon, text, cls = "neutral") {
@@ -1569,41 +1476,6 @@ const STYLES = `
 
   /* Thermal rail kept hidden; phase ribbon + live curve are now first-class. */
   .dc-rail-wrap { display: none !important; }
-  .dc-phases.hidden { display: none; }
-  .dc-phases {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    margin: 8px 0 10px;
-  }
-  .dc-phase {
-    padding: 8px 6px;
-    border-radius: var(--dc-radius-sm);
-    background: var(--dc-surface);
-    color: var(--dc-muted);
-    font-size: 11px;
-    font-weight: 600;
-    text-align: center;
-    line-height: 1.25;
-  }
-  .dc-phase::before {
-    display: block;
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--dc-dim);
-    margin-bottom: 3px;
-  }
-  .dc-phase:nth-child(1)::before { content: "Attaque"; }
-  .dc-phase:nth-child(2)::before { content: "Stabilisation"; }
-  .dc-phase:nth-child(3)::before { content: "Cooldown"; }
-  .dc-phase.done { color: var(--dc-muted); background: rgba(138,146,160,0.10); }
-  .dc-phase.active {
-    color: var(--dc-fg);
-    background: var(--dc-accent-soft);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dc-accent), transparent 60%);
-  }
-  .dc-phase.upcoming { opacity: 0.68; }
   .dc-timeline {
     display: block;
     margin: 8px 0 14px;
@@ -2235,10 +2107,6 @@ const TEMPLATE = `
             <span class="label"><ha-icon icon="mdi:thermometer"></ha-icon>Sonde interne clim</span>
             <span class="value" data-bind="metric-clim-sonde">—</span>
           </div>
-          <div class="dc-metric-row">
-            <span class="label"><ha-icon icon="mdi:gauge"></ha-icon>Régime de pilotage</span>
-            <span class="value" data-bind="metric-regime">—</span>
-          </div>
         </div>
       </details>
 
@@ -2258,11 +2126,6 @@ const TEMPLATE = `
       <span data-bind="rail-target"></span>
       <span data-bind="rail-cursor"><span data-bind="rail-cursor-val"></span></span>
       <span data-bind="rail-bound-left"></span><span data-bind="rail-bound-right"></span>
-    </div>
-    <div class="dc-phases hidden" data-bind="phases">
-      <div class="dc-phase" data-bind="phase-attaque"><span data-bind="phase-attaque-val"></span></div>
-      <div class="dc-phase" data-bind="phase-stab"><span data-bind="phase-stab-val"></span></div>
-      <div class="dc-phase" data-bind="phase-cooldown"><span data-bind="phase-cooldown-val"></span></div>
     </div>
     <div class="dc-timeline" data-bind="timeline" style="display:none">
       <span data-bind="timeline-text"></span><span data-bind="spark"></span>
@@ -2286,6 +2149,14 @@ const TEMPLATE = `
       </div>
     </div>
 
+    <div class="dc-control">
+      <div class="dc-control-label">Actions rapides</div>
+      <div class="dc-quick-actions">
+        <button data-bind="boost-btn"><ha-icon icon="mdi:rocket-launch"></ha-icon> Boost 15 min</button>
+        <button data-bind="resume-btn"><ha-icon icon="mdi:restore"></ha-icon> Reprendre auto</button>
+      </div>
+    </div>
+
     <div class="dc-control dc-force-row" style="display:none">
       <div class="dc-control-label">Démarrer maintenant</div>
       <div class="dc-force-actions">
@@ -2301,14 +2172,6 @@ const TEMPLATE = `
 
   <!-- ════════════════════════════════════ §4 COMMANDE MANUELLE -->
   <section class="dc-section section-manual">
-    <div class="dc-control">
-      <div class="dc-control-label">Actions rapides</div>
-      <div class="dc-quick-actions">
-        <button data-bind="boost-btn"><ha-icon icon="mdi:rocket-launch"></ha-icon> Boost 15 min</button>
-        <button data-bind="resume-btn"><ha-icon icon="mdi:restore"></ha-icon> Reprendre auto</button>
-      </div>
-    </div>
-
     <div class="dc-subblock" data-bind="manual-clim-block">
       <div class="dc-subblock-title">
         <ha-icon icon="mdi:air-conditioner"></ha-icon> Contrôle direct climatisation
