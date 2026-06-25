@@ -252,12 +252,17 @@ class DelormejClimateCard extends HTMLElement {
 
     // ─────────────────── SECTION 1: ÉTAT ACTUEL — minimal hero
     $("room-temp").textContent = this._fmtTemp(get(ids.roomTemp)?.state);
+    // Target temperature next to room temp, with arrow. The target comes from
+    // the active profile (via coordinator). When no profile is active, hide.
+    const targetT = attrs.target_temperature;
+    const targetEl = $("target-temp");
+    if (targetEl) targetEl.textContent = targetT != null ? this._fmtTemp(targetT) : "—";
 
     // Cool/warm dynamic accent — swaps the whole card's accent var so the
     // hero number, pills, segmented active state, controls all follow.
     const card = this.querySelector("ha-card");
     const dir = attrs.direction;
-    const cycleActive = ["starting", "running", "stabilizing"].includes(stateVal);
+    const cycleActive = stateVal === "running";
     const detailsToggle = $("details-toggle");
     if (detailsToggle) {
       detailsToggle.classList.toggle("no-details", !cycleActive);
@@ -277,6 +282,7 @@ class DelormejClimateCard extends HTMLElement {
       card?.classList.remove("accent-warm");
       hero?.classList.remove("active-cool", "active-warm");
     }
+    hero?.classList.toggle("no-target", targetT == null);
 
     // Narrative — 1 line that synthesises everything the user needs:
     // current direction + target temp + profile + next schedule transition.
@@ -1450,9 +1456,23 @@ const STYLES = `
   /* When cooling/heating is active, the hero number takes the accent */
   .dc-hero.active-cool .room { color: var(--dc-cool); }
   .dc-hero.active-warm .room { color: var(--dc-warm); }
-  /* Legacy arrow/target — kept hidden, JS still touches them */
-  .dc-hero .arrow,
-  .dc-hero .target-block,
+  /* Target temp shown next to room temp with an arrow. Hidden when no target. */
+  .dc-hero .arrow {
+    font-size: 24px;
+    color: var(--dc-muted);
+    line-height: 1;
+  }
+  .dc-hero .target-block {
+    font-size: 32px; font-weight: 500;
+    color: var(--dc-muted);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .dc-hero.active-cool .target-block { color: color-mix(in srgb, var(--dc-cool), transparent 30%); }
+  .dc-hero.active-warm .target-block { color: color-mix(in srgb, var(--dc-warm), transparent 30%); }
+  .dc-hero .target-block .target-unit { font-size: 0.55em; font-weight: 500; margin-left: 1px; }
+  .dc-hero.no-target .arrow,
+  .dc-hero.no-target .target-block { display: none; }
   .dc-hero .room-label { display: none; }
 
   .dc-narrative {
@@ -2088,10 +2108,9 @@ const TEMPLATE = `
       <details class="dc-temp-details-toggle no-details" data-bind="details-toggle">
         <summary class="dc-hero-row">
           <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
-          <!-- Legacy bindings hidden via CSS (.dc-hero .arrow, .target-block, .room-label) -->
-          <span class="arrow" data-bind="target-arrow"></span>
+          <span class="arrow" data-bind="target-arrow">→</span>
           <div class="target-block" data-bind="target-block">
-            <span class="target"><span data-bind="target-temp"></span></span>
+            <span class="target"><span data-bind="target-temp">—</span><span class="target-unit">°C</span></span>
           </div>
         </summary>
         <div class="dc-metrics">
