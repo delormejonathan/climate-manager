@@ -212,6 +212,17 @@ class ZoneRuntimeState:
     cycle_start_profile_name: str | None = None
     # Snapshot du compteur kWh au démarrage du cycle (None si pas de capteur).
     cycle_start_kwh: float | None = None
+    # Snapshot des températures de chaque capteur au démarrage du cycle.
+    # Sert de référence pour détecter les capteurs qui ne suivent pas la
+    # tendance (porte fermée). Vidé à la fin du cycle.
+    cycle_baseline_temps: dict[str, float] = field(default_factory=dict)
+    # Capteurs exclus du calcul de room_temperature pour le reste du cycle
+    # (ils ne réagissent pas comme leurs voisins). Persiste jusqu'au prochain
+    # cycle pour rester visible dans l'UI.
+    flagged_sensors: list[str] = field(default_factory=list)
+    # Capteurs pour lesquels une notif a déjà été émise dans le cycle courant
+    # (évite le spam — un capteur flagué reste flagué jusqu'à fin de cycle).
+    notified_sensors: list[str] = field(default_factory=list)
     # Historique des sessions terminées (max 20, sliding window).
     completed_sessions: list[dict[str, Any]] = field(default_factory=list)
 
@@ -230,6 +241,9 @@ class ZoneRuntimeState:
             "cycle_started_ts": self.cycle_started_ts,
             "cycle_start_profile_name": self.cycle_start_profile_name,
             "cycle_start_kwh": self.cycle_start_kwh,
+            "cycle_baseline_temps": dict(self.cycle_baseline_temps),
+            "flagged_sensors": list(self.flagged_sensors),
+            "notified_sensors": list(self.notified_sensors),
             "completed_sessions": list(self.completed_sessions),
         }
 
@@ -257,6 +271,13 @@ class ZoneRuntimeState:
             cycle_started_ts=_as_optional_float(data.get("cycle_started_ts")),
             cycle_start_profile_name=data.get("cycle_start_profile_name"),
             cycle_start_kwh=_as_optional_float(data.get("cycle_start_kwh")),
+            cycle_baseline_temps={
+                str(k): float(v)
+                for k, v in (data.get("cycle_baseline_temps") or {}).items()
+                if _as_optional_float(v) is not None
+            },
+            flagged_sensors=list(data.get("flagged_sensors") or []),
+            notified_sensors=list(data.get("notified_sensors") or []),
             completed_sessions=list(data.get("completed_sessions") or []),
         )
 
@@ -755,3 +776,40 @@ class Zone:
 
 def utc_now_ts() -> float:
     return time.time()
+
+
+def detect_lagging_sensors(
+    deltas: dict[str, float],
+    direction: str,
+    threshold: float = 0.5,
+) -> list[str]:
+    """Renvoie les ids de capteurs qui "ne suivent pas" la médiane des autres.
+
+    Comparatif inter-capteurs : on calcule la médiane des deltas sur la fenêtre
+    courante. Un capteur "lag" si son delta est trop loin de la médiane dans le
+    sens contraire à la direction (en cool, son delta est moins négatif ; en
+    heat, moins positif).
+
+    Args:
+        deltas: dict {entity_id: delta °C} (current - baseline) pour les
+                capteurs non encore flagués.
+        direction: "cool" | "heat".
+        threshold: écart minimal à la médiane (°C) pour flag.
+
+    Need au moins 2 capteurs pour qu'une comparaison ait du sens.
+    """
+    if len(deltas) < 2 or direction not in ("cool", "heat"):
+        return []
+    sorted_d = sorted(deltas.values())
+    n = len(sorted_d)
+    median = (
+        sorted_d[n // 2] if n % 2
+        else (sorted_d[n // 2 - 1] + sorted_d[n // 2]) / 2
+    )
+    lagging: list[str] = []
+    for eid, d in deltas.items():
+        if direction == "cool" and d - median >= threshold:
+            lagging.append(eid)
+        elif direction == "heat" and median - d >= threshold:
+            lagging.append(eid)
+    return lagging

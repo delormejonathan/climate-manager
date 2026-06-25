@@ -26,6 +26,8 @@ from .const import (
     CONF_ZONES,
     DOMAIN,
     OVERRIDE_DEBOUNCE_SECONDS,
+    SENSOR_LAG_MIN_DETECTION_SECONDS,
+    SENSOR_LAG_THRESHOLD_C,
     SETPOINT_NOOP_DELTA,
     UPDATE_INTERVAL_SECONDS,
     ProfileMode,
@@ -40,6 +42,7 @@ from .zone import (
     ZoneConfig,
     ZoneInputs,
     ZoneRuntimeState,
+    detect_lagging_sensors,
     utc_now_ts,
 )
 
@@ -107,11 +110,15 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict[str, Any]:
         for zone in self._zones.values():
-            inputs = self._gather_inputs(zone)
+            sensor_temps = self._read_sensor_temps(zone)
+            inputs = self._gather_inputs(zone, sensor_temps)
             self._maybe_seed_cycle_start_kwh(zone, inputs)
             prev_state = zone.state.state
             commands = zone.tick(inputs)
             self._maybe_close_last_session_kwh(zone, prev_state)
+            self._maybe_seed_sensor_baselines(zone, prev_state, sensor_temps)
+            self._maybe_detect_lagging_sensors(zone, inputs, sensor_temps)
+            self._maybe_clear_sensor_baselines(zone, prev_state)
             for cmd in commands:
                 await self._apply_command(cmd)
         await self._save_runtime_state_if_changed()
@@ -291,9 +298,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     # === Inputs gathering ===
 
-    def _gather_inputs(self, zone: Zone) -> ZoneInputs:
+    def _gather_inputs(
+        self, zone: Zone, sensor_temps: dict[str, float] | None = None
+    ) -> ZoneInputs:
         now = utc_now_ts()
-        room_temperature = self._average_temperature(zone.config.temperature_sensors)
+        if sensor_temps is None:
+            sensor_temps = self._read_sensor_temps(zone)
+        room_temperature = self._effective_room_temp(zone, sensor_temps)
         clim_state = self.hass.states.get(zone.config.climate_entity)
         clim_internal = None
         clim_hvac = STATE_OFF
@@ -339,6 +350,33 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             active_profile=active_profile,
         )
 
+    def _read_sensor_temps(self, zone: Zone) -> dict[str, float]:
+        """Lecture de chaque capteur de la zone, dict {entity_id: temp °C}."""
+        out: dict[str, float] = {}
+        for sid in zone.config.temperature_sensors:
+            st = self.hass.states.get(sid)
+            if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                continue
+            v = _as_float(st.state)
+            if v is not None:
+                out[sid] = v
+        return out
+
+    def _effective_room_temp(
+        self, zone: Zone, sensor_temps: dict[str, float]
+    ) -> float | None:
+        """Moyenne des capteurs **non flagués**. Si tous flagués, fallback sur
+        la moyenne globale (mieux que None car ça laisserait le tick passer
+        sans rien faire alors qu'il faut quand même réagir)."""
+        flagged = set(zone.state.flagged_sensors)
+        active = [t for sid, t in sensor_temps.items() if sid not in flagged]
+        if active:
+            return sum(active) / len(active)
+        if sensor_temps:
+            vals = list(sensor_temps.values())
+            return sum(vals) / len(vals)
+        return None
+
     def _average_temperature(self, sensors: list[str]) -> float | None:
         values: list[float] = []
         for sid in sensors:
@@ -377,6 +415,114 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         if not st:
             return False
         return st.state in absent_states
+
+    def _sensor_label(self, entity_id: str) -> str:
+        st = self.hass.states.get(entity_id)
+        if not st:
+            return entity_id
+        return st.attributes.get("friendly_name") or entity_id
+
+    # === Sensor lag detection ===
+
+    def _maybe_seed_sensor_baselines(
+        self, zone: Zone, prev_state: str, sensor_temps: dict[str, float]
+    ) -> None:
+        """À l'entrée en RUNNING, snapshot les valeurs courantes par capteur
+        comme référence de comparaison pour le reste du cycle."""
+        if prev_state == ZoneState.RUNNING:
+            return
+        if zone.state.state != ZoneState.RUNNING:
+            return
+        zone.state.cycle_baseline_temps = dict(sensor_temps)
+        zone.state.flagged_sensors = []
+        zone.state.notified_sensors = []
+
+    def _maybe_clear_sensor_baselines(self, zone: Zone, prev_state: str) -> None:
+        """À la sortie de RUNNING, on garde flagged_sensors visibles dans les
+        attrs (pour que l'utilisateur voie qui était isolé) mais on libère les
+        baselines (plus utiles). Reset complet au prochain démarrage."""
+        if prev_state == ZoneState.RUNNING and zone.state.state != ZoneState.RUNNING:
+            zone.state.cycle_baseline_temps = {}
+
+    def _maybe_detect_lagging_sensors(
+        self, zone: Zone, inputs: ZoneInputs, sensor_temps: dict[str, float]
+    ) -> None:
+        """Pendant RUNNING, après MIN_DETECTION_TIME, marquer les capteurs
+        qui ne suivent pas la médiane des autres."""
+        if zone.state.state != ZoneState.RUNNING:
+            return
+        start_ts = zone.state.cycle_started_ts
+        if start_ts is None:
+            return
+        elapsed = inputs.now_ts - start_ts
+        if elapsed < SENSOR_LAG_MIN_DETECTION_SECONDS:
+            return
+        if inputs.active_profile is None:
+            return
+        direction = inputs.active_profile.mode
+        baselines = zone.state.cycle_baseline_temps
+        flagged = set(zone.state.flagged_sensors)
+        deltas: dict[str, float] = {}
+        for sid, current in sensor_temps.items():
+            if sid in flagged:
+                continue
+            base = baselines.get(sid)
+            if base is None:
+                continue
+            deltas[sid] = current - base
+        lagging = detect_lagging_sensors(
+            deltas, direction, threshold=SENSOR_LAG_THRESHOLD_C
+        )
+        if not lagging:
+            return
+        for sid in lagging:
+            flagged.add(sid)
+            if sid not in zone.state.notified_sensors:
+                zone.state.notified_sensors.append(sid)
+                self._notify_sensor_lag(zone, sid, deltas[sid], direction)
+        zone.state.flagged_sensors = list(flagged)
+
+    def _notify_sensor_lag(
+        self, zone: Zone, sensor_id: str, delta: float, direction: str
+    ) -> None:
+        """Crée une persistent_notification + fire un event HA pour l'automation."""
+        st = self.hass.states.get(sensor_id)
+        label = (
+            st.attributes.get("friendly_name", sensor_id)
+            if st else sensor_id
+        )
+        action = "refroidissement" if direction == "cool" else "chauffage"
+        msg = (
+            f"Pendant le {action} de la zone **{zone.config.name}**, le capteur "
+            f"**{label}** n'a quasi pas bougé ({delta:+.1f}°C) alors que les autres "
+            f"capteurs de la zone réagissent normalement.\n\n"
+            f"Probablement porte fermée ou pièce isolée. Le capteur est exclu du "
+            f"calcul de la température moyenne jusqu'à la fin du cycle."
+        )
+        self.hass.async_create_task(
+            self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": f"Climate Manager — {zone.config.name} : capteur isolé",
+                    "message": msg,
+                    "notification_id": (
+                        f"climate_manager_lag_{zone.config.zone_id}_{sensor_id}"
+                    ),
+                },
+            )
+        )
+        self.hass.bus.async_fire(
+            "climate_manager_sensor_lagging",
+            {
+                "zone_id": zone.config.zone_id,
+                "zone_name": zone.config.name,
+                "sensor_id": sensor_id,
+                "sensor_name": label,
+                "delta": round(delta, 2),
+                "direction": direction,
+            },
+        )
 
     # === Session kWh tracking ===
 
@@ -510,6 +656,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "active_profile_name": active.name if active else None,
                 "active_profile_mode": active.mode if active else None,
                 "sessions": zone.state.completed_sessions,
+                "temperature_sensors": list(zone.config.temperature_sensors),
+                "flagged_sensors": list(zone.state.flagged_sensors),
+                "flagged_sensors_labels": [
+                    self._sensor_label(sid) for sid in zone.state.flagged_sensors
+                ],
                 "has_consumption_sensor": bool(
                     zone.config.consumption_sensor_cool
                     or zone.config.consumption_sensor_heat

@@ -53,6 +53,10 @@ SETPOINT_NOOP_DELTA = 0.5
 CONTEXT_WINDOW_SECONDS = 30
 OVERRIDE_DEBOUNCE_SECONDS = 2
 
+# Sensor lag detection (porte fermée, pièce isolée)
+SENSOR_LAG_MIN_DETECTION_SECONDS = 20 * 60  # attendre 20min après start avant de juger
+SENSOR_LAG_THRESHOLD_C = 0.5  # écart à la médiane pour considérer qu'un capteur lag
+
 # Boost
 BOOST_DURATION_MIN = 15
 BOOST_OFFSET = 5.0
