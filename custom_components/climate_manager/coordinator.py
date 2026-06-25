@@ -28,17 +28,26 @@ from .const import (
     OVERRIDE_DEBOUNCE_SECONDS,
     SETPOINT_NOOP_DELTA,
     UPDATE_INTERVAL_SECONDS,
+    ProfileMode,
     ZoneMode,
     ZoneState,
 )
 from .context_tracker import ContextTracker
-from .zone import Command, Profile, Zone, ZoneConfig, ZoneInputs, ZoneRuntimeState, utc_now_ts
+from .zone import (
+    Command,
+    Profile,
+    Zone,
+    ZoneConfig,
+    ZoneInputs,
+    ZoneRuntimeState,
+    utc_now_ts,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class DelormejClimateCoordinator(DataUpdateCoordinator):
-    """Owns Zone state machines, ticks them, applies commands."""
+    """Tick chaque zone, applique les commandes, persiste l'état."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
@@ -51,25 +60,14 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._context_tracker = ContextTracker()
         self._zones: dict[str, Zone] = {}
         self._unsub_state_listener = None
-        # Per-entity debounced override decisions. Each entry holds the original
-        # old_state (from the first event in a flap burst), the latest new_state,
-        # and the asyncio TimerHandle that will fire _resolve_pending_override.
         self._pending_overrides: dict[str, dict[str, Any]] = {}
-        # Runtime persistence — one Store per entry, keyed by zone_id.
-        # The completed cycle history used to be the only persisted payload; now
-        # we also persist in-progress state (RUNNING/STABILIZING/COOLDOWN and
-        # timestamps) so HA restarts are idempotent.
         self._runtime_store: Store = Store(
-            hass, 2, f"{DOMAIN}_runtime_{entry.entry_id}"
-        )
-        # Backward-compat reader for pre-v0.17.3 history-only payloads.
-        self._legacy_cycle_store: Store = Store(
-            hass, 1, f"{DOMAIN}_cycles_{entry.entry_id}"
+            hass, 3, f"{DOMAIN}_runtime_{entry.entry_id}"
         )
         self._last_runtime_payload: dict[str, Any] | None = None
         self._rebuild_zones()
 
-    # === Public API for platforms ===
+    # === Public API ===
 
     @property
     def zones(self) -> dict[str, Zone]:
@@ -78,8 +76,17 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     def zone(self, zone_id: str) -> Zone | None:
         return self._zones.get(zone_id)
 
+    def update_zone_profiles(self, zone_id: str, profiles: list[dict[str, Any]]) -> None:
+        """Remplace la cascade de profils d'une zone."""
+        zone = self._zones.get(zone_id)
+        if not zone:
+            return
+        parsed = [Profile.from_dict(p) for p in profiles]
+        zone.config.profiles = parsed
+        self._persist_zone_config(zone_id, profiles=[p.to_dict() for p in parsed])
+        self.async_set_updated_data(self._build_coordinator_data())
+
     def update_zone_config(self, zone_id: str, **kwargs: Any) -> None:
-        """Update a zone's static config (e.g. thresholds from number entities)."""
         zone = self._zones.get(zone_id)
         if not zone:
             return
@@ -89,65 +96,32 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._persist_zone_config(zone_id, **kwargs)
         self.async_set_updated_data(self._build_coordinator_data())
 
-    def update_zone_profiles(self, zone_id: str, profiles: list[dict[str, Any]]) -> None:
-        """Replace the cascade of profiles for a zone (called by the card via service).
-
-        Persists the full list to ConfigEntry.options and hot-reloads the
-        zone's in-memory config — the active cycle is preserved (we do not
-        rebuild the Zone, only swap the profile list).
-        """
-        zone = self._zones.get(zone_id)
-        if not zone:
-            return
-        parsed = [Profile.from_dict(p) for p in profiles]
-        zone.config.profiles = parsed
-        self._persist_zone_config(zone_id, profiles=[p.to_dict() for p in parsed])
-        self.async_set_updated_data(self._build_coordinator_data())
-
     async def async_tick_now(self) -> None:
-        """Force an immediate tick (used after a service call)."""
         await self.async_request_refresh()
 
     # === DataUpdateCoordinator hooks ===
 
     async def _async_setup(self) -> None:
-        """Register state-change listeners — called once before first refresh."""
         await self._load_runtime_state()
         await self._setup_state_listeners()
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Tick all zones."""
         for zone in self._zones.values():
             inputs = self._gather_inputs(zone)
+            self._maybe_seed_cycle_start_kwh(zone, inputs)
+            prev_state = zone.state.state
             commands = zone.tick(inputs)
+            self._maybe_close_last_session_kwh(zone, prev_state)
             for cmd in commands:
                 await self._apply_command(cmd)
         await self._save_runtime_state_if_changed()
         return self._build_coordinator_data()
 
     async def _load_runtime_state(self) -> None:
-        """Restore per-zone runtime state from disk.
-
-        v0.17.3+ stores the full ZoneRuntimeState under ``zones``. Older
-        releases stored only completed cycle history in ``*_cycles_*``; if no
-        runtime payload exists yet, import that history so the UI does not lose
-        past sessions on upgrade.
-        """
         data = await self._runtime_store.async_load() or {}
         zones_data = data.get("zones", {}) if isinstance(data, dict) else {}
-
-        if zones_data:
-            for zid, zone in self._zones.items():
-                restored = ZoneRuntimeState.from_dict(zones_data.get(zid))
-                # Keep the fresh ZoneConfig, restore only runtime.
-                zone.state = restored
-            self._last_runtime_payload = self._runtime_payload()
-            return
-
-        legacy = await self._legacy_cycle_store.async_load() or {}
-        legacy_zones = legacy.get("zones", {}) if isinstance(legacy, dict) else {}
         for zid, zone in self._zones.items():
-            zone.state.completed_cycles = list(legacy_zones.get(zid, []))
+            zone.state = ZoneRuntimeState.from_dict(zones_data.get(zid))
         self._last_runtime_payload = self._runtime_payload()
 
     def _runtime_payload(self) -> dict[str, Any]:
@@ -156,20 +130,14 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         }
 
     async def _save_runtime_state_if_changed(self) -> None:
-        """Persist runtime state when it changed since the last tick.
-
-        This is deliberately broader than completed-history persistence: timed
-        phases and cycle anchors are safety-critical after a HA restart.
-        """
         payload = self._runtime_payload()
         if payload != self._last_runtime_payload:
             await self._runtime_store.async_save(payload)
             self._last_runtime_payload = payload
 
-    # === Zone setup / rebuild ===
+    # === Zone setup ===
 
     def _rebuild_zones(self) -> None:
-        """(Re)build zones from ConfigEntry.options['zones']."""
         zones_cfg = self.entry.options.get(CONF_ZONES, [])
         new_zones: dict[str, Zone] = {}
         for cfg_dict in zones_cfg:
@@ -181,12 +149,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._zones = new_zones
 
     async def _setup_state_listeners(self) -> None:
-        """Re-register state listeners on each rebuild."""
         if self._unsub_state_listener:
             self._unsub_state_listener()
             self._unsub_state_listener = None
-        # A rebuild invalidates any pending override decisions: the zones may
-        # be different, and we'd resolve against a stale Zone reference.
         self._cancel_pending_overrides()
         if not self._zones:
             return
@@ -196,35 +161,23 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         )
 
     async def async_reload_zones(self) -> None:
-        """Rebuild zones (after a config update)."""
         self._rebuild_zones()
         await self._setup_state_listeners()
         await self.async_request_refresh()
 
-    # === State listener: detect external overrides ===
+    # === State listener: external override detection ===
 
-    # Attributes on a climate.* entity that a user (or app) actively chooses.
-    # A change to current_temperature, last_updated, etc. is the integration's
-    # own polling — NOT an override. Detecting override on those was the v0.1.x
-    # bug where every Daikin poll silently flipped the zone to MANUAL_OVERRIDE_TIMED.
-    _OVERRIDE_TRIGGER_ATTRS = frozenset(
-        {
-            "temperature",  # setpoint
-            "fan_mode",
-            "swing_mode",
-            "swing_horizontal_mode",
-            "preset_mode",
-            "target_temp_high",
-            "target_temp_low",
-        }
-    )
+    _OVERRIDE_TRIGGER_ATTRS = frozenset({
+        "temperature", "fan_mode", "swing_mode", "swing_horizontal_mode",
+        "preset_mode", "target_temp_high", "target_temp_low",
+    })
 
     @callback
     def _on_clim_state_changed(self, event: Event[EventStateChangedData]) -> None:
         entity_id = event.data["entity_id"]
         new_state = event.data.get("new_state")
         old_state = event.data.get("old_state")
-        if new_state is None:
+        if new_state is None or old_state is None:
             return
         zone = next(
             (z for z in self._zones.values() if z.config.climate_entity == entity_id), None
@@ -233,19 +186,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             return
         if self._context_tracker.is_ours(event.context):
             return
-        # Did anything user-actionable actually change? If old_state is None this
-        # is the initial state (HA boot or integration reload) — not an override.
-        if old_state is None:
-            return
         if old_state.state == new_state.state and not self._user_action_changed(
             old_state, new_state
         ):
             return
-        # Debounce: the Daikin BRP integration occasionally emits temperature
-        # flaps (X→Y→X) on poll, in two events at the same timestamp. Reacting
-        # to the first wrongly trips MANUAL_OVERRIDE_TIMED. Coalesce events per
-        # entity, then at fire time compare the cumulative diff to what we last
-        # commanded — if it's an echo of our intent, ignore it.
+        # Debounce flap (X→Y→X) du polling Daikin BRP
         pending = self._pending_overrides.get(entity_id)
         if pending is None:
             pending = {"old_state": old_state, "new_state": new_state, "handle": None}
@@ -263,24 +208,20 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     @callback
     def _resolve_pending_override(self, entity_id: str, zone: Zone) -> None:
-        """Fire after the debounce window. Decide if it's a real override."""
         pending = self._pending_overrides.pop(entity_id, None)
         if pending is None:
             return
         old_state = pending["old_state"]
         new_state = pending["new_state"]
-        # Echo check: latest state matches what we last commanded → no override.
         if _is_echo_of_intent(zone, new_state.attributes or {}):
             return
-        # Cumulative diff: in the X→Y→X flap, old.temperature == new.temperature
-        # so _user_action_changed returns False here and we bail.
         if old_state.state == new_state.state and not self._user_action_changed(
             old_state, new_state
         ):
             return
         now = utc_now_ts()
-        schedule_on = self._active_profile(zone) is not None
-        zone.on_external_override(now, schedule_on)
+        profile_active = self._active_profile(zone) is not None
+        zone.on_external_override(now, profile_active)
         self.hass.async_create_task(self.async_request_refresh())
 
     def _cancel_pending_overrides(self) -> None:
@@ -298,7 +239,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         await super().async_shutdown()
 
     def _user_action_changed(self, old_state, new_state) -> bool:
-        """Return True iff a user-actionable attribute differs between old and new."""
         old_attrs = old_state.attributes or {}
         new_attrs = new_state.attributes or {}
         for attr in self._OVERRIDE_TRIGGER_ATTRS:
@@ -318,55 +258,38 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         except Exception:
             _LOGGER.exception("Failed to call %s.%s with %s", cmd.domain, cmd.service, cmd.data)
 
-    # === Inputs gathering ===
+    # === Profile cascade ===
 
     def _active_profile(self, zone: Zone) -> Profile | None:
-        """Return the first profile whose gate matches the current state, or None.
-
-        Cascade rules:
-        - A profile's schedule entity must be ON (or be None, meaning "always on")
-        - If presence_entity is set, its current state must be in the
-          presence_required_state (str or list of str). Both being None means
-          no presence condition.
-
-        Order matters: the user puts the more specific conditions (e.g. needing
-        absence) at the top of the list, and a generic fallback last.
-        """
+        """Premier profil dont les gates matchent (time window + présence)."""
         for p in zone.config.profiles:
-            if not self._profile_schedule_on(p):
+            if not self._profile_time_window_on(p):
                 continue
             if not self._profile_presence_match(p):
                 continue
             return p
         return None
 
-    def _profile_schedule_on(self, p: Profile) -> bool:
-        # Inline time window — independent of schedule_entity. Both must
-        # be ON when both are set, so users can combine "weekdays from a
-        # schedule.* helper" with "between 08:00 and 22:00 only".
-        if p.active_from or p.active_to:
-            now_local = dt_util.now()
-            if not p.time_window_contains(now_local.hour, now_local.minute):
-                return False
-        if not p.schedule_entity:
+    def _profile_time_window_on(self, p: Profile) -> bool:
+        if not p.active_from and not p.active_to:
             return True
-        st = self.hass.states.get(p.schedule_entity)
-        if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return True  # fail-open like _read_schedule_on for the zone-level entity
-        return st.state == STATE_ON
+        now_local = dt_util.now()
+        return p.time_window_contains(now_local.hour, now_local.minute)
 
     def _profile_presence_match(self, p: Profile) -> bool:
         if not p.presence_entity:
             return True
         required = p.presence_required_state
-        if required is None:
+        if required is None or required == "" or required == []:
             return True
         st = self.hass.states.get(p.presence_entity)
         if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return False  # fail-closed on presence: don't assume the condition holds
+            return False
         if isinstance(required, str):
             return st.state == required
         return st.state in required
+
+    # === Inputs gathering ===
 
     def _gather_inputs(self, zone: Zone) -> ZoneInputs:
         now = utc_now_ts()
@@ -378,7 +301,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         clim_fan = None
         clim_swing = None
         clim_last_changed_ts: float | None = None
-        # Capability flags — default permissive when we have no state yet
         supports_cool = True
         supports_heat = True
         supports_fan_mode = True
@@ -408,9 +330,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             clim_current_setpoint=clim_setpoint,
             clim_current_fan_mode=clim_fan,
             clim_current_swing_mode=clim_swing,
-            schedule_is_on=active_profile is not None,
             any_window_open=self._any_window_open(zone),
-            house_is_absent=self._house_is_absent(),
             supports_cool=supports_cool,
             supports_heat=supports_heat,
             supports_fan_mode=supports_fan_mode,
@@ -432,29 +352,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             return None
         return sum(values) / len(values)
 
-    def _schedule_next_event(self, zone: Zone) -> str | None:
-        """ISO timestamp of the next schedule transition, or None.
-
-        With multi-profile, we surface the next transition of the *currently
-        active* profile's schedule if there is one; otherwise the first
-        upcoming transition across the configured profiles.
-        """
-        active = self._active_profile(zone)
-        candidates = []
-        if active and active.schedule_entity:
-            candidates.append(active.schedule_entity)
-        for p in zone.config.profiles:
-            if p.schedule_entity and p.schedule_entity not in candidates:
-                candidates.append(p.schedule_entity)
-        for ent in candidates:
-            st = self.hass.states.get(ent)
-            if not st:
-                continue
-            nxt = st.attributes.get("next_event")
-            if nxt:
-                return str(nxt)
-        return None
-
     def _any_window_open(self, zone: Zone) -> bool:
         for ent in zone.config.window_sensors:
             st = self.hass.states.get(ent)
@@ -463,7 +360,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         return False
 
     def _window_counts(self, zone: Zone) -> tuple[int, int]:
-        """Return (open_count, total_count) for the zone's window sensors."""
         total = len(zone.config.window_sensors)
         open_n = 0
         for ent in zone.config.window_sensors:
@@ -482,10 +378,81 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             return False
         return st.state in absent_states
 
+    # === Session kWh tracking ===
+
+    def _consumption_sensor_for(self, zone: Zone, active_profile: Profile | None) -> str | None:
+        if active_profile is None:
+            return None
+        if active_profile.mode == ProfileMode.COOL:
+            return zone.config.consumption_sensor_cool
+        return zone.config.consumption_sensor_heat
+
+    def _read_kwh(self, entity_id: str | None) -> float | None:
+        if not entity_id:
+            return None
+        st = self.hass.states.get(entity_id)
+        if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        return _as_float(st.state)
+
+    def _maybe_seed_cycle_start_kwh(self, zone: Zone, inputs: ZoneInputs) -> None:
+        """Snapshot le compteur kWh juste avant qu'on entre en RUNNING."""
+        if zone.state.state != ZoneState.IDLE:
+            return
+        if inputs.active_profile is None or inputs.room_temperature is None:
+            return
+        # On ne snapshot que si le tick va probablement transitionner.
+        p = inputs.active_profile
+        will_start = (
+            (p.mode == ProfileMode.COOL and inputs.room_temperature >= p.seuil_demarrage)
+            or (p.mode == ProfileMode.HEAT and inputs.room_temperature <= p.seuil_demarrage)
+        )
+        if not will_start:
+            return
+        sensor = self._consumption_sensor_for(zone, p)
+        kwh = self._read_kwh(sensor)
+        # On l'écrit ; sera utilisé par Zone._finalize_session.
+        zone.state.cycle_start_kwh = kwh
+
+    def _maybe_close_last_session_kwh(self, zone: Zone, prev_state: str) -> None:
+        """Si une session vient d'être finalisée par Zone.tick, patcher
+        kwh_end et kwh_consumed."""
+        if not zone.state.completed_sessions:
+            return
+        last = zone.state.completed_sessions[-1]
+        if last.get("kwh_end") is not None:
+            return  # déjà patché
+        # On ne snapshot la fin que si la session vient d'être ajoutée ce tick.
+        # Heuristique : prev_state == RUNNING et state != RUNNING.
+        if prev_state != ZoneState.RUNNING or zone.state.state == ZoneState.RUNNING:
+            return
+        # Détecter quel sensor : utiliser le mode du profil au démarrage.
+        # On le retrouve via profile_name si possible, sinon on essaye cool en priorité.
+        cool_sensor = zone.config.consumption_sensor_cool
+        heat_sensor = zone.config.consumption_sensor_heat
+        # Match profile_name → mode via la cascade
+        profile_name = last.get("profile_name")
+        mode = None
+        for p in zone.config.profiles:
+            if p.name == profile_name:
+                mode = p.mode
+                break
+        sensor = cool_sensor if mode == ProfileMode.COOL else heat_sensor
+        kwh_end = self._read_kwh(sensor)
+        if kwh_end is None:
+            return
+        last["kwh_end"] = kwh_end
+        start_kwh = last.get("kwh_start")
+        if start_kwh is not None and isinstance(start_kwh, (int, float)):
+            delta = kwh_end - start_kwh
+            if delta < 0:
+                # Compteur a reset (changement d'année) — on n'invente rien.
+                delta = None
+            last["kwh_consumed"] = delta
+
     # === Persistence of mutable zone config ===
 
     def _persist_zone_config(self, zone_id: str, **kwargs: Any) -> None:
-        """Save changed zone fields back to ConfigEntry.options."""
         zones = list(self.entry.options.get(CONF_ZONES, []))
         for i, z in enumerate(zones):
             if z.get("id") == zone_id:
@@ -500,47 +467,20 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         out: dict[str, Any] = {"zones": {}}
         for zid, zone in self._zones.items():
             inputs = self._gather_inputs(zone)
-            # Derived: when we entered the current state, and (for timed states)
-            # when we'll leave it. Exposing these lets the Lovelace card render
-            # narrative timers like "stabilisation jusqu'à 11:25".
             entered_ts = zone.state.last_state_transition_ts or None
-            stabilization_ends_ts = None
-            cooldown_ends_ts = None
-            if zone.state.state == ZoneState.STABILIZING and entered_ts:
-                # Match the per-profile override used in Zone._maybe_advance_…
-                stab_minutes = zone.config.duree_stabilisation_min
-                if inputs.active_profile and inputs.active_profile.duree_stabilisation_min is not None:
-                    stab_minutes = inputs.active_profile.duree_stabilisation_min
-                stabilization_ends_ts = entered_ts + stab_minutes * 60
-            if zone.state.state == ZoneState.COOLDOWN and entered_ts:
-                cooldown_ends_ts = entered_ts + zone.config.duree_cooldown_min * 60
+            active = inputs.active_profile
 
-            # Direction & target temperature inferred from underlying clim mode
-            # (more reliable than guessing from thresholds + room temp).
-            # Thresholds come from the active profile when there is one;
-            # fallback to zone defaults if not (e.g. zone idle without a
-            # matching profile, or transition gap).
-            active = inputs.active_profile or zone.config.profiles[0]
-            clim_mode = inputs.clim_current_hvac_mode
             direction: str | None = None
             target_temperature: float | None = None
-            if clim_mode == "cool":
-                direction = "cool"
-                target_temperature = active.seuil_fin_refroidissement
-            elif clim_mode == "heat":
-                direction = "heat"
-                target_temperature = active.seuil_fin_chauffage
-            elif zone.state.state in (ZoneState.STARTING, ZoneState.RUNNING):
-                rt = inputs.room_temperature
-                if rt is not None and rt > active.seuil_debut_refroidissement:
-                    direction, target_temperature = "cool", active.seuil_fin_refroidissement
-                elif rt is not None and rt < active.seuil_debut_chauffage:
-                    direction, target_temperature = "heat", active.seuil_fin_chauffage
+            seuil_demarrage: float | None = None
+            if active is not None:
+                direction = "cool" if active.mode == ProfileMode.COOL else "heat"
+                target_temperature = active.target
+                seuil_demarrage = active.seuil_demarrage
 
             out["zones"][zid] = {
                 "config": zone.config,
                 "state": zone.state.state,
-                "regime": zone.state.regime,
                 "mode": zone.state.mode,
                 "room_temperature": inputs.room_temperature,
                 "clim_internal_temperature": inputs.clim_internal_temperature,
@@ -548,38 +488,32 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "last_setpoint_sent": zone.state.last_setpoint_sent,
                 "override_until_ts": zone.state.override_until_ts,
                 "boost_until_ts": zone.state.boost_until_ts,
-                "schedule_on": inputs.schedule_is_on,
                 "any_window_open": inputs.any_window_open,
-                "house_is_absent": inputs.house_is_absent,
+                "house_is_absent": self._house_is_absent(),
                 "in_override": zone.state.state
                 in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE),
                 "is_off_mode": zone.state.mode == ZoneMode.OFF,
                 "state_entered_ts": entered_ts,
-                "stabilization_ends_ts": stabilization_ends_ts,
-                "cooldown_ends_ts": cooldown_ends_ts,
                 "cycle_started_ts": zone.state.cycle_started_ts,
                 "direction": direction,
                 "target_temperature": target_temperature,
-                "aggressivity": zone.config.aggressivity,  # legacy alias
-                "power": active.power,
-                "fan_intensity": active.fan_intensity,
+                "seuil_demarrage": seuil_demarrage,
+                "power": active.power if active else None,
+                "fan_intensity": active.fan_intensity if active else None,
                 "supports_cool": inputs.supports_cool,
                 "supports_heat": inputs.supports_heat,
                 "supports_fan_mode": inputs.supports_fan_mode,
                 "supports_windnice": inputs.supports_windnice,
-                "schedule_next_event": self._schedule_next_event(zone),
                 "windows_open": self._window_counts(zone)[0],
                 "windows_total": self._window_counts(zone)[1],
-                # Profiles surfaced for the card §2: list of profiles in priority
-                # order + the name of the currently active one (or None when no
-                # profile matches → zone gated off).
                 "profiles": [p.to_dict() for p in zone.config.profiles],
-                "active_profile_name": (
-                    inputs.active_profile.name if inputs.active_profile else None
+                "active_profile_name": active.name if active else None,
+                "active_profile_mode": active.mode if active else None,
+                "sessions": zone.state.completed_sessions,
+                "has_consumption_sensor": bool(
+                    zone.config.consumption_sensor_cool
+                    or zone.config.consumption_sensor_heat
                 ),
-                # Historical cycles for §5 of the card. List of dicts, newest
-                # at the end; coordinator persists across HA restarts.
-                "cycle_history": zone.state.completed_cycles,
             }
         return out
 
@@ -594,15 +528,7 @@ def _as_float(value: Any) -> float | None:
 
 
 def _is_echo_of_intent(zone: Zone, new_attrs: dict[str, Any]) -> bool:
-    """Pure helper: True iff the post-debounce attributes match what the zone
-    last commanded — i.e. this state_changed burst is just the Daikin
-    integration echoing our own writes back at us.
-
-    We only consider it an echo when *every* attribute we have an intent for
-    matches. Attributes we never set (preset_mode, swing_horizontal_mode,
-    target_temp_high/low) are not considered: any movement on those still
-    counts as a user action and falls through to the cumulative-diff check.
-    """
+    """True si les attributs post-debounce matchent ce qu'on a écrit nous-mêmes."""
     last_sp = zone.state.last_setpoint_sent
     if last_sp is None:
         return False

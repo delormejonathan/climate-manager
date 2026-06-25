@@ -1,4 +1,4 @@
-"""Button platform: boost + reset_override per zone."""
+"""Button platform: boost + reset_override + force_start per zone."""
 
 from __future__ import annotations
 
@@ -7,24 +7,14 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, ProfileMode
 from .coordinator import DelormejClimateCoordinator
 from .entity_base import DelormejClimateZoneEntity
 from .zone import Zone, utc_now_ts
 
 
 def _infer_boost_direction(zone: Zone, zone_data: dict) -> str | None:
-    """Pick a boost direction (cool/heat) for a zone when the user clicks the
-    Boost button. Prefers a clear signal, falls back to a heuristic:
-      1. If the integration already has a direction set (zone running or
-         force-started), use it.
-      2. If the clim is already heating/cooling, follow that.
-      3. If only one side is supported (heat-only or cool-only), use it.
-      4. Otherwise compare room temp to thresholds: the side whose start
-         threshold is closer wins. Tie → cool (summer is the common case).
-    Returns None only when the zone is completely undetermined (no room
-    temp, no capabilities) — caller should treat that as 'don't change'.
-    """
+    """Choisir cool ou heat pour un boost manuel."""
     if zone_data.get("direction") in ("cool", "heat"):
         return zone_data["direction"]
     supports_cool = zone_data.get("supports_cool", True)
@@ -33,13 +23,11 @@ def _infer_boost_direction(zone: Zone, zone_data: dict) -> str | None:
         return "cool"
     if supports_heat and not supports_cool:
         return "heat"
-    room = zone_data.get("room_temperature")
-    if room is None:
-        return None
-    cfg = zone.config
-    d_cool = cfg.seuil_debut_refroidissement - room
-    d_heat = room - cfg.seuil_debut_chauffage
-    return "cool" if d_cool <= d_heat else "heat"
+    # Si un profil est configuré, suivre son mode
+    if zone.config.profiles:
+        first = zone.config.profiles[0]
+        return "cool" if first.mode == ProfileMode.COOL else "heat"
+    return "cool"
 
 
 async def async_setup_entry(
@@ -108,7 +96,9 @@ class ZoneForceStartCoolButton(DelormejClimateZoneEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        return super().available and bool(self._zone_data and self._zone_data.get("supports_cool", True))
+        return super().available and bool(
+            self._zone_data and self._zone_data.get("supports_cool", True)
+        )
 
     async def async_press(self) -> None:
         zone = self.coordinator.zone(self._zone_id)
@@ -131,7 +121,9 @@ class ZoneForceStartHeatButton(DelormejClimateZoneEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        return super().available and bool(self._zone_data and self._zone_data.get("supports_heat", True))
+        return super().available and bool(
+            self._zone_data and self._zone_data.get("supports_heat", True)
+        )
 
     async def async_press(self) -> None:
         zone = self.coordinator.zone(self._zone_id)

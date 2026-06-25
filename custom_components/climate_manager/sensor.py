@@ -24,7 +24,6 @@ async def async_setup_entry(
     for zid in coord.zones:
         entities += [
             ZoneStateSensor(coord, zid),
-            ZoneRegimeSensor(coord, zid),
             ZoneRoomTemperatureSensor(coord, zid),
             ZoneSetpointSentSensor(coord, zid),
             ZoneOverrideUntilSensor(coord, zid),
@@ -50,51 +49,33 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
         if not d:
             return None
         attrs = {
-            "schedule_on": d.get("schedule_on"),
             "any_window_open": d.get("any_window_open"),
             "house_is_absent": d.get("house_is_absent"),
             "in_override": d.get("in_override"),
             "direction": d.get("direction"),
             "target_temperature": d.get("target_temperature"),
-            "aggressivity": d.get("aggressivity"),
+            "seuil_demarrage": d.get("seuil_demarrage"),
             "power": d.get("power"),
             "fan_intensity": d.get("fan_intensity"),
             "supports_cool": d.get("supports_cool", True),
             "supports_heat": d.get("supports_heat", True),
-            "schedule_next_event": d.get("schedule_next_event"),
             "windows_open": d.get("windows_open"),
             "windows_total": d.get("windows_total"),
             "profiles": d.get("profiles", []),
             "active_profile_name": d.get("active_profile_name"),
-            "cycle_history": d.get("cycle_history", []),
-            "last_completed_cycle": (
-                d.get("cycle_history")[-1] if d.get("cycle_history") else None
+            "active_profile_mode": d.get("active_profile_mode"),
+            "sessions": d.get("sessions", []),
+            "last_session": (
+                d.get("sessions")[-1] if d.get("sessions") else None
             ),
+            "has_consumption_sensor": d.get("has_consumption_sensor", False),
             "zone_id": self._zone_id,
         }
-        for ts_key in (
-            "state_entered_ts",
-            "stabilization_ends_ts",
-            "cooldown_ends_ts",
-            "cycle_started_ts",
-        ):
+        for ts_key in ("state_entered_ts", "cycle_started_ts"):
             ts = d.get(ts_key)
             if ts:
                 attrs[ts_key.replace("_ts", "_at")] = datetime.fromtimestamp(ts, tz=UTC).isoformat()
         return attrs
-
-
-class ZoneRegimeSensor(DelormejClimateZoneEntity, SensorEntity):
-    _attr_translation_key = "zone_regime"
-    _attr_icon = "mdi:gauge"
-
-    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
-        super().__init__(coord, zone_id, "regime")
-
-    @property
-    def native_value(self) -> str | None:
-        d = self._zone_data
-        return d["regime"] if d else None
 
 
 class ZoneRoomTemperatureSensor(DelormejClimateZoneEntity, SensorEntity):

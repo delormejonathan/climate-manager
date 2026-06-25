@@ -1,6 +1,6 @@
 set_mode:
   name: Set zone mode
-  description: Change the mode of a zone (auto / off / boost).
+  description: Change le mode global d'une zone (auto / off / boost).
   fields:
     zone_id:
       name: Zone ID
@@ -50,6 +50,40 @@ boost:
       required: true
       selector:
         text:
+
+force_start:
+  name: Démarrer maintenant
+  description: Démarre un cycle (cool ou heat) sans attendre le franchissement du seuil.
+  fields:
+    zone_id:
+      name: Zone ID
+      required: true
+      selector:
+        text:
+    direction:
+      name: Direction
+      required: true
+      selector:
+        select:
+          options:
+            - cool
+            - heat
+
+update_profiles:
+  name: Mettre à jour les profils
+  description: Remplace la cascade des profils d'une zone.
+  fields:
+    zone_id:
+      name: Zone ID
+      required: true
+      selector:
+        text:
+    profiles:
+      name: Profils
+      description: Liste des profils (cascade).
+      required: true
+      selector:
+        object:
 
 reload_zones:
   name: Reload zones

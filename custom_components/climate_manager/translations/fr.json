@@ -15,7 +15,7 @@
     "step": {
       "init": {
         "title": "Climate Manager",
-        "description": "Choisis une action. Les seuils, planning et présence se règlent ensuite **par profil** dans la carte Lovelace, pas ici.",
+        "description": "Choisis une action. Les profils (créneau horaire, seuil, target, puissance, ventilation, présence) se règlent ensuite dans la carte Lovelace.",
         "menu_options": {
           "add_zone": "Ajouter une zone",
           "edit_zone": "Modifier une zone",
@@ -33,14 +33,14 @@
       },
       "add_zone": {
         "title": "Ajouter une zone",
-        "description": "Identité de la zone + timings. Les seuils, le planning et la présence sont gérés par profil dans la carte.",
+        "description": "Identité matérielle de la zone. Les profils se créent dans la carte Lovelace.",
         "data": {
           "name": "Nom de la zone",
           "climate_entity": "Entité clim associée",
           "temperature_sensors": "Capteurs de température (moyenne)",
           "window_sensors": "Capteurs de fenêtres (optionnel)",
-          "duree_stabilisation_min": "Durée stabilisation",
-          "duree_cooldown_min": "Durée cooldown",
+          "consumption_sensor_cool": "Capteur de conso clim (cool, kWh — optionnel)",
+          "consumption_sensor_heat": "Capteur de conso clim (heat, kWh — optionnel)",
           "override_duree_min": "Durée override manuel"
         }
       },
@@ -52,14 +52,14 @@
       },
       "edit_zone_form": {
         "title": "Modifier la zone",
-        "description": "Les profils (seuils, planning, présence, puissance, ventilation) se modifient dans la carte Lovelace § Profils.",
+        "description": "Les profils (créneau, seuils, target, puissance, ventilation, présence) se modifient dans la carte Lovelace.",
         "data": {
           "name": "Nom de la zone",
           "climate_entity": "Entité clim associée",
           "temperature_sensors": "Capteurs de température (moyenne)",
           "window_sensors": "Capteurs de fenêtres (optionnel)",
-          "duree_stabilisation_min": "Durée stabilisation",
-          "duree_cooldown_min": "Durée cooldown",
+          "consumption_sensor_cool": "Capteur de conso clim (cool, kWh — optionnel)",
+          "consumption_sensor_heat": "Capteur de conso clim (heat, kWh — optionnel)",
           "override_duree_min": "Durée override manuel"
         }
       },
@@ -81,23 +81,10 @@
         "name": "État",
         "state": {
           "idle": "Inactif",
-          "starting": "Démarrage",
           "running": "Actif",
-          "stabilizing": "Stabilisation",
-          "cooldown": "Cooldown",
-          "schedule_off": "Planning fermé",
           "manual_override_timed": "Override (timed)",
           "manual_override_free": "Override (libre)",
           "window_open": "Fenêtre ouverte"
-        }
-      },
-      "zone_regime": {
-        "name": "Régime",
-        "state": {
-          "none": "Aucun",
-          "attaque": "Attaque",
-          "stabilisation": "Stabilisation",
-          "boost": "Boost"
         }
       },
       "zone_room_temperature": {
@@ -123,43 +110,9 @@
           "off": "Off",
           "boost": "Boost"
         }
-      },
-      "zone_power": {
-        "name": "Puissance",
-        "state": {
-          "doux": "Doux",
-          "normal": "Normal",
-          "agressif": "Agressif"
-        }
-      },
-      "zone_fan_intensity": {
-        "name": "Ventilation",
-        "state": {
-          "doux": "Doux",
-          "normal": "Normal",
-          "fort": "Fort"
-        }
       }
     },
     "number": {
-      "seuil_debut_chauffage": {
-        "name": "Seuil début chauffage"
-      },
-      "seuil_fin_chauffage": {
-        "name": "Seuil fin chauffage"
-      },
-      "seuil_debut_refroidissement": {
-        "name": "Seuil début refroidissement"
-      },
-      "seuil_fin_refroidissement": {
-        "name": "Seuil fin refroidissement"
-      },
-      "duree_stabilisation_min": {
-        "name": "Durée stabilisation"
-      },
-      "duree_cooldown_min": {
-        "name": "Durée cooldown"
-      },
       "override_duree_min": {
         "name": "Durée override"
       }
@@ -196,9 +149,17 @@
       "name": "Boost 15 min",
       "description": "Active le mode boost pour 15 minutes."
     },
+    "force_start": {
+      "name": "Démarrer maintenant",
+      "description": "Démarre un cycle (cool ou heat) sans attendre le franchissement du seuil."
+    },
     "reload_zones": {
       "name": "Recharger les zones",
       "description": "Recharge la configuration sans redémarrer HA."
+    },
+    "update_profiles": {
+      "name": "Mettre à jour les profils",
+      "description": "Remplace la cascade des profils d'une zone."
     }
   }
 }
