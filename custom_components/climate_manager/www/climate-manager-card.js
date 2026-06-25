@@ -1439,38 +1439,37 @@ const STYLES = `
   }
   .dc-hero-row {
     display: flex; align-items: baseline; justify-content: center;
-    gap: 12px; margin-bottom: 8px;
+    gap: 14px; margin-bottom: 8px;
   }
-  .dc-hero .room {
-    font-size: 56px; font-weight: 600;
+  .dc-hero .room,
+  .dc-hero .target-block {
+    font-size: 48px; font-weight: 500;
     line-height: 1;
-    letter-spacing: -0.025em;
-    color: var(--dc-fg);
+    letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
   }
-  .dc-hero .room .unit {
-    font-size: 0.36em; font-weight: 500;
+  .dc-hero .room { color: var(--dc-fg); }
+  .dc-hero .room .unit,
+  .dc-hero .target-block .target-unit {
+    font-size: 0.4em; font-weight: 500;
     color: var(--dc-muted);
     margin-left: 2px;
   }
-  /* When cooling/heating is active, the hero number takes the accent */
+  /* When cooling/heating is active, the hero numbers take the accent */
   .dc-hero.active-cool .room { color: var(--dc-cool); }
   .dc-hero.active-warm .room { color: var(--dc-warm); }
-  /* Target temp shown next to room temp with an arrow. Hidden when no target. */
+  /* Target is the secondary number — same size as room but muted by default */
+  .dc-hero .target-block { color: var(--dc-muted); }
+  .dc-hero.active-cool .target-block { color: color-mix(in srgb, var(--dc-cool), transparent 35%); }
+  .dc-hero.active-warm .target-block { color: color-mix(in srgb, var(--dc-warm), transparent 35%); }
+  /* Arrow sits between, aligned to the digits */
   .dc-hero .arrow {
-    font-size: 24px;
-    color: var(--dc-muted);
+    font-size: 26px;
+    font-weight: 400;
+    color: var(--dc-dim);
     line-height: 1;
+    transform: translateY(-4px);
   }
-  .dc-hero .target-block {
-    font-size: 32px; font-weight: 500;
-    color: var(--dc-muted);
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-  }
-  .dc-hero.active-cool .target-block { color: color-mix(in srgb, var(--dc-cool), transparent 30%); }
-  .dc-hero.active-warm .target-block { color: color-mix(in srgb, var(--dc-warm), transparent 30%); }
-  .dc-hero .target-block .target-unit { font-size: 0.55em; font-weight: 500; margin-left: 1px; }
   .dc-hero.no-target .arrow,
   .dc-hero.no-target .target-block { display: none; }
   .dc-hero .room-label { display: none; }
