@@ -69,6 +69,9 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
                 d.get("sessions")[-1] if d.get("sessions") else None
             ),
             "has_consumption_sensor": d.get("has_consumption_sensor", False),
+            "temperature_sensors": d.get("temperature_sensors", []),
+            "flagged_sensors": d.get("flagged_sensors", []),
+            "flagged_sensors_labels": d.get("flagged_sensors_labels", []),
             "zone_id": self._zone_id,
         }
         for ts_key in ("state_entered_ts", "cycle_started_ts"):
