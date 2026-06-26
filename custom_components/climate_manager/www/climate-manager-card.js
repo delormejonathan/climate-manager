@@ -231,8 +231,9 @@ class DelormejClimateCard extends HTMLElement {
   }
 
   /**
-   * Rendu state-driven du bloc Actions §3. Une seule règle : seuls les boutons
-   * qui ont du sens à l'instant courant sont affichés. Pas de mur de boutons.
+   * Rendu state-driven du bloc Actions. Règle : un layout cohérent, une ligne
+   * principale d'actions primaires + une ligne discrète d'actions secondaires
+   * (manuel, force-off) qui n'a aucun sens d'être permanente.
    */
   _updateActionsBlock(stateVal, attrs) {
     const block = this.querySelector('[data-bind="actions-block"]');
@@ -242,9 +243,8 @@ class DelormejClimateCard extends HTMLElement {
     const hasSession = !!attrs.session;
     const isWindow = stateVal === "window_open";
 
-    // Helpers
-    const btn = (variant, icon, label, dataAction, extraClass = "") => `
-      <button class="dc-action-btn ${variant} ${extraClass}" data-action="${dataAction}">
+    const btn = (variant, icon, label, dataAction) => `
+      <button class="dc-action-btn ${variant}" data-action="${dataAction}">
         <ha-icon icon="${icon}"></ha-icon>
         <span>${label}</span>
       </button>`;
@@ -253,41 +253,56 @@ class DelormejClimateCard extends HTMLElement {
         <ha-icon icon="${icon}"></ha-icon>
         <span>${text}</span>
       </div>`;
+    const tinyRow = (items) => `<div class="dc-actions-tiny">${items.join("")}</div>`;
+    const tiny = (icon, label, dataAction) => `
+      <button class="dc-action-tiny" data-action="${dataAction}">
+        <ha-icon icon="${icon}"></ha-icon><span>${label}</span>
+      </button>`;
 
-    let html = "";
+    let primaryHtml = "";
+    let tinyItems = [];
 
     if (isWindow) {
       const n = attrs.windows_open || 1;
-      html = info(
+      primaryHtml = info(
         "mdi:window-open-variant",
         n > 1 ? `${n} fenêtres ouvertes — la clim reprendra automatiquement à la fermeture.`
               : "Fenêtre ouverte — la clim reprendra automatiquement à la fermeture.",
       );
     } else if (inOverride) {
       const until = attrs.override_until_at
-        ? ` (jusqu'à ${new Date(attrs.override_until_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })})`
+        ? ` (auto à ${new Date(attrs.override_until_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })})`
         : "";
-      html =
+      primaryHtml =
         info("mdi:account-hard-hat", `Tu as la main en mode manuel${until}.`) +
         btn("primary", "mdi:restore", "Reprendre l'auto", "resume-auto");
+      tinyItems.push(tiny("mdi:tune-variant", "Contrôle direct", "open-manual"));
     } else if (isOff) {
-      html =
+      primaryHtml =
         info("mdi:power-off", "Pilotage désactivé.") +
-        btn("primary", "mdi:auto-mode", "Réactiver l'auto", "mode-auto") +
-        btn("secondary", "mdi:play-circle", "Démarrer une session", "session-start");
+        `<div class="dc-actions-row">
+           ${btn("primary", "mdi:auto-mode", "Réactiver l'auto", "mode-auto")}
+           ${btn("secondary", "mdi:play-circle", "Démarrer une session", "session-start")}
+         </div>`;
+      tinyItems.push(tiny("mdi:tune-variant", "Contrôle direct", "open-manual"));
     } else if (hasSession) {
-      // Pendant une session, le bloc session porte ses propres actions
-      // (Modifier / +1h / Arrêter). Ici on n'expose qu'un Forcer arrêt
-      // discret au cas où l'utilisateur veut tout couper.
-      html = btn("ghost", "mdi:power", "Forcer l'arrêt du pilotage", "mode-off");
+      // Actions principales pour la session : Modifier (primary) · +1h · Arrêter (danger)
+      primaryHtml = `
+        <div class="dc-actions-row">
+          ${btn("primary", "mdi:pencil", "Modifier la session", "session-modify")}
+          ${btn("secondary", "mdi:clock-plus-outline", "+1 h", "session-extend")}
+          ${btn("danger", "mdi:stop-circle-outline", "Arrêter", "session-cancel")}
+        </div>`;
+      tinyItems.push(tiny("mdi:tune-variant", "Contrôle direct clim", "open-manual"));
+      tinyItems.push(tiny("mdi:power", "Désactiver l'auto", "mode-off"));
     } else {
-      // IDLE en mode auto, sans session → action principale = démarrer une session
-      html =
-        btn("primary", "mdi:play-circle", "Démarrer une session", "session-start") +
-        btn("ghost", "mdi:power", "Forcer l'arrêt du pilotage", "mode-off");
+      // IDLE en auto, pas de session
+      primaryHtml = btn("primary", "mdi:play-circle", "Démarrer une session", "session-start");
+      tinyItems.push(tiny("mdi:tune-variant", "Contrôle direct clim", "open-manual"));
+      tinyItems.push(tiny("mdi:power", "Désactiver l'auto", "mode-off"));
     }
 
-    block.innerHTML = html;
+    block.innerHTML = primaryHtml + (tinyItems.length ? tinyRow(tinyItems) : "");
     block.querySelectorAll("[data-action]").forEach((el) => {
       el.addEventListener("click", (e) => this._onActionClick(e));
     });
@@ -296,6 +311,14 @@ class DelormejClimateCard extends HTMLElement {
   _onActionClick(e) {
     const a = e.currentTarget.dataset.action;
     if (a === "session-start") return this._openSessionStartModal();
+    if (a === "session-modify") return this._openSessionModifyModal();
+    if (a === "session-extend") {
+      return this._call("climate_manager", "extend_session", { zone_id: this._zone, hours: 1 });
+    }
+    if (a === "session-cancel") {
+      if (!confirm("Arrêter la session en cours ?")) return;
+      return this._call("climate_manager", "cancel_session", { zone_id: this._zone });
+    }
     if (a === "resume-auto") {
       return this._call("button", "press", { entity_id: this._ent("button", "resume_auto") });
     }
@@ -306,66 +329,166 @@ class DelormejClimateCard extends HTMLElement {
       });
     }
     if (a === "mode-off") {
-      if (!confirm("Forcer l'arrêt du pilotage ? La clim sera coupée et l'auto désactivé.")) return;
+      if (!confirm("Désactiver le pilotage automatique ? Toutes les sessions s'arrêteront.")) return;
       return this._call("select", "select_option", {
         entity_id: this._ent("select", "mode"),
         option: "off",
       });
     }
+    if (a === "open-manual") return this._openManualControlModal();
+  }
+
+  /**
+   * Modal de contrôle direct de la clim. Toutes les actions ici envoient
+   * directement vers climate.* — le mécanisme override du module détecte
+   * automatiquement les changements non-tracked et bascule en
+   * MANUAL_OVERRIDE_FREE / TIMED.
+   */
+  _openManualControlModal() {
+    if (!this._climateEntity) {
+      alert("Aucune entité climate configurée pour cette carte.");
+      return;
+    }
+    const clim = this._hass?.states[this._climateEntity];
+    if (!clim) {
+      alert("Entité climate indisponible.");
+      return;
+    }
+    const cur = clim;
+    const hvacModes = (cur.attributes.hvac_modes || ["off","cool","heat","auto"]);
+    const fanModes = cur.attributes.fan_modes || [];
+    const swingModes = cur.attributes.swing_modes || [];
+    const curMode = cur.state;
+    const curSetpoint = cur.attributes.temperature;
+    const curFan = cur.attributes.fan_mode;
+    const curSwing = cur.attributes.swing_mode;
+
+    const modeLabels = {
+      off: "Off", cool: "Cool", heat: "Heat", auto: "Auto",
+      heat_cool: "Auto", dry: "Déshu.", fan_only: "Vent.",
+    };
+    this._openModal(`
+      <h2 class="dc-modal-title">Contrôle direct de la clim</h2>
+      <div class="dc-modal-form">
+        <div class="dc-modal-field">
+          <label>Mode</label>
+          <div class="dc-manual-modes">
+            ${hvacModes.map(m => `
+              <button class="dc-manual-mode ${m === curMode ? "active" : ""}" data-action="set-mode" data-mode="${m}">
+                ${modeLabels[m] || m}
+              </button>
+            `).join("")}
+          </div>
+        </div>
+        <div class="dc-modal-field">
+          <label>Consigne</label>
+          <div class="dc-manual-setpoint">
+            <button class="dc-manual-step" data-action="sp-dec">−</button>
+            <div class="dc-manual-spval">${curSetpoint != null ? curSetpoint : "—"}<span>°C</span></div>
+            <button class="dc-manual-step" data-action="sp-inc">+</button>
+          </div>
+        </div>
+        ${fanModes.length ? `
+          <div class="dc-modal-field">
+            <label>Ventilation</label>
+            <select data-field="fan_mode">
+              ${fanModes.map(f => `<option value="${f}" ${f === curFan ? "selected" : ""}>${f}</option>`).join("")}
+            </select>
+          </div>
+        ` : ""}
+        ${swingModes.length ? `
+          <div class="dc-modal-field">
+            <label>Swing</label>
+            <select data-field="swing_mode">
+              ${swingModes.map(s => `<option value="${s}" ${s === curSwing ? "selected" : ""}>${s}</option>`).join("")}
+            </select>
+          </div>
+        ` : ""}
+        <span class="dc-modal-hint">Tout changement déclenche un override manuel — l'auto reprendra après la durée d'override configurée.</span>
+        <div class="dc-modal-actions">
+          <button class="dc-btn" data-bind="modal-cancel">Fermer</button>
+        </div>
+      </div>
+    `);
+    const m = this._modalEl;
+    m.querySelector('[data-bind="modal-cancel"]').addEventListener("click", () => this._closeModal());
+    // Mode buttons
+    m.querySelectorAll('[data-action="set-mode"]').forEach((el) => {
+      el.addEventListener("click", () => {
+        this._call("climate", "set_hvac_mode", {
+          entity_id: this._climateEntity,
+          hvac_mode: el.dataset.mode,
+        });
+      });
+    });
+    // Setpoint +/-
+    const dec = m.querySelector('[data-action="sp-dec"]');
+    const inc = m.querySelector('[data-action="sp-inc"]');
+    if (dec) dec.addEventListener("click", () => this._bumpSetpoint(-1));
+    if (inc) inc.addEventListener("click", () => this._bumpSetpoint(+1));
+    // Fan
+    const fanSel = m.querySelector('[data-field="fan_mode"]');
+    if (fanSel) fanSel.addEventListener("change", (e) => {
+      this._call("climate", "set_fan_mode", {
+        entity_id: this._climateEntity, fan_mode: e.target.value,
+      });
+    });
+    // Swing
+    const swSel = m.querySelector('[data-field="swing_mode"]');
+    if (swSel) swSel.addEventListener("change", (e) => {
+      this._call("climate", "set_swing_mode", {
+        entity_id: this._climateEntity, swing_mode: e.target.value,
+      });
+    });
   }
 
   _updateSessionBlock(attrs) {
-    const block = this.querySelector('[data-bind="session-block"]');
-    const idleBlock = this.querySelector('[data-bind="session-idle-block"]');
-    if (!block || !idleBlock) return;
+    // Strip inline — affiché juste sous la narrative quand une session est active.
+    const strip = this.querySelector('[data-bind="session-strip"]');
+    if (!strip) return;
     const session = attrs.session;
-    if (session) {
-      block.style.display = "";
-      idleBlock.style.display = "none";
-      const $ = (k) => this.querySelector(`[data-bind="${k}"]`);
-      const parent = session.parent_profile_name || (session.manual ? "Manuelle" : "—");
-      $("session-parent").textContent = session.manual
-        ? `${parent} · manuelle`
-        : parent;
-      $("session-target").textContent = this._fmtTempUnit(session.target);
-      // Cutoff row
-      const cutoffRow = $("session-cutoff-row");
-      if (session.target_cutoff != null) {
-        cutoffRow.style.display = "";
-        $("session-cutoff").textContent = this._fmtTempUnit(session.target_cutoff);
-      } else {
-        cutoffRow.style.display = "none";
-      }
-      $("session-power").textContent = this._capitalize(session.power || "—");
-      $("session-fan").textContent = this._capitalize(session.fan_intensity || "—");
-      $("session-started").textContent = session.started_ts
-        ? this._fmtElapsed(Date.now() / 1000 - session.started_ts)
-        : "—";
-      $("session-max-end").textContent = session.max_end_ts
-        ? this._fmtTimeFromTs(session.max_end_ts)
-        : "—";
-      // Banners (kickstart, cutoff hold)
-      const banners = $("session-banners");
-      banners.innerHTML = "";
-      if (session.kickstart_until_ts && session.kickstart_until_ts > Date.now() / 1000) {
-        const remaining = Math.round((session.kickstart_until_ts - Date.now() / 1000) / 60);
-        banners.innerHTML += `
-          <div class="dc-session-banner">
-            <ha-icon icon="mdi:rocket-launch"></ha-icon>
-            Kickstart actif — bascule en mode régulier dans ${remaining} min
-          </div>`;
-      }
-      if (session.cutoff_held_since_ts && session.target_cutoff != null) {
-        const heldFor = Math.round((Date.now() / 1000 - session.cutoff_held_since_ts) / 60);
-        banners.innerHTML += `
-          <div class="dc-session-banner">
-            <ha-icon icon="mdi:timer-sand"></ha-icon>
-            Coupure atteinte — confirmé depuis ${heldFor} min
-          </div>`;
-      }
+    if (!session) {
+      strip.style.display = "none";
+      return;
+    }
+    strip.style.display = "";
+    const $ = (k) => this.querySelector(`[data-bind="${k}"]`);
+    const parent = session.parent_profile_name || (session.manual ? "Manuelle" : "—");
+    const parentLabel = session.manual ? `Manuelle (${parent})` : parent;
+    $("session-parent").textContent = parentLabel;
+    $("session-power-fan").textContent =
+      `Puissance ${this._capitalize(session.power || "—")} · Vent. ${this._capitalize(session.fan_intensity || "—")}`;
+    $("session-started").textContent = session.started_ts
+      ? `Démarrée ${this._fmtElapsed(Date.now() / 1000 - session.started_ts)}`
+      : "—";
+    $("session-max-end").textContent = session.max_end_ts
+      ? this._fmtTimeFromTs(session.max_end_ts)
+      : "—";
+    const cutoffRow = $("session-cutoff-row");
+    if (session.target_cutoff != null) {
+      cutoffRow.style.display = "";
+      $("session-cutoff").textContent = this._fmtTempUnit(session.target_cutoff);
     } else {
-      block.style.display = "none";
-      idleBlock.style.display = "";
+      cutoffRow.style.display = "none";
+    }
+    // Banners (kickstart, cutoff hold)
+    const banners = $("session-banners");
+    banners.innerHTML = "";
+    if (session.kickstart_until_ts && session.kickstart_until_ts > Date.now() / 1000) {
+      const remaining = Math.round((session.kickstart_until_ts - Date.now() / 1000) / 60);
+      banners.innerHTML += `
+        <div class="dc-session-banner">
+          <ha-icon icon="mdi:rocket-launch"></ha-icon>
+          Kickstart actif — bascule régulière dans ${remaining} min
+        </div>`;
+    }
+    if (session.cutoff_held_since_ts && session.target_cutoff != null) {
+      const heldFor = Math.round((Date.now() / 1000 - session.cutoff_held_since_ts) / 60);
+      banners.innerHTML += `
+        <div class="dc-session-banner">
+          <ha-icon icon="mdi:timer-sand"></ha-icon>
+          Coupure atteinte — confirmé depuis ${heldFor} min
+        </div>`;
     }
   }
 
@@ -935,17 +1058,9 @@ class DelormejClimateCard extends HTMLElement {
         .style.gridTemplateColumns = single ? "1fr" : "1fr 1fr";
     }
 
-    // ─────────────────── SECTION 4: COMMANDE MANUELLE
-    const climBlock = $("manual-clim-block");
-    if (!this._climateEntity || !climObj) {
-      climBlock.style.display = "none";
-    } else {
-      climBlock.style.display = "";
-      this._renderHvacModes($("hvac-modes"), climObj);
-      $("setpoint").textContent = this._fmtTemp(climObj.attributes.temperature);
-      this._renderSelectOptions($("fan-select"), climObj.attributes.fan_modes, climObj.attributes.fan_mode);
-      this._renderSelectOptions($("swing-select"), climObj.attributes.swing_modes, climObj.attributes.swing_mode);
-    }
+    // SECTION 4 (Commande manuelle) supprimée — désormais via modal
+    // déclenché par l'action « Contrôle direct clim ». Le bloc legacy reste
+    // hidden dans le DOM pour ne pas casser le wireUp.
 
     // ─────────────────── SECTION 5: SESSIONS RÉCENTES
     this._renderCycleHistory(attrs);
@@ -1946,6 +2061,52 @@ const MODAL_STYLES = `
   .dc-modal .dc-btn-primary:hover {
     filter: brightness(1.08);
   }
+  /* Manual control modal */
+  .dc-manual-modes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+    gap: 6px;
+  }
+  .dc-manual-mode {
+    padding: 10px 8px;
+    background: var(--secondary-background-color, #f3f3f3);
+    color: var(--primary-text-color, #1c1c1c);
+    border: 1px solid var(--divider-color, #d8d8d8);
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .dc-manual-mode.active {
+    background: var(--primary-color, #2196f3);
+    color: var(--text-primary-color, white);
+    border-color: transparent;
+  }
+  .dc-manual-setpoint {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    padding: 8px;
+    background: var(--secondary-background-color, #f3f3f3);
+    border-radius: 10px;
+  }
+  .dc-manual-step {
+    width: 44px; height: 44px;
+    background: var(--card-background-color, white);
+    color: var(--primary-text-color, #1c1c1c);
+    border: 1px solid var(--divider-color, #d8d8d8);
+    border-radius: 50%;
+    font-size: 20px; font-weight: 600;
+    cursor: pointer;
+  }
+  .dc-manual-spval {
+    font-size: 28px; font-weight: 600;
+    min-width: 110px; text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-manual-spval span {
+    font-size: 14px; color: var(--secondary-text-color, #6b6b6b);
+    margin-left: 2px;
+  }
 `;
 
 const STYLES = `
@@ -2276,6 +2437,122 @@ const STYLES = `
   .dc-btn-wide { width: 100%; padding: 12px; }
 
   /* (Les styles modal sont injectés via MODAL_STYLES dans document.head) */
+
+  /* ============ Session strip inline (sous la narrative) ============ */
+  .dc-session-strip {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--dc-border);
+  }
+  .dc-session-line {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+    font-size: 13px;
+    color: var(--dc-fg);
+    line-height: 1.6;
+  }
+  .dc-session-line-main {
+    font-weight: 600;
+  }
+  .dc-session-parent {
+    color: var(--dc-accent);
+  }
+  .dc-session-line-sub {
+    font-size: 12px;
+    color: var(--dc-muted);
+    font-weight: 500;
+  }
+  .dc-session-sep {
+    color: var(--dc-dim);
+    margin: 0 2px;
+  }
+  .dc-session-banners:empty { display: none; }
+  .dc-session-banners {
+    display: flex; flex-direction: column; gap: 4px;
+    margin-top: 6px;
+  }
+  .dc-session-banner {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px;
+    background: color-mix(in srgb, var(--dc-accent), transparent 88%);
+    border-radius: var(--dc-radius-sm);
+    font-size: 12px; color: var(--dc-fg);
+  }
+  .dc-session-banner ha-icon { --mdc-icon-size: 14px; color: var(--dc-accent); }
+
+  /* ============ Actions block §3 ============ */
+  .dc-actions-block {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 6px 0 4px;
+  }
+  .dc-actions-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
+  }
+  .dc-action-info {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 10px 12px;
+    background: var(--dc-surface);
+    border-radius: var(--dc-radius-sm);
+    font-size: 13px; color: var(--dc-muted);
+    line-height: 1.4;
+  }
+  .dc-action-info ha-icon {
+    --mdc-icon-size: 18px;
+    color: var(--dc-accent);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .dc-action-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 12px 16px;
+    background: var(--dc-surface);
+    color: var(--dc-fg);
+    border: 1px solid var(--dc-border);
+    border-radius: var(--dc-radius-sm);
+    font-family: inherit; font-size: 14px; font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, filter 0.15s;
+  }
+  .dc-action-btn ha-icon { --mdc-icon-size: 18px; }
+  .dc-action-btn:hover { border-color: var(--dc-muted); }
+  .dc-action-btn.primary {
+    background: var(--dc-accent);
+    color: var(--dc-on-accent, white);
+    border-color: transparent;
+    padding: 14px 18px;
+  }
+  .dc-action-btn.primary:hover { filter: brightness(1.08); }
+  .dc-action-btn.secondary {
+    background: var(--dc-surface);
+    border-color: var(--dc-border);
+  }
+  .dc-action-btn.danger {
+    color: #c0392b;
+    background: var(--dc-surface);
+    border-color: color-mix(in srgb, #c0392b, transparent 75%);
+  }
+  .dc-action-btn.danger:hover { background: color-mix(in srgb, #c0392b, transparent 92%); }
+
+  .dc-actions-tiny {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 2px;
+  }
+  .dc-action-tiny {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 6px 10px;
+    background: transparent;
+    color: var(--dc-muted);
+    border: none;
+    border-radius: var(--dc-radius-sm);
+    font-family: inherit; font-size: 12px; font-weight: 500;
+    cursor: pointer;
+  }
+  .dc-action-tiny ha-icon { --mdc-icon-size: 14px; }
+  .dc-action-tiny:hover {
+    color: var(--dc-fg);
+    background: var(--dc-surface);
+  }
 
   /* ============ Bloc Actions §3 — contextual ============ */
   .dc-actions-block {
@@ -3011,59 +3288,33 @@ const TEMPLATE = `
 
       <div class="dc-narrative" data-bind="narrative"></div>
 
-      <div class="dc-pills" data-bind="status-pills"></div>
-
-      <!-- ===== Session active : carte d'info + actions ===== -->
-      <div class="dc-session" data-bind="session-block" style="display:none">
-        <div class="dc-session-head">
-          <div class="dc-session-title">
-            <ha-icon icon="mdi:timer-play-outline"></ha-icon>
-            <span>Session active</span>
-          </div>
-          <div class="dc-session-parent" data-bind="session-parent">—</div>
+      <!-- ===== Session active : strip inline d'infos, pas de boîte ===== -->
+      <div class="dc-session-strip" data-bind="session-strip" style="display:none">
+        <div class="dc-session-line dc-session-line-main">
+          <span class="dc-session-parent" data-bind="session-parent">—</span>
+          <span class="dc-session-sep">·</span>
+          <span data-bind="session-power-fan">—</span>
         </div>
-        <div class="dc-session-meta">
-          <div class="dc-session-metric">
-            <span class="lbl">Cible</span>
-            <span class="val" data-bind="session-target">—</span>
-          </div>
-          <div class="dc-session-metric" data-bind="session-cutoff-row">
-            <span class="lbl">Coupure</span>
-            <span class="val" data-bind="session-cutoff">—</span>
-          </div>
-          <div class="dc-session-metric">
-            <span class="lbl">Puissance</span>
-            <span class="val" data-bind="session-power">—</span>
-          </div>
-          <div class="dc-session-metric">
-            <span class="lbl">Ventilation</span>
-            <span class="val" data-bind="session-fan">—</span>
-          </div>
-          <div class="dc-session-metric">
-            <span class="lbl">Démarrée</span>
-            <span class="val" data-bind="session-started">—</span>
-          </div>
-          <div class="dc-session-metric">
-            <span class="lbl">Fin max</span>
-            <span class="val" data-bind="session-max-end">—</span>
-          </div>
+        <div class="dc-session-line dc-session-line-sub">
+          <span data-bind="session-started">—</span>
+          <span class="dc-session-sep">·</span>
+          <span>fin <span data-bind="session-max-end">—</span></span>
+          <span class="dc-session-cutoff-wrap" data-bind="session-cutoff-row" style="display:none">
+            <span class="dc-session-sep">·</span>
+            <span>coupure <span data-bind="session-cutoff">—</span></span>
+          </span>
         </div>
         <div class="dc-session-banners" data-bind="session-banners"></div>
-        <div class="dc-session-actions">
-          <button class="dc-btn dc-btn-primary" data-bind="session-modify-btn">
-            <ha-icon icon="mdi:pencil"></ha-icon> Modifier
-          </button>
-          <button class="dc-btn" data-bind="session-extend-btn">
-            <ha-icon icon="mdi:clock-plus-outline"></ha-icon> +1 h
-          </button>
-          <button class="dc-btn dc-btn-danger" data-bind="session-cancel-btn">
-            <ha-icon icon="mdi:stop-circle-outline"></ha-icon> Arrêter
-          </button>
-        </div>
       </div>
 
-      <!-- ===== Pas de session : le bouton de démarrage est dans §3 Actions ===== -->
-      <div class="dc-session-idle" data-bind="session-idle-block" style="display:none"></div>
+      <div class="dc-pills" data-bind="status-pills"></div>
+
+      <!-- Élements legacy bindings (hidden, gardés pour _updateSessionBlock interne) -->
+      <span data-bind="session-target" style="display:none"></span>
+      <span data-bind="session-fan" style="display:none"></span>
+      <!-- session-block et session-idle-block conservés pour compat update -->
+      <div data-bind="session-block" style="display:none"></div>
+      <div data-bind="session-idle-block" style="display:none"></div>
     </div>
 
     <div class="dc-override-row" data-bind="override-row" style="display:none">
@@ -3093,46 +3344,24 @@ const TEMPLATE = `
     <div class="dc-actions-block" data-bind="actions-block"></div>
   </section>
 
-  <!-- ════════════════════════════════════ §4 CONTRÔLE DIRECT (diagnostic) -->
-  <section class="dc-section section-manual">
-    <details class="dc-manual-collapse">
-      <summary class="dc-manual-summary">
-        <ha-icon icon="mdi:tools"></ha-icon>
-        <span>Contrôle direct de la clim (diagnostic)</span>
-      </summary>
-      <div class="dc-subblock" data-bind="manual-clim-block">
-        <div class="dc-hvac" data-bind="hvac-modes"></div>
-        <div class="dc-setpoint">
-          <button data-bind="sp-dec" title="Diminuer">−</button>
-          <div>
-            <div class="sp-val"><span data-bind="setpoint">—</span><span class="sp-unit"> °C</span></div>
-          </div>
-          <button data-bind="sp-inc" title="Augmenter">+</button>
-        </div>
-        <div class="dc-fanswing">
-          <div class="field">
-            <label>Ventilation</label>
-            <select data-bind="fan-select"></select>
-          </div>
-          <div class="field">
-            <label>Swing</label>
-            <select data-bind="swing-select"></select>
-          </div>
-        </div>
-      </div>
-    </details>
-
-    <!-- Élements legacy hidden pour compat JS (boost-btn / resume-btn / force-*) -->
-    <button data-bind="boost-btn" style="display:none"></button>
-    <button data-bind="resume-btn" style="display:none"></button>
-    <button data-bind="force-cool-btn" style="display:none"></button>
-    <button data-bind="force-heat-btn" style="display:none"></button>
-    <div data-bind="mode" style="display:none">
+  <!-- Élements legacy bindings cachés (compat _wireUp + _update internes) -->
+  <div class="section-manual" style="display:none" data-bind="manual-clim-block">
+    <div data-bind="hvac-modes"></div>
+    <button data-bind="sp-dec"></button>
+    <button data-bind="sp-inc"></button>
+    <span data-bind="setpoint"></span>
+    <select data-bind="fan-select"></select>
+    <select data-bind="swing-select"></select>
+    <button data-bind="boost-btn"></button>
+    <button data-bind="resume-btn"></button>
+    <button data-bind="force-cool-btn"></button>
+    <button data-bind="force-heat-btn"></button>
+    <div data-bind="mode">
       <button data-mode="auto"></button>
       <button data-mode="off"></button>
       <button data-mode="boost"></button>
     </div>
-  </section>
+  </div>
 
   <!-- ════════════════════════════════════ §5 SESSIONS RÉCENTES -->
   <section class="dc-section section-cycles">
