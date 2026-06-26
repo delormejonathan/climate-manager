@@ -225,6 +225,95 @@ class DelormejClimateCard extends HTMLElement {
 
   /* =================================================================== session block + modals */
 
+  _stateAttrs() {
+    const stateObj = this._hass?.states[this._ent("sensor", "state")];
+    return stateObj?.attributes || {};
+  }
+
+  /**
+   * Rendu state-driven du bloc Actions §3. Une seule règle : seuls les boutons
+   * qui ont du sens à l'instant courant sont affichés. Pas de mur de boutons.
+   */
+  _updateActionsBlock(stateVal, attrs) {
+    const block = this.querySelector('[data-bind="actions-block"]');
+    if (!block) return;
+    const isOff = !!attrs.is_off_mode;
+    const inOverride = !!attrs.in_override;
+    const hasSession = !!attrs.session;
+    const isWindow = stateVal === "window_open";
+
+    // Helpers
+    const btn = (variant, icon, label, dataAction, extraClass = "") => `
+      <button class="dc-action-btn ${variant} ${extraClass}" data-action="${dataAction}">
+        <ha-icon icon="${icon}"></ha-icon>
+        <span>${label}</span>
+      </button>`;
+    const info = (icon, text) => `
+      <div class="dc-action-info">
+        <ha-icon icon="${icon}"></ha-icon>
+        <span>${text}</span>
+      </div>`;
+
+    let html = "";
+
+    if (isWindow) {
+      const n = attrs.windows_open || 1;
+      html = info(
+        "mdi:window-open-variant",
+        n > 1 ? `${n} fenêtres ouvertes — la clim reprendra automatiquement à la fermeture.`
+              : "Fenêtre ouverte — la clim reprendra automatiquement à la fermeture.",
+      );
+    } else if (inOverride) {
+      const until = attrs.override_until_at
+        ? ` (jusqu'à ${new Date(attrs.override_until_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })})`
+        : "";
+      html =
+        info("mdi:account-hard-hat", `Tu as la main en mode manuel${until}.`) +
+        btn("primary", "mdi:restore", "Reprendre l'auto", "resume-auto");
+    } else if (isOff) {
+      html =
+        info("mdi:power-off", "Pilotage désactivé.") +
+        btn("primary", "mdi:auto-mode", "Réactiver l'auto", "mode-auto") +
+        btn("secondary", "mdi:play-circle", "Démarrer une session", "session-start");
+    } else if (hasSession) {
+      // Pendant une session, le bloc session porte ses propres actions
+      // (Modifier / +1h / Arrêter). Ici on n'expose qu'un Forcer arrêt
+      // discret au cas où l'utilisateur veut tout couper.
+      html = btn("ghost", "mdi:power", "Forcer l'arrêt du pilotage", "mode-off");
+    } else {
+      // IDLE en mode auto, sans session → action principale = démarrer une session
+      html =
+        btn("primary", "mdi:play-circle", "Démarrer une session", "session-start") +
+        btn("ghost", "mdi:power", "Forcer l'arrêt du pilotage", "mode-off");
+    }
+
+    block.innerHTML = html;
+    block.querySelectorAll("[data-action]").forEach((el) => {
+      el.addEventListener("click", (e) => this._onActionClick(e));
+    });
+  }
+
+  _onActionClick(e) {
+    const a = e.currentTarget.dataset.action;
+    if (a === "session-start") return this._openSessionStartModal();
+    if (a === "resume-auto") {
+      return this._call("button", "press", { entity_id: this._ent("button", "resume_auto") });
+    }
+    if (a === "mode-auto") {
+      return this._call("select", "select_option", {
+        entity_id: this._ent("select", "mode"),
+        option: "auto",
+      });
+    }
+    if (a === "mode-off") {
+      if (!confirm("Forcer l'arrêt du pilotage ? La clim sera coupée et l'auto désactivé.")) return;
+      return this._call("select", "select_option", {
+        entity_id: this._ent("select", "mode"),
+        option: "off",
+      });
+    }
+  }
+
   _updateSessionBlock(attrs) {
     const block = this.querySelector('[data-bind="session-block"]');
     const idleBlock = this.querySelector('[data-bind="session-idle-block"]');
@@ -767,6 +856,7 @@ class DelormejClimateCard extends HTMLElement {
     this._updateThermalRail(stateVal, attrs, get, ids);
     this._updateTimeline(stateVal, attrs, get, ids);
     this._updateSessionBlock(attrs);
+    this._updateActionsBlock(stateVal, attrs);
 
     // Pills — ONLY surface what's not redundant with the narrative or state
     // tag. Windows open is real signal. Override is real signal. Schedule
@@ -2187,6 +2277,84 @@ const STYLES = `
 
   /* (Les styles modal sont injectés via MODAL_STYLES dans document.head) */
 
+  /* ============ Bloc Actions §3 — contextual ============ */
+  .dc-actions-block {
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 6px 0 4px;
+  }
+  .dc-action-info {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 10px 12px;
+    background: var(--dc-surface);
+    border-radius: var(--dc-radius-sm);
+    font-size: 13px; color: var(--dc-muted);
+    line-height: 1.4;
+  }
+  .dc-action-info ha-icon {
+    --mdc-icon-size: 18px;
+    color: var(--dc-accent);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .dc-action-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 12px 16px;
+    background: var(--dc-surface);
+    color: var(--dc-fg);
+    border: 1px solid var(--dc-border);
+    border-radius: var(--dc-radius-sm);
+    font-family: inherit; font-size: 14px; font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, filter 0.15s;
+  }
+  .dc-action-btn ha-icon { --mdc-icon-size: 18px; }
+  .dc-action-btn:hover { border-color: var(--dc-muted); }
+  .dc-action-btn.primary {
+    background: var(--dc-accent);
+    color: var(--dc-on-accent, white);
+    border-color: transparent;
+    padding: 14px 18px; font-size: 15px;
+  }
+  .dc-action-btn.primary:hover { filter: brightness(1.08); }
+  .dc-action-btn.secondary {
+    background: var(--dc-surface);
+    border-color: var(--dc-border);
+  }
+  .dc-action-btn.ghost {
+    background: transparent;
+    color: var(--dc-muted);
+    border-color: var(--dc-border);
+    font-weight: 500;
+  }
+  .dc-action-btn.ghost:hover { color: var(--dc-fg); }
+
+  /* Contrôle direct collapsé */
+  .dc-manual-collapse summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px;
+    background: var(--dc-surface);
+    border-radius: var(--dc-radius-sm);
+    font-size: 13px; font-weight: 600;
+    color: var(--dc-muted);
+    user-select: none;
+  }
+  .dc-manual-collapse summary::-webkit-details-marker { display: none; }
+  .dc-manual-collapse summary ha-icon { --mdc-icon-size: 16px; }
+  .dc-manual-collapse summary::after {
+    content: "▾"; margin-left: auto; opacity: 0.6;
+  }
+  .dc-manual-collapse[open] summary::after { content: "▴"; }
+  .dc-manual-collapse[open] summary {
+    border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+    margin-bottom: 0;
+  }
+  .dc-manual-collapse[open] .dc-subblock {
+    border-top-left-radius: 0; border-top-right-radius: 0;
+    margin-top: 0;
+  }
+
   .dc-narrative {
     font-size: 14px; line-height: 1.5;
     color: var(--dc-muted);
@@ -2894,12 +3062,8 @@ const TEMPLATE = `
         </div>
       </div>
 
-      <!-- ===== Pas de session : bouton de démarrage manuel ===== -->
-      <div class="dc-session-idle" data-bind="session-idle-block" style="display:none">
-        <button class="dc-btn dc-btn-primary dc-btn-wide" data-bind="session-start-btn">
-          <ha-icon icon="mdi:play-circle"></ha-icon> Démarrer une session
-        </button>
-      </div>
+      <!-- ===== Pas de session : le bouton de démarrage est dans §3 Actions ===== -->
+      <div class="dc-session-idle" data-bind="session-idle-block" style="display:none"></div>
     </div>
 
     <div class="dc-override-row" data-bind="override-row" style="display:none">
@@ -2920,67 +3084,53 @@ const TEMPLATE = `
 
   </section>
 
-  <!-- ════════════════════════════════════ §3 PILOTAGE -->
+  <!-- ════════════════════════════════════ §3 ACTIONS CONTEXTUELLES -->
   <section class="dc-section section-auto">
     <div class="dc-section-head">
-      <div class="head-bubble"><ha-icon icon="mdi:robot"></ha-icon></div>
-      <span class="lbl">Pilotage</span>
+      <div class="head-bubble"><ha-icon icon="mdi:gesture-tap"></ha-icon></div>
+      <span class="lbl">Actions</span>
     </div>
-
-    <div class="dc-control">
-      <div class="dc-control-label">Mode pilotage</div>
-      <div class="dc-segmented tone-warn tone-danger" data-bind="mode">
-        <button data-mode="auto">Auto</button>
-        <button data-mode="off">Off</button>
-        <button data-mode="boost">Boost</button>
-      </div>
-    </div>
-
-    <div class="dc-control">
-      <div class="dc-control-label">Actions rapides</div>
-      <div class="dc-quick-actions">
-        <button data-bind="boost-btn"><ha-icon icon="mdi:rocket-launch"></ha-icon> Boost 15 min</button>
-        <button data-bind="resume-btn"><ha-icon icon="mdi:restore"></ha-icon> Reprendre auto</button>
-      </div>
-    </div>
-
-    <div class="dc-control dc-force-row" style="display:none">
-      <div class="dc-control-label">Démarrer maintenant</div>
-      <div class="dc-force-actions">
-        <button class="force-cool" data-bind="force-cool-btn">
-          <ha-icon icon="mdi:snowflake"></ha-icon> Refroidir
-        </button>
-        <button class="force-heat" data-bind="force-heat-btn">
-          <ha-icon icon="mdi:fire"></ha-icon> Chauffer
-        </button>
-      </div>
-    </div>
+    <div class="dc-actions-block" data-bind="actions-block"></div>
   </section>
 
-  <!-- ════════════════════════════════════ §4 COMMANDE MANUELLE -->
+  <!-- ════════════════════════════════════ §4 CONTRÔLE DIRECT (diagnostic) -->
   <section class="dc-section section-manual">
-    <div class="dc-subblock" data-bind="manual-clim-block">
-      <div class="dc-subblock-title">
-        <ha-icon icon="mdi:air-conditioner"></ha-icon> Contrôle direct climatisation
-      </div>
-      <div class="dc-hvac" data-bind="hvac-modes"></div>
-      <div class="dc-setpoint">
-        <button data-bind="sp-dec" title="Diminuer">−</button>
-        <div>
-          <div class="sp-val"><span data-bind="setpoint">—</span><span class="sp-unit"> °C</span></div>
+    <details class="dc-manual-collapse">
+      <summary class="dc-manual-summary">
+        <ha-icon icon="mdi:tools"></ha-icon>
+        <span>Contrôle direct de la clim (diagnostic)</span>
+      </summary>
+      <div class="dc-subblock" data-bind="manual-clim-block">
+        <div class="dc-hvac" data-bind="hvac-modes"></div>
+        <div class="dc-setpoint">
+          <button data-bind="sp-dec" title="Diminuer">−</button>
+          <div>
+            <div class="sp-val"><span data-bind="setpoint">—</span><span class="sp-unit"> °C</span></div>
+          </div>
+          <button data-bind="sp-inc" title="Augmenter">+</button>
         </div>
-        <button data-bind="sp-inc" title="Augmenter">+</button>
-      </div>
-      <div class="dc-fanswing">
-        <div class="field">
-          <label>Ventilation</label>
-          <select data-bind="fan-select"></select>
+        <div class="dc-fanswing">
+          <div class="field">
+            <label>Ventilation</label>
+            <select data-bind="fan-select"></select>
+          </div>
+          <div class="field">
+            <label>Swing</label>
+            <select data-bind="swing-select"></select>
+          </div>
         </div>
-        <div class="field">
-          <label>Swing</label>
-          <select data-bind="swing-select"></select>
-        </div>
       </div>
+    </details>
+
+    <!-- Élements legacy hidden pour compat JS (boost-btn / resume-btn / force-*) -->
+    <button data-bind="boost-btn" style="display:none"></button>
+    <button data-bind="resume-btn" style="display:none"></button>
+    <button data-bind="force-cool-btn" style="display:none"></button>
+    <button data-bind="force-heat-btn" style="display:none"></button>
+    <div data-bind="mode" style="display:none">
+      <button data-mode="auto"></button>
+      <button data-mode="off"></button>
+      <button data-mode="boost"></button>
     </div>
   </section>
 
