@@ -231,9 +231,10 @@ class DelormejClimateCard extends HTMLElement {
   }
 
   /**
-   * Rendu state-driven du bloc Actions. Règle : un layout cohérent, une ligne
-   * principale d'actions primaires + une ligne discrète d'actions secondaires
-   * (manuel, force-off) qui n'a aucun sens d'être permanente.
+   * Rendu state-driven du bloc Actions. Boutons pleine largeur, stacké
+   * verticalement, labels clairs. Une zone "primaire" et une zone "secondaire"
+   * séparées par un divider discret. Pas de mur de boutons : ce qui n'a pas
+   * de sens dans l'état courant n'est pas affiché.
    */
   _updateActionsBlock(stateVal, attrs) {
     const block = this.querySelector('[data-bind="actions-block"]');
@@ -253,56 +254,47 @@ class DelormejClimateCard extends HTMLElement {
         <ha-icon icon="${icon}"></ha-icon>
         <span>${text}</span>
       </div>`;
-    const tinyRow = (items) => `<div class="dc-actions-tiny">${items.join("")}</div>`;
-    const tiny = (icon, label, dataAction) => `
-      <button class="dc-action-tiny" data-action="${dataAction}">
-        <ha-icon icon="${icon}"></ha-icon><span>${label}</span>
-      </button>`;
 
-    let primaryHtml = "";
-    let tinyItems = [];
+    let primary = [];
+    let secondary = [];
 
     if (isWindow) {
       const n = attrs.windows_open || 1;
-      primaryHtml = info(
+      primary.push(info(
         "mdi:window-open-variant",
         n > 1 ? `${n} fenêtres ouvertes — la clim reprendra automatiquement à la fermeture.`
               : "Fenêtre ouverte — la clim reprendra automatiquement à la fermeture.",
-      );
+      ));
     } else if (inOverride) {
       const until = attrs.override_until_at
         ? ` (auto à ${new Date(attrs.override_until_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })})`
         : "";
-      primaryHtml =
-        info("mdi:account-hard-hat", `Tu as la main en mode manuel${until}.`) +
-        btn("primary", "mdi:restore", "Reprendre l'auto", "resume-auto");
-      tinyItems.push(tiny("mdi:tune-variant", "Contrôle direct", "open-manual"));
+      primary.push(info("mdi:account-hard-hat", `Tu as la main en mode manuel${until}.`));
+      primary.push(btn("primary", "mdi:restore", "Reprendre le pilotage auto", "resume-auto"));
+      secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
     } else if (isOff) {
-      primaryHtml =
-        info("mdi:power-off", "Pilotage désactivé.") +
-        `<div class="dc-actions-row">
-           ${btn("primary", "mdi:auto-mode", "Réactiver l'auto", "mode-auto")}
-           ${btn("secondary", "mdi:play-circle", "Démarrer une session", "session-start")}
-         </div>`;
-      tinyItems.push(tiny("mdi:tune-variant", "Contrôle direct", "open-manual"));
+      primary.push(info("mdi:power-off", "Pilotage désactivé."));
+      primary.push(btn("primary", "mdi:auto-mode", "Réactiver le pilotage auto", "mode-auto"));
+      primary.push(btn("secondary", "mdi:play-circle", "Démarrer une session manuelle", "session-start"));
+      secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
     } else if (hasSession) {
-      // Actions principales pour la session : Modifier (primary) · +1h · Arrêter (danger)
-      primaryHtml = `
-        <div class="dc-actions-row">
-          ${btn("primary", "mdi:pencil", "Modifier la session", "session-modify")}
-          ${btn("secondary", "mdi:clock-plus-outline", "+1 h", "session-extend")}
-          ${btn("danger", "mdi:stop-circle-outline", "Arrêter", "session-cancel")}
-        </div>`;
-      tinyItems.push(tiny("mdi:tune-variant", "Contrôle direct clim", "open-manual"));
-      tinyItems.push(tiny("mdi:power", "Désactiver l'auto", "mode-off"));
+      primary.push(btn("primary", "mdi:pencil", "Modifier la session", "session-modify"));
+      primary.push(btn("secondary", "mdi:clock-plus-outline", "Ajouter 1 heure à la session", "session-extend"));
+      primary.push(btn("danger", "mdi:stop-circle-outline", "Arrêter la session", "session-cancel"));
+      secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
+      secondary.push(btn("secondary-line", "mdi:power", "Désactiver le pilotage auto", "mode-off"));
     } else {
       // IDLE en auto, pas de session
-      primaryHtml = btn("primary", "mdi:play-circle", "Démarrer une session", "session-start");
-      tinyItems.push(tiny("mdi:tune-variant", "Contrôle direct clim", "open-manual"));
-      tinyItems.push(tiny("mdi:power", "Désactiver l'auto", "mode-off"));
+      primary.push(btn("primary", "mdi:play-circle", "Démarrer une session", "session-start"));
+      secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
+      secondary.push(btn("secondary-line", "mdi:power", "Désactiver le pilotage auto", "mode-off"));
     }
 
-    block.innerHTML = primaryHtml + (tinyItems.length ? tinyRow(tinyItems) : "");
+    const primaryHtml = `<div class="dc-actions-primary">${primary.join("")}</div>`;
+    const secondaryHtml = secondary.length
+      ? `<div class="dc-actions-secondary">${secondary.join("")}</div>`
+      : "";
+    block.innerHTML = primaryHtml + secondaryHtml;
     block.querySelectorAll("[data-action]").forEach((el) => {
       el.addEventListener("click", (e) => this._onActionClick(e));
     });
@@ -1524,13 +1516,9 @@ class DelormejClimateCard extends HTMLElement {
     // Fetch (or reuse cached) history of the room temp sensor since cycle start.
     this._ensureHistoryData(ids.roomTemp, startMs, Date.now()).then((points) => {
       this._renderSpark($("spark"), points, target, attrs.direction);
-      // Text line: "Démarré il y a 23min · -2.0°C"
+      // timeline-text supprimé : doublonne le strip session « Démarrée il y a X min »
       const txtEl = $("timeline-text");
-      const deltaTxt = this._deltaText(points, parseFloat(get(ids.roomTemp)?.state));
-      const elapsedTxt = elapsedMin === 0 ? "à l'instant" : `il y a ${elapsedMin} min`;
-      txtEl.innerHTML = deltaTxt
-        ? `Démarré ${elapsedTxt} · <span class="dc-delta">${deltaTxt}</span>`
-        : `Démarré ${elapsedTxt}`;
+      if (txtEl) txtEl.textContent = "";
     });
   }
 
@@ -2479,23 +2467,27 @@ const STYLES = `
   }
   .dc-session-banner ha-icon { --mdc-icon-size: 14px; color: var(--dc-accent); }
 
-  /* ============ Actions block §3 ============ */
+  /* ============ Actions block — boutons full-width stacked ============ */
   .dc-actions-block {
-    display: flex; flex-direction: column; gap: 10px;
-    padding: 6px 0 4px;
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 4px 0;
   }
-  .dc-actions-row {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-    gap: 8px;
+  .dc-actions-primary {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .dc-actions-secondary {
+    display: flex; flex-direction: column; gap: 6px;
+    padding-top: 12px;
+    border-top: 1px solid var(--dc-border);
   }
   .dc-action-info {
     display: flex; align-items: flex-start; gap: 8px;
-    padding: 10px 12px;
+    padding: 12px 14px;
     background: var(--dc-surface);
     border-radius: var(--dc-radius-sm);
     font-size: 13px; color: var(--dc-muted);
     line-height: 1.4;
+    margin-bottom: 2px;
   }
   .dc-action-info ha-icon {
     --mdc-icon-size: 18px;
@@ -2504,23 +2496,25 @@ const STYLES = `
     margin-top: 1px;
   }
   .dc-action-btn {
-    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    padding: 12px 16px;
+    width: 100%;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 14px 16px;
     background: var(--dc-surface);
     color: var(--dc-fg);
     border: 1px solid var(--dc-border);
     border-radius: var(--dc-radius-sm);
     font-family: inherit; font-size: 14px; font-weight: 600;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, filter 0.15s;
+    transition: background 0.15s, border-color 0.15s, filter 0.15s, color 0.15s;
   }
-  .dc-action-btn ha-icon { --mdc-icon-size: 18px; }
+  .dc-action-btn ha-icon { --mdc-icon-size: 20px; flex-shrink: 0; }
   .dc-action-btn:hover { border-color: var(--dc-muted); }
   .dc-action-btn.primary {
     background: var(--dc-accent);
     color: var(--dc-on-accent, white);
     border-color: transparent;
-    padding: 14px 18px;
+    padding: 16px;
+    font-size: 15px;
   }
   .dc-action-btn.primary:hover { filter: brightness(1.08); }
   .dc-action-btn.secondary {
@@ -2528,28 +2522,20 @@ const STYLES = `
     border-color: var(--dc-border);
   }
   .dc-action-btn.danger {
-    color: #c0392b;
-    background: var(--dc-surface);
-    border-color: color-mix(in srgb, #c0392b, transparent 75%);
+    background: #c0392b;
+    color: white;
+    border-color: transparent;
   }
-  .dc-action-btn.danger:hover { background: color-mix(in srgb, #c0392b, transparent 92%); }
-
-  .dc-actions-tiny {
-    display: flex; flex-wrap: wrap; gap: 6px;
-    margin-top: 2px;
-  }
-  .dc-action-tiny {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 6px 10px;
+  .dc-action-btn.danger:hover { filter: brightness(1.1); }
+  .dc-action-btn.secondary-line {
     background: transparent;
     color: var(--dc-muted);
-    border: none;
-    border-radius: var(--dc-radius-sm);
-    font-family: inherit; font-size: 12px; font-weight: 500;
-    cursor: pointer;
+    border: 1px solid var(--dc-border);
+    padding: 11px 14px;
+    font-size: 13px;
+    font-weight: 500;
   }
-  .dc-action-tiny ha-icon { --mdc-icon-size: 14px; }
-  .dc-action-tiny:hover {
+  .dc-action-btn.secondary-line:hover {
     color: var(--dc-fg);
     background: var(--dc-surface);
   }
@@ -2651,27 +2637,20 @@ const STYLES = `
   .dc-narrative.warm .accent { color: var(--dc-fg); }
   .dc-narrative.warn { color: var(--dc-warm); }
 
-  /* Thermal rail kept hidden; phase ribbon + live curve are now first-class. */
+  /* Thermal rail kept hidden; live curve is intégrée sans boîte. */
   .dc-rail-wrap { display: none !important; }
   .dc-timeline {
     display: block;
-    margin: 8px 0 14px;
-    padding: 10px 12px 8px;
-    border-radius: var(--dc-radius-sm);
-    background: var(--dc-surface);
+    margin: 12px 0 4px;
+    background: transparent;
     text-align: left;
   }
   .dc-timeline span[data-bind="timeline-text"] {
-    display: block;
-    color: var(--dc-muted);
-    font-size: 12px;
-    font-weight: 600;
-    margin-bottom: 6px;
+    display: none;
   }
-  .dc-timeline .dc-delta { color: var(--dc-fg); }
   .dc-timeline span[data-bind="spark"] {
     display: block;
-    height: 56px;
+    height: 48px;
     color: var(--dc-accent);
   }
 
@@ -3262,29 +3241,18 @@ const TEMPLATE = `
     </div>
 
     <div class="dc-hero" data-bind="hero">
-      <details class="dc-temp-details-toggle no-details" data-bind="details-toggle">
-        <summary class="dc-hero-row">
-          <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
-          <span class="arrow" data-bind="target-arrow">→</span>
-          <div class="target-block" data-bind="target-block">
-            <span class="target"><span data-bind="target-temp">—</span><span class="target-unit">°C</span></span>
-          </div>
-        </summary>
-        <div class="dc-metrics">
-          <div class="dc-metric-row">
-            <span class="label"><ha-icon icon="mdi:send"></ha-icon>Consigne envoyée par le module</span>
-            <span class="value" data-bind="metric-setpoint-sent">—</span>
-          </div>
-          <div class="dc-metric-row">
-            <span class="label"><ha-icon icon="mdi:thermostat"></ha-icon>Consigne actuelle de la clim</span>
-            <span class="value" data-bind="metric-clim-setpoint">—</span>
-          </div>
-          <div class="dc-metric-row">
-            <span class="label"><ha-icon icon="mdi:thermometer"></ha-icon>Sonde interne clim</span>
-            <span class="value" data-bind="metric-clim-sonde">—</span>
-          </div>
+      <div class="dc-hero-row">
+        <div class="room"><span data-bind="room-temp">—</span><span class="unit">°C</span></div>
+        <span class="arrow" data-bind="target-arrow">→</span>
+        <div class="target-block" data-bind="target-block">
+          <span class="target"><span data-bind="target-temp">—</span><span class="target-unit">°C</span></span>
         </div>
-      </details>
+      </div>
+      <!-- Bindings legacy hidden : kept pour ne pas casser le code _update -->
+      <span data-bind="details-toggle" style="display:none"></span>
+      <span data-bind="metric-setpoint-sent" style="display:none"></span>
+      <span data-bind="metric-clim-setpoint" style="display:none"></span>
+      <span data-bind="metric-clim-sonde" style="display:none"></span>
 
       <div class="dc-narrative" data-bind="narrative"></div>
 
@@ -3389,8 +3357,34 @@ class DelormejClimateStatusCard extends DelormejClimateCard {}
 DelormejClimateStatusCard.widgetVariant = "status";
 class DelormejClimatePilotageCard extends DelormejClimateCard {}
 DelormejClimatePilotageCard.widgetVariant = "pilotage";
-class DelormejClimateManualCard extends DelormejClimateCard {}
-DelormejClimateManualCard.widgetVariant = "manual";
+/**
+ * Carte manuelle obsolète (v0.23.2). Désormais le contrôle direct est une
+ * action contextuelle (modal) dans la carte principale. On garde la classe
+ * pour ne pas casser les dashboards existants : elle se rend en simple
+ * message d'avis pour que l'utilisateur la retire de son dashboard.
+ */
+class DelormejClimateManualCard extends HTMLElement {
+  setConfig(_config) {
+    this._rendered = false;
+  }
+  static getStubConfig() { return { type: "custom:climate-manager-manual-card" }; }
+  getCardSize() { return 1; }
+  getGridOptions() { return { columns: 12, rows: 1, min_rows: 1 }; }
+  set hass(_hass) {
+    if (this._rendered) return;
+    this._rendered = true;
+    this.innerHTML = `
+      <ha-card style="padding:14px 16px; display:flex; gap:10px; align-items:center; border-radius:14px;">
+        <ha-icon icon="mdi:information-outline" style="--mdc-icon-size:20px; color: var(--secondary-text-color);"></ha-icon>
+        <div style="font-size:13px; color: var(--secondary-text-color); line-height:1.4;">
+          Cette carte est <b>obsolète</b>. Le contrôle direct de la clim est désormais accessible
+          via l'action <i>Contrôle direct de la clim</i> dans la carte principale.
+          <br><span style="color: var(--primary-text-color);">Retire-la de ton dashboard.</span>
+        </div>
+      </ha-card>
+    `;
+  }
+}
 class DelormejClimateProfilesCard extends DelormejClimateCard {}
 DelormejClimateProfilesCard.widgetVariant = "profiles";
 class DelormejClimateSessionsCard extends DelormejClimateCard {}
@@ -3419,11 +3413,6 @@ window.customCards = window.customCards || [];
     type: "climate-manager-pilotage-card",
     name: "Climate Manager — Pilotage & état",
     description: "Widget Climate Manager séparé : état actuel + pilotage automatique.",
-  },
-  {
-    type: "climate-manager-manual-card",
-    name: "Climate Manager — Commande manuelle",
-    description: "Widget Climate Manager séparé : actions directes sur la climatisation.",
   },
   {
     type: "climate-manager-profiles-card",
