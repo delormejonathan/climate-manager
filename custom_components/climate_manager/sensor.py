@@ -72,8 +72,17 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             "temperature_sensors": d.get("temperature_sensors", []),
             "flagged_sensors": d.get("flagged_sensors", []),
             "flagged_sensors_labels": d.get("flagged_sensors_labels", []),
+            "session": d.get("session"),
             "zone_id": self._zone_id,
         }
+        sess = d.get("session")
+        if sess:
+            for ts_key in ("started_ts", "max_end_ts", "kickstart_until_ts", "cutoff_held_since_ts"):
+                ts = sess.get(ts_key)
+                if ts:
+                    attrs[f"session_{ts_key.replace('_ts','_at')}"] = (
+                        datetime.fromtimestamp(ts, tz=UTC).isoformat()
+                    )
         for ts_key in ("state_entered_ts", "cycle_started_ts"):
             ts = d.get(ts_key)
             if ts:

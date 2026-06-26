@@ -572,17 +572,18 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         # Heuristique : prev_state == RUNNING et state != RUNNING.
         if prev_state != ZoneState.RUNNING or zone.state.state == ZoneState.RUNNING:
             return
-        # Détecter quel sensor : utiliser le mode du profil au démarrage.
-        # On le retrouve via profile_name si possible, sinon on essaye cool en priorité.
+        # Détecter quel sensor : le `session_mode` enregistré est la source
+        # de vérité (vrai sens de la session, pas du profil cascade qui a pu
+        # changer en cours).
         cool_sensor = zone.config.consumption_sensor_cool
         heat_sensor = zone.config.consumption_sensor_heat
-        # Match profile_name → mode via la cascade
-        profile_name = last.get("profile_name")
-        mode = None
-        for p in zone.config.profiles:
-            if p.name == profile_name:
-                mode = p.mode
-                break
+        mode = last.get("session_mode")
+        if mode is None:
+            profile_name = last.get("profile_name")
+            for p in zone.config.profiles:
+                if p.name == profile_name:
+                    mode = p.mode
+                    break
         sensor = cool_sensor if mode == ProfileMode.COOL else heat_sensor
         kwh_end = self._read_kwh(sensor)
         if kwh_end is None:
@@ -624,6 +625,40 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 target_temperature = active.target
                 seuil_demarrage = active.seuil_demarrage
 
+            # Session active ? on expose ses paramètres SI la zone est en RUNNING
+            in_session = zone.state.state == ZoneState.RUNNING and (
+                zone.state.session_target is not None
+            )
+            session = None
+            if in_session:
+                session = {
+                    "parent_profile_name": zone.state.cycle_start_profile_name,
+                    "manual": zone.state.session_manual,
+                    "started_ts": zone.state.cycle_started_ts,
+                    "max_end_ts": zone.state.session_max_end_ts,
+                    "target": zone.state.session_target,
+                    "target_cutoff": zone.state.session_target_cutoff,
+                    "power": zone.state.session_power,
+                    "fan_intensity": zone.state.session_fan_intensity,
+                    "mode": zone.state.session_mode,
+                    "kickstart_until_ts": zone.state.session_kickstart_until_ts,
+                    "cutoff_held_since_ts": zone.state.session_cutoff_held_since_ts,
+                }
+
+            # Direction/target/seuil dans la carte :
+            # - Si session active : direction + target depuis la SESSION (pas du profil cascade)
+            # - Sinon : depuis le profil de la cascade
+            if in_session:
+                direction = "cool" if zone.state.session_mode == "cool" else "heat"
+                target_temperature = zone.state.session_target
+                seuil_demarrage = None  # n'a pas de sens pendant une session
+                power_out = zone.state.session_power
+                fan_out = zone.state.session_fan_intensity
+
+            else:
+                power_out = active.power if active else None
+                fan_out = active.fan_intensity if active else None
+
             out["zones"][zid] = {
                 "config": zone.config,
                 "state": zone.state.state,
@@ -644,8 +679,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "direction": direction,
                 "target_temperature": target_temperature,
                 "seuil_demarrage": seuil_demarrage,
-                "power": active.power if active else None,
-                "fan_intensity": active.fan_intensity if active else None,
+                "power": power_out,
+                "fan_intensity": fan_out,
                 "supports_cool": inputs.supports_cool,
                 "supports_heat": inputs.supports_heat,
                 "supports_fan_mode": inputs.supports_fan_mode,
@@ -655,6 +690,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "profiles": [p.to_dict() for p in zone.config.profiles],
                 "active_profile_name": active.name if active else None,
                 "active_profile_mode": active.mode if active else None,
+                "session": session,
                 "sessions": zone.state.completed_sessions,
                 "temperature_sensors": list(zone.config.temperature_sensors),
                 "flagged_sensors": list(zone.state.flagged_sensors),

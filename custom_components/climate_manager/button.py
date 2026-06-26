@@ -41,6 +41,8 @@ async def async_setup_entry(
             ZoneResetOverrideButton(coord, zid),
             ZoneForceStartCoolButton(coord, zid),
             ZoneForceStartHeatButton(coord, zid),
+            ZoneExtendSessionButton(coord, zid),
+            ZoneCancelSessionButton(coord, zid),
         ]
     async_add_entities(entities)
 
@@ -134,4 +136,51 @@ class ZoneForceStartHeatButton(DelormejClimateZoneEntity, ButtonEntity):
             "heat": self._zone_data.get("supports_heat", True),
         } if self._zone_data else None
         zone.force_start("heat", utc_now_ts(), supports=supports)
+        await self.coordinator.async_tick_now()
+
+
+class ZoneExtendSessionButton(DelormejClimateZoneEntity, ButtonEntity):
+    """Bouton idempotent : ajoute EXTEND_SESSION_HOURS au max_end_ts."""
+
+    _attr_translation_key = "zone_extend_session"
+    _attr_icon = "mdi:clock-plus-outline"
+
+    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
+        super().__init__(coord, zone_id, "extend_session_1h")
+
+    @property
+    def available(self) -> bool:
+        return super().available and bool(
+            self._zone_data and self._zone_data.get("session")
+        )
+
+    async def async_press(self) -> None:
+        zone = self.coordinator.zone(self._zone_id)
+        if not zone:
+            return
+        from .const import EXTEND_SESSION_HOURS
+        zone.extend_active_session(EXTEND_SESSION_HOURS * 3600)
+        await self.coordinator.async_tick_now()
+
+
+class ZoneCancelSessionButton(DelormejClimateZoneEntity, ButtonEntity):
+    """Annule la session active immédiatement."""
+
+    _attr_translation_key = "zone_cancel_session"
+    _attr_icon = "mdi:stop-circle-outline"
+
+    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
+        super().__init__(coord, zone_id, "cancel_session")
+
+    @property
+    def available(self) -> bool:
+        return super().available and bool(
+            self._zone_data and self._zone_data.get("session")
+        )
+
+    async def async_press(self) -> None:
+        zone = self.coordinator.zone(self._zone_id)
+        if not zone:
+            return
+        zone.cancel_active_session(now_ts=utc_now_ts())
         await self.coordinator.async_tick_now()

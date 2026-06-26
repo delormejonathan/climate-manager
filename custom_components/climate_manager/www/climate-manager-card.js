@@ -193,6 +193,22 @@ class DelormejClimateCard extends HTMLElement {
     $("profiles-list").addEventListener("click", (e) => this._onProfileListClick(e));
     $("profiles-list").addEventListener("change", (e) => this._onProfileFieldChange(e));
     $("profile-add").addEventListener("click", () => this._onProfileAdd());
+
+    // Session actions
+    const sessionModifyBtn = $("session-modify-btn");
+    if (sessionModifyBtn) sessionModifyBtn.addEventListener("click", () => this._openSessionModifyModal());
+    const sessionExtendBtn = $("session-extend-btn");
+    if (sessionExtendBtn) sessionExtendBtn.addEventListener("click", () => {
+      this._call("climate_manager", "extend_session", { zone_id: this._zone, hours: 1 });
+    });
+    const sessionCancelBtn = $("session-cancel-btn");
+    if (sessionCancelBtn) sessionCancelBtn.addEventListener("click", () => {
+      if (confirm("Arrêter la session en cours ?")) {
+        this._call("climate_manager", "cancel_session", { zone_id: this._zone });
+      }
+    });
+    const sessionStartBtn = $("session-start-btn");
+    if (sessionStartBtn) sessionStartBtn.addEventListener("click", () => this._openSessionStartModal());
   }
 
   _bumpSetpoint(dir) {
@@ -205,6 +221,447 @@ class DelormejClimateCard extends HTMLElement {
     const next = Math.round((cur + dir * step) * 2) / 2;
     this._call("climate", "set_temperature",
       { entity_id: this._climateEntity, temperature: next });
+  }
+
+  /* =================================================================== session block + modals */
+
+  _updateSessionBlock(attrs) {
+    const block = this.querySelector('[data-bind="session-block"]');
+    const idleBlock = this.querySelector('[data-bind="session-idle-block"]');
+    if (!block || !idleBlock) return;
+    const session = attrs.session;
+    if (session) {
+      block.style.display = "";
+      idleBlock.style.display = "none";
+      const $ = (k) => this.querySelector(`[data-bind="${k}"]`);
+      const parent = session.parent_profile_name || (session.manual ? "Manuelle" : "—");
+      $("session-parent").textContent = session.manual
+        ? `${parent} · manuelle`
+        : parent;
+      $("session-target").textContent = this._fmtTempUnit(session.target);
+      // Cutoff row
+      const cutoffRow = $("session-cutoff-row");
+      if (session.target_cutoff != null) {
+        cutoffRow.style.display = "";
+        $("session-cutoff").textContent = this._fmtTempUnit(session.target_cutoff);
+      } else {
+        cutoffRow.style.display = "none";
+      }
+      $("session-power").textContent = this._capitalize(session.power || "—");
+      $("session-fan").textContent = this._capitalize(session.fan_intensity || "—");
+      $("session-started").textContent = session.started_ts
+        ? this._fmtElapsed(Date.now() / 1000 - session.started_ts)
+        : "—";
+      $("session-max-end").textContent = session.max_end_ts
+        ? this._fmtTimeFromTs(session.max_end_ts)
+        : "—";
+      // Banners (kickstart, cutoff hold)
+      const banners = $("session-banners");
+      banners.innerHTML = "";
+      if (session.kickstart_until_ts && session.kickstart_until_ts > Date.now() / 1000) {
+        const remaining = Math.round((session.kickstart_until_ts - Date.now() / 1000) / 60);
+        banners.innerHTML += `
+          <div class="dc-session-banner">
+            <ha-icon icon="mdi:rocket-launch"></ha-icon>
+            Kickstart actif — bascule en mode régulier dans ${remaining} min
+          </div>`;
+      }
+      if (session.cutoff_held_since_ts && session.target_cutoff != null) {
+        const heldFor = Math.round((Date.now() / 1000 - session.cutoff_held_since_ts) / 60);
+        banners.innerHTML += `
+          <div class="dc-session-banner">
+            <ha-icon icon="mdi:timer-sand"></ha-icon>
+            Coupure atteinte — confirmé depuis ${heldFor} min
+          </div>`;
+      }
+    } else {
+      block.style.display = "none";
+      idleBlock.style.display = "";
+    }
+  }
+
+  _openModal(html) {
+    this._closeModal();
+    const m = document.createElement("div");
+    m.className = "dc-modal-backdrop";
+    m.innerHTML = `
+      <div class="dc-modal" role="dialog" aria-modal="true">
+        <button class="dc-modal-close" data-bind="modal-close" aria-label="Fermer">×</button>
+        ${html}
+      </div>
+    `;
+    m.addEventListener("click", (e) => {
+      if (e.target === m) this._closeModal();
+    });
+    m.querySelector('[data-bind="modal-close"]').addEventListener("click", () => this._closeModal());
+    this._escListener = (e) => { if (e.key === "Escape") this._closeModal(); };
+    document.addEventListener("keydown", this._escListener);
+    this.appendChild(m);
+    this._modalEl = m;
+    // Auto-focus le premier input
+    const firstInput = m.querySelector("input, select");
+    if (firstInput) setTimeout(() => firstInput.focus(), 50);
+  }
+
+  _closeModal() {
+    if (this._modalEl) {
+      this._modalEl.remove();
+      this._modalEl = null;
+    }
+    if (this._escListener) {
+      document.removeEventListener("keydown", this._escListener);
+      this._escListener = null;
+    }
+    // Si un profil "nouveau" était en attente d'édition et n'a pas été sauvé,
+    // on l'abandonne (l'utilisateur a cancel/escape).
+    this._pendingNewProfile = null;
+  }
+
+  _openSessionModifyModal() {
+    const attrs = this._stateAttrs();
+    const s = attrs.session;
+    if (!s) return;
+    const maxEndLocal = s.max_end_ts ? this._fmtDatetimeLocal(s.max_end_ts) : "";
+    this._openModal(`
+      <h2 class="dc-modal-title">Modifier la session</h2>
+      <div class="dc-modal-form" data-bind="session-modify-form">
+        <div class="dc-modal-pair">
+          <div class="dc-modal-field">
+            <label>Cible (°C)</label>
+            <input type="number" step="0.5" data-field="target" value="${s.target ?? ""}">
+          </div>
+          <div class="dc-modal-field">
+            <label>Coupure (°C, vide = aucune)</label>
+            <input type="number" step="0.5" data-field="target_cutoff" value="${s.target_cutoff ?? ""}">
+          </div>
+        </div>
+        <div class="dc-modal-pair">
+          <div class="dc-modal-field">
+            <label>Puissance</label>
+            <select data-field="power">
+              ${["doux","normal","agressif"].map(o => `<option value="${o}" ${s.power===o?"selected":""}>${this._capitalize(o)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="dc-modal-field">
+            <label>Ventilation</label>
+            <select data-field="fan_intensity">
+              ${["doux","normal","fort"].map(o => `<option value="${o}" ${s.fan_intensity===o?"selected":""}>${this._capitalize(o)}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+        <div class="dc-modal-field">
+          <label>Fin maximale</label>
+          <input type="datetime-local" data-field="max_end" value="${maxEndLocal}">
+          <span class="dc-modal-hint">La session se termine à cette heure quoi qu'il arrive.</span>
+        </div>
+        <div class="dc-modal-actions">
+          <button class="dc-btn" data-bind="modal-cancel">Annuler</button>
+          <button class="dc-btn dc-btn-primary" data-bind="modal-save">Enregistrer</button>
+        </div>
+      </div>
+    `);
+    const form = this.querySelector('[data-bind="session-modify-form"]');
+    form.querySelector('[data-bind="modal-cancel"]').addEventListener("click", () => this._closeModal());
+    form.querySelector('[data-bind="modal-save"]').addEventListener("click", () => this._submitSessionModify(form));
+  }
+
+  _submitSessionModify(form) {
+    const get = (f) => form.querySelector(`[data-field="${f}"]`)?.value ?? "";
+    const data = { zone_id: this._zone };
+    const target = parseFloat(get("target"));
+    if (Number.isFinite(target)) data.target = target;
+    const cutoffRaw = get("target_cutoff").trim();
+    if (cutoffRaw === "") {
+      // L'utilisateur veut effacer la coupure
+      data.target_cutoff = null;
+    } else {
+      const c = parseFloat(cutoffRaw);
+      if (Number.isFinite(c)) data.target_cutoff = c;
+    }
+    const pwr = get("power");
+    if (pwr) data.power = pwr;
+    const fan = get("fan_intensity");
+    if (fan) data.fan_intensity = fan;
+    const maxEndStr = get("max_end");
+    if (maxEndStr) {
+      const ts = new Date(maxEndStr).getTime() / 1000;
+      if (Number.isFinite(ts)) data.max_end_ts = ts;
+    }
+    this._call("climate_manager", "update_session", data);
+    this._closeModal();
+  }
+
+  _openSessionStartModal() {
+    const attrs = this._stateAttrs();
+    // Hérite du profil "actif" (ou du premier profil de la cascade) si pas de session
+    const profiles = Array.isArray(attrs.profiles) ? attrs.profiles : [];
+    let inherit = profiles.find((p) => p.name === attrs.active_profile_name);
+    if (!inherit && profiles.length > 0) inherit = profiles[0];
+    inherit = inherit || { mode: "cool", target: 24.5, power: "normal", fan_intensity: "normal" };
+    // max_end_ts : 23:59 par défaut
+    const defaultEnd = new Date();
+    defaultEnd.setHours(23, 59, 0, 0);
+    const maxEndLocal = this._fmtDatetimeLocalDate(defaultEnd);
+    this._openModal(`
+      <h2 class="dc-modal-title">Démarrer une session</h2>
+      <div class="dc-modal-form" data-bind="session-start-form">
+        <div class="dc-modal-pair">
+          <div class="dc-modal-field">
+            <label>Mode</label>
+            <select data-field="mode">
+              <option value="cool" ${inherit.mode==="cool"?"selected":""}>Refroidissement</option>
+              <option value="heat" ${inherit.mode==="heat"?"selected":""}>Chauffage</option>
+            </select>
+          </div>
+          <div class="dc-modal-field">
+            <label>Cible (°C)</label>
+            <input type="number" step="0.5" data-field="target" value="${inherit.target ?? 24.5}">
+          </div>
+        </div>
+        <div class="dc-modal-pair">
+          <div class="dc-modal-field">
+            <label>Coupure (°C, vide = aucune)</label>
+            <input type="number" step="0.5" data-field="target_cutoff" value="">
+          </div>
+          <div class="dc-modal-field">
+            <label>Fin maximale</label>
+            <input type="datetime-local" data-field="max_end" value="${maxEndLocal}">
+          </div>
+        </div>
+        <div class="dc-modal-pair">
+          <div class="dc-modal-field">
+            <label>Puissance</label>
+            <select data-field="power">
+              ${["doux","normal","agressif"].map(o => `<option value="${o}" ${inherit.power===o?"selected":""}>${this._capitalize(o)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="dc-modal-field">
+            <label>Ventilation</label>
+            <select data-field="fan_intensity">
+              ${["doux","normal","fort"].map(o => `<option value="${o}" ${inherit.fan_intensity===o?"selected":""}>${this._capitalize(o)}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+        <span class="dc-modal-hint">Pré-rempli depuis ${attrs.active_profile_name ? `le profil <b>${attrs.active_profile_name}</b>` : "le premier profil de la cascade"}. Modifie ce que tu veux avant de valider.</span>
+        <div class="dc-modal-actions">
+          <button class="dc-btn" data-bind="modal-cancel">Annuler</button>
+          <button class="dc-btn dc-btn-primary" data-bind="modal-save">Démarrer</button>
+        </div>
+      </div>
+    `);
+    const form = this.querySelector('[data-bind="session-start-form"]');
+    form.querySelector('[data-bind="modal-cancel"]').addEventListener("click", () => this._closeModal());
+    form.querySelector('[data-bind="modal-save"]').addEventListener("click", () => this._submitSessionStart(form, attrs.active_profile_name));
+  }
+
+  _submitSessionStart(form, parentProfileName) {
+    const get = (f) => form.querySelector(`[data-field="${f}"]`)?.value ?? "";
+    const data = { zone_id: this._zone };
+    data.mode = get("mode") || "cool";
+    const target = parseFloat(get("target"));
+    data.target = Number.isFinite(target) ? target : (data.mode === "cool" ? 24.5 : 21);
+    const cutoffRaw = get("target_cutoff").trim();
+    if (cutoffRaw) {
+      const c = parseFloat(cutoffRaw);
+      if (Number.isFinite(c)) data.target_cutoff = c;
+    }
+    const maxEndStr = get("max_end");
+    if (maxEndStr) {
+      const ts = new Date(maxEndStr).getTime() / 1000;
+      if (Number.isFinite(ts)) data.max_end_ts = ts;
+    } else {
+      // Default : +4h
+      data.max_end_ts = Date.now() / 1000 + 4 * 3600;
+    }
+    data.power = get("power") || "normal";
+    data.fan_intensity = get("fan_intensity") || "normal";
+    if (parentProfileName) data.parent_profile_name = parentProfileName;
+    this._call("climate_manager", "start_session", data);
+    this._closeModal();
+  }
+
+  _fmtElapsed(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return "—";
+    const min = Math.round(seconds / 60);
+    if (min < 1) return "à l'instant";
+    if (min < 60) return `il y a ${min} min`;
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return `il y a ${h}h${m.toString().padStart(2, "0")}`;
+  }
+
+  _fmtDatetimeLocal(epochSec) {
+    const d = new Date(epochSec * 1000);
+    return this._fmtDatetimeLocalDate(d);
+  }
+
+  _fmtDatetimeLocalDate(d) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  /* =================================================================== profile modal */
+
+  _openProfileModal(idx) {
+    const profiles = this._currentProfiles();
+    const p = profiles[idx] || {};
+    const presenceEntities = this._listEntities([
+      "alarm_control_panel.", "person.", "binary_sensor.", "device_tracker.",
+      "input_boolean.", "group.",
+    ]);
+    const opt = (v, l, cur) =>
+      `<option value="${this._escapeHTML(v)}" ${v === cur ? "selected" : ""}>${this._escapeHTML(l)}</option>`;
+    this._openModal(`
+      <h2 class="dc-modal-title">Profil — ${this._escapeHTML(p.name || "Nouveau")}</h2>
+      <div class="dc-modal-form" data-bind="profile-modal-form" data-idx="${idx}">
+        <div class="dc-modal-field">
+          <label>Nom</label>
+          <input type="text" data-field="name" value="${this._escapeHTML(p.name || "")}">
+        </div>
+        <div class="dc-modal-field">
+          <label>Mode</label>
+          <select data-field="mode">
+            ${opt("cool", "Refroidissement", p.mode || "cool")}
+            ${opt("heat", "Chauffage", p.mode || "cool")}
+          </select>
+        </div>
+        <div class="dc-modal-pair">
+          <div class="dc-modal-field">
+            <label>Actif de</label>
+            <input type="time" data-field="active_from" value="${this._escapeHTML(p.active_from || "")}">
+          </div>
+          <div class="dc-modal-field">
+            <label>Jusqu'à</label>
+            <input type="time" data-field="active_to" value="${this._escapeHTML(p.active_to || "")}">
+          </div>
+        </div>
+        <div class="dc-modal-pair">
+          <div class="dc-modal-field">
+            <label>Seuil de démarrage</label>
+            <input type="number" step="0.5" data-field="seuil_demarrage" value="${p.seuil_demarrage ?? ""}">
+          </div>
+          <div class="dc-modal-field">
+            <label>Cible (°C)</label>
+            <input type="number" step="0.5" data-field="target" value="${p.target ?? ""}">
+          </div>
+        </div>
+        <div class="dc-modal-field">
+          <label>Cible de coupure (°C — vide = pas de coupure auto)</label>
+          <input type="number" step="0.5" data-field="target_cutoff" value="${p.target_cutoff ?? ""}">
+          <span class="dc-modal-hint">Si renseignée, la session s'arrête quand la pièce atteint cette T° pendant 15 min.</span>
+        </div>
+        <div class="dc-modal-pair">
+          <div class="dc-modal-field">
+            <label>Puissance</label>
+            <select data-field="power">
+              ${["doux","normal","agressif"].map(o => opt(o, this._capitalize(o), p.power || "normal")).join("")}
+            </select>
+          </div>
+          <div class="dc-modal-field">
+            <label>Ventilation</label>
+            <select data-field="fan_intensity">
+              ${["doux","normal","fort"].map(o => opt(o, this._capitalize(o), p.fan_intensity || "normal")).join("")}
+            </select>
+          </div>
+        </div>
+
+        <details class="dc-modal-advanced" ${p.kickstart_minutes > 0 ? "open" : ""}>
+          <summary>Kickstart (boost de démarrage)</summary>
+          <div class="dc-modal-field">
+            <label>Durée du kickstart (min, 0 = désactivé)</label>
+            <input type="number" min="0" step="5" data-field="kickstart_minutes" value="${p.kickstart_minutes ?? 0}">
+          </div>
+          <div class="dc-modal-pair">
+            <div class="dc-modal-field">
+              <label>Puissance kickstart</label>
+              <select data-field="kickstart_power">
+                <option value="">(hériter)</option>
+                ${["doux","normal","agressif"].map(o => opt(o, this._capitalize(o), p.kickstart_power || "")).join("")}
+              </select>
+            </div>
+            <div class="dc-modal-field">
+              <label>Ventilation kickstart</label>
+              <select data-field="kickstart_fan_intensity">
+                <option value="">(hériter)</option>
+                ${["doux","normal","fort"].map(o => opt(o, this._capitalize(o), p.kickstart_fan_intensity || "")).join("")}
+              </select>
+            </div>
+          </div>
+          <span class="dc-modal-hint">Pendant les N premières minutes, on remplace puissance + ventilation par les valeurs ci-dessus (idéal pour absorber un gros écart au démarrage).</span>
+        </details>
+
+        <details class="dc-modal-advanced" ${p.presence_entity ? "open" : ""}>
+          <summary>Présence (condition optionnelle)</summary>
+          <div class="dc-modal-field">
+            <label>Entité de présence</label>
+            <select data-field="presence_entity">
+              ${opt("", "— Aucune —", p.presence_entity || "")}
+              ${presenceEntities.map((e) => opt(e, e, p.presence_entity || "")).join("")}
+            </select>
+          </div>
+          <div class="dc-modal-field">
+            <label>État requis (ex: armed_away, home, on)</label>
+            <input type="text" data-field="presence_required_state" value="${this._escapeHTML(p.presence_required_state || "")}">
+          </div>
+        </details>
+
+        <div class="dc-modal-actions">
+          <button class="dc-btn" data-bind="modal-cancel">Annuler</button>
+          <button class="dc-btn dc-btn-primary" data-bind="modal-save">Enregistrer</button>
+        </div>
+      </div>
+    `);
+    const form = this.querySelector('[data-bind="profile-modal-form"]');
+    form.querySelector('[data-bind="modal-cancel"]').addEventListener("click", () => this._closeModal());
+    form.querySelector('[data-bind="modal-save"]').addEventListener("click", () => this._submitProfileModal(form, idx));
+  }
+
+  _submitProfileModal(form, idx) {
+    const get = (f) => form.querySelector(`[data-field="${f}"]`)?.value ?? "";
+    const num = (f, def) => {
+      const v = parseFloat(get(f));
+      return Number.isFinite(v) ? v : def;
+    };
+    const nullableNum = (f) => {
+      const raw = get(f).trim();
+      if (raw === "") return null;
+      const v = parseFloat(raw);
+      return Number.isFinite(v) ? v : null;
+    };
+    const nullableInt = (f) => {
+      const raw = get(f).trim();
+      if (raw === "") return 0;
+      const v = parseInt(raw, 10);
+      return Number.isFinite(v) ? Math.max(0, v) : 0;
+    };
+    const nullableStr = (f) => {
+      const v = get(f);
+      return v === "" ? null : v;
+    };
+    const mode = get("mode") === "heat" ? "heat" : "cool";
+    const defSeuil = mode === "cool" ? 27.0 : 18.0;
+    const defTarget = mode === "cool" ? 24.5 : 21.0;
+    const profile = {
+      name: get("name").trim() || "Sans nom",
+      mode,
+      active_from: nullableStr("active_from"),
+      active_to: nullableStr("active_to"),
+      presence_entity: nullableStr("presence_entity"),
+      presence_required_state: nullableStr("presence_required_state"),
+      seuil_demarrage: num("seuil_demarrage", defSeuil),
+      target: num("target", defTarget),
+      target_cutoff: nullableNum("target_cutoff"),
+      power: get("power") || "normal",
+      fan_intensity: get("fan_intensity") || "normal",
+      kickstart_minutes: nullableInt("kickstart_minutes"),
+      kickstart_power: nullableStr("kickstart_power"),
+      kickstart_fan_intensity: nullableStr("kickstart_fan_intensity"),
+    };
+    const profiles = this._currentProfiles();
+    profiles[idx] = profile;
+    this._pendingNewProfile = null;
+    this._closeModal();
+    this._pushProfiles(profiles);
   }
 
   /* =================================================================== update */
@@ -294,6 +751,7 @@ class DelormejClimateCard extends HTMLElement {
 
     this._updateThermalRail(stateVal, attrs, get, ids);
     this._updateTimeline(stateVal, attrs, get, ids);
+    this._updateSessionBlock(attrs);
 
     // Pills — ONLY surface what's not redundant with the narrative or state
     // tag. Windows open is real signal. Override is real signal. Schedule
@@ -714,8 +1172,7 @@ class DelormejClimateCard extends HTMLElement {
     const idx = parseInt(card.dataset.idx, 10);
     const action = btn.dataset.action;
     if (action === "edit") {
-      this._editingProfileIdx = idx;
-      this._update();
+      this._openProfileModal(idx);
     } else if (action === "cancel") {
       this._editingProfileIdx = null;
       this._update();
@@ -761,16 +1218,27 @@ class DelormejClimateCard extends HTMLElement {
       presence_required_state: null,
       seuil_demarrage: 27.0,
       target: 24.5,
+      target_cutoff: null,
       power: "normal",
       fan_intensity: "normal",
+      kickstart_minutes: 0,
+      kickstart_power: null,
+      kickstart_fan_intensity: null,
     });
-    this._editingProfileIdx = profiles.length - 1;
-    this._pushProfiles(profiles);
+    const idx = profiles.length - 1;
+    // Stocker temporairement le profil pour que le modal puisse l'éditer
+    // sans avoir à le pousser d'abord (et il sera persisté à la sauvegarde).
+    this._pendingNewProfile = profiles;
+    this._openProfileModal(idx);
   }
 
   _currentProfiles() {
+    // Pendant qu'un nouveau profil est en cours d'édition dans le modal,
+    // on travaille sur le buffer pending. Le buffer est effacé sur save ou cancel.
+    if (this._pendingNewProfile) {
+      return JSON.parse(JSON.stringify(this._pendingNewProfile));
+    }
     const attrs = this._hass?.states[this._ent("sensor", "state")]?.attributes || {};
-    // Deep copy so we don't mutate the cached attrs in place
     return JSON.parse(JSON.stringify(attrs.profiles || []));
   }
 
@@ -1474,6 +1942,157 @@ const STYLES = `
   .dc-hero.no-target .target-block { display: none; }
   .dc-hero .room-label { display: none; }
 
+  /* ============ Session active (bloc principal) ============ */
+  .dc-session {
+    margin-top: 12px;
+    padding: 14px 16px;
+    background: color-mix(in srgb, var(--dc-accent), transparent 88%);
+    border-radius: var(--dc-radius-md);
+    border: 1px solid color-mix(in srgb, var(--dc-accent), transparent 70%);
+  }
+  .dc-session-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .dc-session-title {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 700;
+    color: var(--dc-fg);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .dc-session-title ha-icon { --mdc-icon-size: 16px; color: var(--dc-accent); }
+  .dc-session-parent {
+    font-size: 12px; color: var(--dc-muted);
+    font-style: italic;
+  }
+  .dc-session-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 8px 14px;
+    margin-bottom: 10px;
+  }
+  .dc-session-metric { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .dc-session-metric .lbl {
+    font-size: 10px; color: var(--dc-dim);
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .dc-session-metric .val {
+    font-size: 14px; font-weight: 600; color: var(--dc-fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dc-session-banners:empty { display: none; }
+  .dc-session-banners {
+    display: flex; flex-direction: column; gap: 4px;
+    margin-bottom: 10px;
+  }
+  .dc-session-banner {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px;
+    background: var(--dc-surface);
+    border-radius: var(--dc-radius-sm);
+    font-size: 12px; color: var(--dc-muted);
+  }
+  .dc-session-banner ha-icon { --mdc-icon-size: 14px; color: var(--dc-accent); }
+  .dc-session-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 8px;
+  }
+  .dc-session-idle {
+    margin-top: 12px;
+  }
+
+  /* ============ Buttons (cohérents) ============ */
+  .dc-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 10px 14px;
+    background: var(--dc-surface);
+    color: var(--dc-fg);
+    border: 1px solid var(--dc-border);
+    border-radius: var(--dc-radius-sm);
+    font-family: inherit; font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .dc-btn:hover { border-color: var(--dc-muted); }
+  .dc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .dc-btn ha-icon { --mdc-icon-size: 16px; }
+  .dc-btn-primary {
+    background: var(--dc-accent);
+    color: var(--dc-on-accent, var(--dc-fg));
+    border-color: transparent;
+  }
+  .dc-btn-primary:hover { filter: brightness(1.08); }
+  .dc-btn-danger {
+    color: #c0392b;
+    border-color: color-mix(in srgb, #c0392b, transparent 75%);
+  }
+  .dc-btn-wide { width: 100%; padding: 12px; }
+
+  /* ============ Modal ============ */
+  .dc-modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+    backdrop-filter: blur(2px);
+  }
+  .dc-modal {
+    background: var(--dc-card-bg, var(--card-background-color, white));
+    color: var(--dc-fg);
+    border-radius: var(--dc-radius-md);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+    width: 100%; max-width: 480px;
+    max-height: 90vh;
+    overflow: auto;
+    padding: 22px 22px 18px;
+    position: relative;
+  }
+  .dc-modal-close {
+    position: absolute; top: 12px; right: 14px;
+    background: none; border: none;
+    color: var(--dc-muted);
+    font-size: 22px; line-height: 1; cursor: pointer;
+    padding: 4px 8px;
+  }
+  .dc-modal-title {
+    margin: 0 30px 18px 0;
+    font-size: 17px; font-weight: 700; color: var(--dc-fg);
+  }
+  .dc-modal-form { display: flex; flex-direction: column; gap: 14px; }
+  .dc-modal-field { display: flex; flex-direction: column; gap: 4px; }
+  .dc-modal-field label {
+    font-size: 12px; font-weight: 600;
+    color: var(--dc-muted);
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .dc-modal-field input,
+  .dc-modal-field select {
+    padding: 12px 14px;
+    font-size: 15px; font-family: inherit;
+    background: var(--dc-surface);
+    color: var(--dc-fg);
+    border: 1px solid var(--dc-border);
+    border-radius: var(--dc-radius-sm);
+  }
+  .dc-modal-field input:focus,
+  .dc-modal-field select:focus {
+    outline: none;
+    border-color: var(--dc-accent);
+  }
+  .dc-modal-pair {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  }
+  .dc-modal-actions {
+    display: flex; gap: 8px; justify-content: flex-end;
+    margin-top: 8px;
+  }
+  .dc-modal-hint {
+    font-size: 12px; color: var(--dc-muted);
+    line-height: 1.4;
+  }
+
   .dc-narrative {
     font-size: 14px; line-height: 1.5;
     color: var(--dc-muted);
@@ -2131,6 +2750,62 @@ const TEMPLATE = `
       <div class="dc-narrative" data-bind="narrative"></div>
 
       <div class="dc-pills" data-bind="status-pills"></div>
+
+      <!-- ===== Session active : carte d'info + actions ===== -->
+      <div class="dc-session" data-bind="session-block" style="display:none">
+        <div class="dc-session-head">
+          <div class="dc-session-title">
+            <ha-icon icon="mdi:timer-play-outline"></ha-icon>
+            <span>Session active</span>
+          </div>
+          <div class="dc-session-parent" data-bind="session-parent">—</div>
+        </div>
+        <div class="dc-session-meta">
+          <div class="dc-session-metric">
+            <span class="lbl">Cible</span>
+            <span class="val" data-bind="session-target">—</span>
+          </div>
+          <div class="dc-session-metric" data-bind="session-cutoff-row">
+            <span class="lbl">Coupure</span>
+            <span class="val" data-bind="session-cutoff">—</span>
+          </div>
+          <div class="dc-session-metric">
+            <span class="lbl">Puissance</span>
+            <span class="val" data-bind="session-power">—</span>
+          </div>
+          <div class="dc-session-metric">
+            <span class="lbl">Ventilation</span>
+            <span class="val" data-bind="session-fan">—</span>
+          </div>
+          <div class="dc-session-metric">
+            <span class="lbl">Démarrée</span>
+            <span class="val" data-bind="session-started">—</span>
+          </div>
+          <div class="dc-session-metric">
+            <span class="lbl">Fin max</span>
+            <span class="val" data-bind="session-max-end">—</span>
+          </div>
+        </div>
+        <div class="dc-session-banners" data-bind="session-banners"></div>
+        <div class="dc-session-actions">
+          <button class="dc-btn dc-btn-primary" data-bind="session-modify-btn">
+            <ha-icon icon="mdi:pencil"></ha-icon> Modifier
+          </button>
+          <button class="dc-btn" data-bind="session-extend-btn">
+            <ha-icon icon="mdi:clock-plus-outline"></ha-icon> +1 h
+          </button>
+          <button class="dc-btn dc-btn-danger" data-bind="session-cancel-btn">
+            <ha-icon icon="mdi:stop-circle-outline"></ha-icon> Arrêter
+          </button>
+        </div>
+      </div>
+
+      <!-- ===== Pas de session : bouton de démarrage manuel ===== -->
+      <div class="dc-session-idle" data-bind="session-idle-block" style="display:none">
+        <button class="dc-btn dc-btn-primary dc-btn-wide" data-bind="session-start-btn">
+          <ha-icon icon="mdi:play-circle"></ha-icon> Démarrer une session
+        </button>
+      </div>
     </div>
 
     <div class="dc-override-row" data-bind="override-row" style="display:none">

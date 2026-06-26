@@ -88,3 +88,134 @@ update_profiles:
 reload_zones:
   name: Reload zones
   description: Recharge la configuration des zones sans redémarrer Home Assistant.
+
+start_session:
+  name: Démarrer une session
+  description: Lance une session manuelle (cool ou heat) avec params libres.
+  fields:
+    zone_id:
+      name: Zone ID
+      required: true
+      selector:
+        text:
+    mode:
+      name: Mode
+      required: true
+      selector:
+        select:
+          options:
+            - cool
+            - heat
+    target:
+      name: Cible (°C)
+      required: true
+      selector:
+        number:
+          min: 16
+          max: 32
+          step: 0.5
+          unit_of_measurement: "°C"
+    max_end_ts:
+      name: Fin maximale (epoch s)
+      required: true
+      selector:
+        text:
+    power:
+      name: Puissance
+      required: false
+      selector:
+        select:
+          options: [doux, normal, agressif]
+    fan_intensity:
+      name: Ventilation
+      required: false
+      selector:
+        select:
+          options: [doux, normal, fort]
+    target_cutoff:
+      name: Cible de coupure (°C, optionnel)
+      required: false
+      selector:
+        number:
+          min: 16
+          max: 32
+          step: 0.5
+          unit_of_measurement: "°C"
+    parent_profile_name:
+      name: Profil parent (audit)
+      required: false
+      selector:
+        text:
+
+update_session:
+  name: Mettre à jour la session active
+  description: Modifie les paramètres de la session en cours.
+  fields:
+    zone_id:
+      name: Zone ID
+      required: true
+      selector:
+        text:
+    target:
+      name: Cible (°C)
+      required: false
+      selector:
+        number:
+          min: 16
+          max: 32
+          step: 0.5
+          unit_of_measurement: "°C"
+    target_cutoff:
+      name: Cible de coupure (°C — null pour effacer)
+      required: false
+      selector:
+        number:
+          min: 16
+          max: 32
+          step: 0.5
+          unit_of_measurement: "°C"
+    power:
+      name: Puissance
+      required: false
+      selector:
+        select:
+          options: [doux, normal, agressif]
+    fan_intensity:
+      name: Ventilation
+      required: false
+      selector:
+        select:
+          options: [doux, normal, fort]
+    max_end_ts:
+      name: Fin maximale (epoch s)
+      required: false
+      selector:
+        text:
+
+extend_session:
+  name: Prolonger la session
+  description: Idempotent — ajoute des heures au max_end_ts de la session active.
+  fields:
+    zone_id:
+      name: Zone ID
+      required: true
+      selector:
+        text:
+    hours:
+      name: Heures à ajouter
+      required: false
+      selector:
+        number:
+          min: 0.25
+          max: 8
+          step: 0.25
+
+cancel_session:
+  name: Annuler la session
+  description: Termine immédiatement la session en cours.
+  fields:
+    zone_id:
+      name: Zone ID
+      required: true
+      selector:
+        text:

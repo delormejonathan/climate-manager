@@ -51,6 +51,7 @@ from .const import (
     POWER_OFFSETS,
     RATE_LIMIT_SECONDS,
     SETPOINT_NOOP_DELTA,
+    TARGET_CUTOFF_HOLD_SECONDS,
     TARGET_DEAD_BAND,
     ProfileMode,
     ZoneMode,
@@ -120,8 +121,17 @@ class Profile:
     seuil_demarrage: float = DEFAULT_SEUIL_DEMARRAGE_COOL
     # Cible à maintenir pendant RUNNING.
     target: float = DEFAULT_TARGET_COOL
+    # Cible de coupure : si la pièce atteint cette T° (et la tient
+    # TARGET_CUTOFF_HOLD_SECONDS), la session se termine. None = pas de coupure
+    # automatique (la session tourne jusqu'à max_end_ts).
+    target_cutoff: float | None = None
     power: str = DEFAULT_POWER
     fan_intensity: str = DEFAULT_FAN_INTENSITY
+    # Kickstart : pendant les N premières minutes après spawn, utiliser des
+    # paramètres plus agressifs que `power` / `fan_intensity`. 0 = désactivé.
+    kickstart_minutes: int = 0
+    kickstart_power: str | None = None  # None → utilise `power`
+    kickstart_fan_intensity: str | None = None  # None → utilise `fan_intensity`
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Profile:
@@ -143,6 +153,22 @@ class Profile:
             DEFAULT_TARGET_COOL if mode == ProfileMode.COOL
             else DEFAULT_TARGET_HEAT
         )
+        cutoff_raw = d.get("target_cutoff")
+        cutoff: float | None
+        if cutoff_raw is None or cutoff_raw == "":
+            cutoff = None
+        else:
+            try:
+                cutoff = float(cutoff_raw)
+            except (TypeError, ValueError):
+                cutoff = None
+        kickstart_minutes_raw = d.get("kickstart_minutes", 0)
+        try:
+            kickstart_minutes = int(kickstart_minutes_raw) if kickstart_minutes_raw not in (None, "") else 0
+        except (TypeError, ValueError):
+            kickstart_minutes = 0
+        kickstart_power = d.get("kickstart_power") or None
+        kickstart_fan = d.get("kickstart_fan_intensity") or None
         return cls(
             name=str(d.get("name", "Profil")),
             mode=mode,
@@ -152,8 +178,12 @@ class Profile:
             presence_required_state=d.get("presence_required_state"),
             seuil_demarrage=float(d.get("seuil_demarrage", default_seuil)),
             target=float(d.get("target", default_target)),
+            target_cutoff=cutoff,
             power=str(d.get("power", DEFAULT_POWER)),
             fan_intensity=str(d.get("fan_intensity", DEFAULT_FAN_INTENSITY)),
+            kickstart_minutes=max(0, kickstart_minutes),
+            kickstart_power=kickstart_power,
+            kickstart_fan_intensity=kickstart_fan,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -166,8 +196,12 @@ class Profile:
             "presence_required_state": self.presence_required_state,
             "seuil_demarrage": self.seuil_demarrage,
             "target": self.target,
+            "target_cutoff": self.target_cutoff,
             "power": self.power,
             "fan_intensity": self.fan_intensity,
+            "kickstart_minutes": self.kickstart_minutes,
+            "kickstart_power": self.kickstart_power,
+            "kickstart_fan_intensity": self.kickstart_fan_intensity,
         }
 
     def time_window_contains(self, hour: int, minute: int) -> bool:
@@ -212,6 +246,25 @@ class ZoneRuntimeState:
     cycle_start_profile_name: str | None = None
     # Snapshot du compteur kWh au démarrage du cycle (None si pas de capteur).
     cycle_start_kwh: float | None = None
+    # === Session params (None si pas de session active) ===
+    # Tous renseignés en cohérence : soit tout None, soit tout renseigné.
+    session_target: float | None = None
+    session_target_cutoff: float | None = None
+    session_power: str | None = None
+    session_fan_intensity: str | None = None
+    session_mode: str | None = None  # "cool" | "heat"
+    session_max_end_ts: float | None = None
+    # Kickstart actif jusqu'à ce timestamp (None = pas de kickstart en cours)
+    session_kickstart_until_ts: float | None = None
+    # Power/fan à appliquer une fois le kickstart terminé
+    session_post_kickstart_power: str | None = None
+    session_post_kickstart_fan_intensity: str | None = None
+    # Quand le target_cutoff est atteint pour la première fois, on commence à
+    # chronométrer. Reset si la T° remonte au-dessus du cutoff.
+    session_cutoff_held_since_ts: float | None = None
+    # True si la session a été démarrée manuellement (pas par la cascade).
+    # Sert juste à afficher "Session manuelle" au lieu d'un nom de profil parent.
+    session_manual: bool = False
     # Snapshot des températures de chaque capteur au démarrage du cycle.
     # Sert de référence pour détecter les capteurs qui ne suivent pas la
     # tendance (porte fermée). Vidé à la fin du cycle.
@@ -241,6 +294,17 @@ class ZoneRuntimeState:
             "cycle_started_ts": self.cycle_started_ts,
             "cycle_start_profile_name": self.cycle_start_profile_name,
             "cycle_start_kwh": self.cycle_start_kwh,
+            "session_target": self.session_target,
+            "session_target_cutoff": self.session_target_cutoff,
+            "session_power": self.session_power,
+            "session_fan_intensity": self.session_fan_intensity,
+            "session_mode": self.session_mode,
+            "session_max_end_ts": self.session_max_end_ts,
+            "session_kickstart_until_ts": self.session_kickstart_until_ts,
+            "session_post_kickstart_power": self.session_post_kickstart_power,
+            "session_post_kickstart_fan_intensity": self.session_post_kickstart_fan_intensity,
+            "session_cutoff_held_since_ts": self.session_cutoff_held_since_ts,
+            "session_manual": self.session_manual,
             "cycle_baseline_temps": dict(self.cycle_baseline_temps),
             "flagged_sensors": list(self.flagged_sensors),
             "notified_sensors": list(self.notified_sensors),
@@ -271,6 +335,23 @@ class ZoneRuntimeState:
             cycle_started_ts=_as_optional_float(data.get("cycle_started_ts")),
             cycle_start_profile_name=data.get("cycle_start_profile_name"),
             cycle_start_kwh=_as_optional_float(data.get("cycle_start_kwh")),
+            session_target=_as_optional_float(data.get("session_target")),
+            session_target_cutoff=_as_optional_float(data.get("session_target_cutoff")),
+            session_power=data.get("session_power"),
+            session_fan_intensity=data.get("session_fan_intensity"),
+            session_mode=data.get("session_mode"),
+            session_max_end_ts=_as_optional_float(data.get("session_max_end_ts")),
+            session_kickstart_until_ts=_as_optional_float(
+                data.get("session_kickstart_until_ts")
+            ),
+            session_post_kickstart_power=data.get("session_post_kickstart_power"),
+            session_post_kickstart_fan_intensity=data.get(
+                "session_post_kickstart_fan_intensity"
+            ),
+            session_cutoff_held_since_ts=_as_optional_float(
+                data.get("session_cutoff_held_since_ts")
+            ),
+            session_manual=bool(data.get("session_manual") or False),
             cycle_baseline_temps={
                 str(k): float(v)
                 for k, v in (data.get("cycle_baseline_temps") or {}).items()
@@ -348,124 +429,300 @@ class Zone:
     # --- entrée publique ---
 
     def tick(self, inp: ZoneInputs) -> list[Command]:
-        """Avance la machine à états + émet les commandes."""
-        prev_state = self.state.state
+        """Avance la machine à états + émet les commandes.
 
+        Modèle session :
+        - RUNNING = une session active, ses paramètres sont **figés** et ne
+          dépendent plus du profil de la cascade (qui peut changer librement
+          sans impact).
+        - La session se termine sur : max_end_ts atteinte, target_cutoff tenu
+          TARGET_CUTOFF_HOLD_SECONDS, fenêtre ouverte, mode OFF, override
+          utilisateur, ou annulation explicite.
+        - Hors session (IDLE), la cascade peut spawner une nouvelle session si
+          un profil match + room franchit son seuil.
+        """
         # Mode OFF — on s'assure que la clim est éteinte.
         if self.state.mode == ZoneMode.OFF:
             cmds = self._force_off(inp)
-            self._finalize_cycle_if_needed(prev_state, inp)
             return cmds
 
-        # Boost auto-expiry
+        # Boost auto-expiry (mécanique legacy, sera supplantée par les sessions)
         if self.state.boost_until_ts and inp.now_ts >= self.state.boost_until_ts:
             self.state.boost_until_ts = None
 
         # Hard gates (window / override) ont priorité
         gate_cmds = self._maybe_handle_hard_gates(inp)
         if gate_cmds is not None:
-            self._finalize_cycle_if_needed(prev_state, inp)
             return gate_cmds
 
-        # Boost : pilotage spécifique qui ignore les seuils
+        # Boost legacy
         if self.state.boost_until_ts and self.state.boost_until_ts > inp.now_ts:
-            cmds = self._pilot_boost(inp)
-            self._finalize_cycle_if_needed(prev_state, inp)
-            return cmds
+            return self._pilot_boost(inp)
 
-        # Pas de profil actif → on coupe la clim et on reste IDLE
-        if inp.active_profile is None:
-            return self._stop_to_idle(inp, prev_state)
-
-        # Profil actif différent du profil au démarrage du cycle → on coupe
-        # (le nouveau profil sera ré-évalué au prochain tick, partira en IDLE
-        # → RUNNING avec ses propres seuils si appropriés).
-        if (
-            self.state.state == ZoneState.RUNNING
-            and self.state.cycle_start_profile_name is not None
-            and inp.active_profile.name != self.state.cycle_start_profile_name
-        ):
-            return self._stop_to_idle(inp, prev_state)
-
-        # IDLE → RUNNING ?
-        if self.state.state == ZoneState.IDLE:
-            if self._should_start(inp):
-                self._transition(ZoneState.RUNNING, inp.now_ts)
-                self.state.cycle_started_ts = inp.now_ts
-                self.state.cycle_start_profile_name = inp.active_profile.name
-
-        cmds: list[Command] = []
+        # === Session active ? (state == RUNNING) ===
         if self.state.state == ZoneState.RUNNING:
-            cmds = self._pilot_running(inp)
-        elif self.state.state == ZoneState.IDLE:
-            # IDLE : on s'assure que la clim est OFF si elle ne l'est pas déjà
-            if inp.clim_current_hvac_mode != HVACMode.OFF:
-                cmds = [self._cmd_turn_off()]
-        return cmds
+            # Conditions de fin de session
+            end_reason = self._check_session_end(inp)
+            if end_reason is not None:
+                return self._end_session(inp, end_reason)
+            # Kickstart : bascule sur les paramètres réguliers une fois expiré
+            self._maybe_transition_kickstart(inp)
+            # Pilote avec les paramètres de la session
+            return self._pilot_session(inp)
 
-    def _stop_to_idle(self, inp: ZoneInputs, prev_state: str) -> list[Command]:
-        """Coupe la clim et passe en IDLE. Termine la session courante si on
-        était en RUNNING."""
-        was_running = self.state.state == ZoneState.RUNNING
+        # === IDLE — cascade peut spawner une session ===
+        if inp.active_profile is None:
+            # Pas de profil actif et pas de session → rien à faire
+            if inp.clim_current_hvac_mode != HVACMode.OFF:
+                return [self._cmd_turn_off()]
+            return []
+
+        if self._should_start_for_profile(inp.active_profile, inp):
+            self._spawn_session(inp, inp.active_profile, manual=False)
+            return self._pilot_session(inp)
+
+        # IDLE sans démarrage : on s'assure que la clim est OFF
+        if inp.clim_current_hvac_mode != HVACMode.OFF:
+            return [self._cmd_turn_off()]
+        return []
+
+    # --- Lifecycle session ---
+
+    def _spawn_session(self, inp: ZoneInputs, profile: Profile, *, manual: bool) -> None:
+        """Crée une session héritée d'un profil (ou manuelle) et passe en RUNNING."""
+        # Snapshot params du profil
+        target = profile.target
+        target_cutoff = profile.target_cutoff
+        post_kick_power = profile.power
+        post_kick_fan = profile.fan_intensity
+        mode = profile.mode
+        # Kickstart
+        kickstart_until_ts: float | None = None
+        cur_power = post_kick_power
+        cur_fan = post_kick_fan
+        if profile.kickstart_minutes > 0:
+            kickstart_until_ts = inp.now_ts + profile.kickstart_minutes * 60
+            cur_power = profile.kickstart_power or post_kick_power
+            cur_fan = profile.kickstart_fan_intensity or post_kick_fan
+        # Plage max : on prend la fin du créneau du profil s'il y en a une
+        max_end_ts = self._default_max_end_ts(inp.now_ts, profile)
+
+        self._transition(ZoneState.RUNNING, inp.now_ts)
+        self.state.cycle_started_ts = inp.now_ts
+        self.state.cycle_start_profile_name = profile.name
+        self.state.session_target = target
+        self.state.session_target_cutoff = target_cutoff
+        self.state.session_power = cur_power
+        self.state.session_fan_intensity = cur_fan
+        self.state.session_mode = mode
+        self.state.session_max_end_ts = max_end_ts
+        self.state.session_kickstart_until_ts = kickstart_until_ts
+        self.state.session_post_kickstart_power = post_kick_power
+        self.state.session_post_kickstart_fan_intensity = post_kick_fan
+        self.state.session_cutoff_held_since_ts = None
+        self.state.session_manual = manual
+
+    def _default_max_end_ts(self, now_ts: float, profile: Profile) -> float:
+        """Calcule un max_end_ts par défaut à partir du créneau actif du profil.
+        Si pas de créneau, fallback à now + 4h."""
+        if not profile.active_to:
+            return now_ts + 4 * 3600
+        try:
+            th, tm = (int(x) for x in profile.active_to.split(":"))
+        except (ValueError, AttributeError):
+            return now_ts + 4 * 3600
+        import datetime as _dt
+        now = _dt.datetime.fromtimestamp(now_ts, tz=_dt.UTC).astimezone()
+        end_today = now.replace(hour=th, minute=tm, second=0, microsecond=0)
+        if end_today <= now:
+            end_today += _dt.timedelta(days=1)
+        return end_today.timestamp()
+
+    def _end_session(self, inp: ZoneInputs, reason: str) -> list[Command]:
+        """Termine la session et passe en IDLE."""
+        self._finalize_session(inp, end_reason=reason)
         if self.state.state != ZoneState.IDLE:
             self._transition(ZoneState.IDLE, inp.now_ts)
-        cmds: list[Command] = []
         if inp.clim_current_hvac_mode != HVACMode.OFF:
-            cmds.append(self._cmd_turn_off())
-        # Si on quitte un RUNNING, on finalise la session ici (avant que les
-        # champs cycle_started_ts soient effacés en idle prochain).
-        if was_running:
-            self._finalize_session(inp, end_reason="profile_change")
-        self._finalize_cycle_if_needed(prev_state, inp)
-        return cmds
+            return [self._cmd_turn_off()]
+        return []
+
+    def _check_session_end(self, inp: ZoneInputs) -> str | None:
+        """Renvoie la raison de fin si la session doit se terminer ce tick."""
+        # 1. max_end_ts
+        if (
+            self.state.session_max_end_ts is not None
+            and inp.now_ts >= self.state.session_max_end_ts
+        ):
+            return "max_end_reached"
+        # 2. target_cutoff (si défini)
+        cutoff = self.state.session_target_cutoff
+        if cutoff is not None and inp.room_temperature is not None:
+            mode = self.state.session_mode
+            met = (
+                (mode == ProfileMode.COOL and inp.room_temperature <= cutoff)
+                or (mode == ProfileMode.HEAT and inp.room_temperature >= cutoff)
+            )
+            if met:
+                if self.state.session_cutoff_held_since_ts is None:
+                    self.state.session_cutoff_held_since_ts = inp.now_ts
+                elif (inp.now_ts - self.state.session_cutoff_held_since_ts
+                      >= TARGET_CUTOFF_HOLD_SECONDS):
+                    return "target_cutoff_reached"
+            else:
+                # T° remontée → reset du compteur
+                self.state.session_cutoff_held_since_ts = None
+        return None
+
+    def _maybe_transition_kickstart(self, inp: ZoneInputs) -> None:
+        """Bascule kickstart → steady quand l'horloge du kickstart expire."""
+        kick_until = self.state.session_kickstart_until_ts
+        if kick_until is None:
+            return
+        if inp.now_ts < kick_until:
+            return
+        # Expiré : revert aux valeurs post-kickstart
+        if self.state.session_post_kickstart_power is not None:
+            self.state.session_power = self.state.session_post_kickstart_power
+        if self.state.session_post_kickstart_fan_intensity is not None:
+            self.state.session_fan_intensity = self.state.session_post_kickstart_fan_intensity
+        self.state.session_kickstart_until_ts = None
+
+    # --- API session (appelée par le coordinator pour services manuels) ---
+
+    def start_manual_session(
+        self,
+        now_ts: float,
+        *,
+        mode: str,
+        target: float,
+        max_end_ts: float,
+        power: str = DEFAULT_POWER,
+        fan_intensity: str = DEFAULT_FAN_INTENSITY,
+        target_cutoff: float | None = None,
+        parent_profile_name: str | None = None,
+    ) -> None:
+        """Démarre une session manuelle (peut être appelée même si IDLE sans
+        profil actif)."""
+        if mode not in ProfileMode.ALL:
+            return
+        self._transition(ZoneState.RUNNING, now_ts)
+        self.state.cycle_started_ts = now_ts
+        self.state.cycle_start_profile_name = parent_profile_name or "Manuelle"
+        self.state.session_target = target
+        self.state.session_target_cutoff = target_cutoff
+        self.state.session_power = power
+        self.state.session_fan_intensity = fan_intensity
+        self.state.session_mode = mode
+        self.state.session_max_end_ts = max_end_ts
+        self.state.session_kickstart_until_ts = None
+        self.state.session_post_kickstart_power = None
+        self.state.session_post_kickstart_fan_intensity = None
+        self.state.session_cutoff_held_since_ts = None
+        self.state.session_manual = True
+
+    def update_active_session(
+        self,
+        *,
+        target: float | None = None,
+        target_cutoff: float | None | type(...) = ...,
+        power: str | None = None,
+        fan_intensity: str | None = None,
+        max_end_ts: float | None = None,
+    ) -> bool:
+        """Modifie les paramètres de la session en cours. Renvoie False si pas
+        de session active. `target_cutoff=None` explicite efface le cutoff ;
+        pour ne pas toucher au champ, ne pas passer l'argument."""
+        if self.state.state != ZoneState.RUNNING:
+            return False
+        if target is not None:
+            self.state.session_target = target
+        if target_cutoff is not ...:
+            self.state.session_target_cutoff = target_cutoff
+            self.state.session_cutoff_held_since_ts = None  # reset hold counter
+        if power is not None:
+            self.state.session_power = power
+            # User a changé power manuellement → annule la transition kickstart
+            self.state.session_kickstart_until_ts = None
+        if fan_intensity is not None:
+            self.state.session_fan_intensity = fan_intensity
+            self.state.session_kickstart_until_ts = None
+        if max_end_ts is not None:
+            self.state.session_max_end_ts = max_end_ts
+
+        return True
+
+    def extend_active_session(self, seconds: float) -> bool:
+        """Idempotent : ajoute `seconds` au max_end_ts. Si pas de max_end_ts,
+        prend now + seconds (mais c'est inhabituel). Renvoie False sans session."""
+        if self.state.state != ZoneState.RUNNING:
+            return False
+        cur = self.state.session_max_end_ts or utc_now_ts()
+        self.state.session_max_end_ts = cur + seconds
+        return True
+
+    def cancel_active_session(self, now_ts: float) -> list[Command]:
+        """Annule la session en cours."""
+        if self.state.state != ZoneState.RUNNING:
+            return []
+        return self._end_session(
+            ZoneInputs(  # synthétique : on passe juste now_ts + hvac courant
+                now_ts=now_ts,
+                room_temperature=None,
+                clim_internal_temperature=None,
+                clim_current_hvac_mode=HVACMode.COOL,  # forcera turn_off
+                clim_current_setpoint=None,
+                clim_current_fan_mode=None,
+                clim_current_swing_mode=None,
+                any_window_open=False,
+            ),
+            "user_canceled",
+        )
 
     # --- décisions ---
 
-    def _should_start(self, inp: ZoneInputs) -> bool:
-        """True si on doit démarrer le cycle pour le profil actif courant."""
-        if inp.room_temperature is None or inp.active_profile is None:
+    def _should_start_for_profile(self, p: Profile, inp: ZoneInputs) -> bool:
+        """True si on doit démarrer une session pour ce profil."""
+        if inp.room_temperature is None:
             return False
-        p = inp.active_profile
         if p.mode == ProfileMode.COOL:
             return inp.supports_cool and inp.room_temperature >= p.seuil_demarrage
         if p.mode == ProfileMode.HEAT:
             return inp.supports_heat and inp.room_temperature <= p.seuil_demarrage
         return False
 
-    # --- pilotage RUNNING ---
+    # --- pilotage session ---
 
-    def _pilot_running(self, inp: ZoneInputs) -> list[Command]:
-        """Émet les commandes pour maintenir room ≈ target.
+    def _pilot_session(self, inp: ZoneInputs) -> list[Command]:
+        """Émet les commandes selon les paramètres de la session active.
 
-        Pendule simple : si on est loin de target → consigne = target ± offset
-        (selon power), si on est dans la bande morte → consigne = target.
-        L'inverter Daikin module entre les deux automatiquement."""
-        p = inp.active_profile
-        if p is None or inp.room_temperature is None:
+        La session est self-contained : on ne lit plus du tout active_profile
+        pour décider quoi envoyer à la clim — uniquement les session_* fields."""
+        target = self.state.session_target
+        mode = self.state.session_mode
+        if target is None or mode is None or inp.room_temperature is None:
             return []
 
-        target_mode = HVACMode.COOL if p.mode == ProfileMode.COOL else HVACMode.HEAT
+        target_mode = HVACMode.COOL if mode == ProfileMode.COOL else HVACMode.HEAT
+        power = self.state.session_power or DEFAULT_POWER
+        fan_intensity = self.state.session_fan_intensity or DEFAULT_FAN_INTENSITY
 
         cmds: list[Command] = []
-        # Allumer la clim dans le bon mode si ce n'est pas déjà le cas
         if inp.clim_current_hvac_mode != target_mode:
             cmds.append(self._cmd_set_hvac_mode(target_mode))
             self.state.last_hvac_sent = target_mode
 
-        # Calcul de la consigne en mode pendule
-        setpoint = self._compute_pendulum_setpoint(inp, p)
+        setpoint = self._compute_pendulum_setpoint(inp.room_temperature, target, power, mode)
         if setpoint is not None and self._setpoint_should_send(setpoint, inp):
             cmds.append(self._cmd_set_temperature(setpoint))
             self.state.last_setpoint_sent = setpoint
 
-        # Ventilation selon le profil
         if inp.supports_fan_mode:
-            target_fan = FAN_MODES.get(p.fan_intensity, FAN_MODES[DEFAULT_FAN_INTENSITY])
+            target_fan = FAN_MODES.get(fan_intensity, FAN_MODES[DEFAULT_FAN_INTENSITY])
             if inp.clim_current_fan_mode != target_fan:
                 cmds.append(self._cmd_set_fan_mode(target_fan))
                 self.state.last_fan_sent = target_fan
 
-        # Swing toujours en windnice si supporté
         if inp.supports_windnice and inp.clim_current_swing_mode != DEFAULT_SWING_MODE:
             cmds.append(self._cmd_set_swing_mode(DEFAULT_SWING_MODE))
 
@@ -473,30 +730,15 @@ class Zone:
             self.state.last_command_ts = inp.now_ts
         return cmds
 
-    def _compute_pendulum_setpoint(self, inp: ZoneInputs, p: Profile) -> float | None:
-        """Pendule : consigne = target ± offset(power) si room loin, target sinon."""
-        room = inp.room_temperature
-        if room is None:
-            return None
-        target = p.target
-        offset = POWER_OFFSETS.get(p.power, POWER_OFFSETS[DEFAULT_POWER])
-
-        if p.mode == ProfileMode.COOL:
-            # COOL: si room > target + bande → pousser fort (consigne = target - offset)
-            #       si room ≈ target → maintenir (consigne = target)
-            #       si room < target - bande → laisser tranquille (consigne = target)
-            if room > target + TARGET_DEAD_BAND:
-                raw = target - offset
-            else:
-                raw = target
+    def _compute_pendulum_setpoint(
+        self, room: float, target: float, power: str, mode: str
+    ) -> float | None:
+        """Pendule pur : consigne = target ± offset(power) si room loin, target sinon."""
+        offset = POWER_OFFSETS.get(power, POWER_OFFSETS[DEFAULT_POWER])
+        if mode == ProfileMode.COOL:
+            raw = target - offset if room > target + TARGET_DEAD_BAND else target
         else:
-            # HEAT: miroir
-            if room < target - TARGET_DEAD_BAND:
-                raw = target + offset
-            else:
-                raw = target
-
-        # Arrondi au 0.5 Daikin puis clamp
+            raw = target + offset if room < target - TARGET_DEAD_BAND else target
         rounded = round(raw * 2) / 2
         return max(CLIM_MIN_SETPOINT, min(CLIM_MAX_SETPOINT, rounded))
 
@@ -620,7 +862,23 @@ class Zone:
                 self._transition(ZoneState.IDLE, now_ts)
 
     def on_external_override(self, now_ts: float, profile_active: bool) -> None:
-        """Un changement d'état non tracké a été détecté sur la clim."""
+        """Un changement d'état non tracké a été détecté sur la clim. Si on
+        était en session, elle est clôturée."""
+        if self.state.state == ZoneState.RUNNING and self.state.cycle_started_ts is not None:
+            # Crée un input minimal pour finalize_session
+            self._finalize_session(
+                ZoneInputs(
+                    now_ts=now_ts,
+                    room_temperature=None,
+                    clim_internal_temperature=None,
+                    clim_current_hvac_mode=HVACMode.OFF,
+                    clim_current_setpoint=None,
+                    clim_current_fan_mode=None,
+                    clim_current_swing_mode=None,
+                    any_window_open=False,
+                ),
+                end_reason="user_override",
+            )
         if profile_active:
             self._transition(ZoneState.MANUAL_OVERRIDE_TIMED, now_ts)
             self.state.override_until_ts = now_ts + self.config.override_duree_min * 60
@@ -631,7 +889,7 @@ class Zone:
     # --- hard gates ---
 
     def _maybe_handle_hard_gates(self, inp: ZoneInputs) -> list[Command] | None:
-        # Fenêtre ouverte
+        # Fenêtre ouverte → fin de session immédiate
         if inp.any_window_open:
             if self.state.state == ZoneState.RUNNING:
                 self._finalize_session(inp, end_reason="window_opened")
@@ -652,9 +910,7 @@ class Zone:
             else:
                 return []
         elif self.state.state == ZoneState.MANUAL_OVERRIDE_FREE:
-            # Override libre : seul un reset_override explicite en sort.
             if inp.active_profile is not None:
-                # Un profil est de nouveau actif → on reprend la main.
                 self.state.override_until_ts = None
                 self._transition(ZoneState.IDLE, inp.now_ts)
             else:
@@ -670,13 +926,10 @@ class Zone:
 
     def _finalize_session(self, inp: ZoneInputs, *, end_reason: str) -> None:
         """Clôt la session courante et l'append à completed_sessions.
-        Le delta kWh est calculé par le coordinator qui injecte
-        `_cycle_end_kwh` via une closure (cf. Coordinator)."""
+        kWh_end / kwh_consumed sont patchés par le coordinator."""
         start_ts = self.state.cycle_started_ts
         if start_ts is None:
-            self.state.cycle_started_ts = None
-            self.state.cycle_start_profile_name = None
-            self.state.cycle_start_kwh = None
+            self._clear_session_fields()
             return
         duration_min = round((inp.now_ts - start_ts) / 60, 1)
         record = {
@@ -684,34 +937,37 @@ class Zone:
             "end_ts": inp.now_ts,
             "duration_min": duration_min,
             "profile_name": self.state.cycle_start_profile_name,
+            "session_manual": self.state.session_manual,
+            "session_target": self.state.session_target,
+            "session_target_cutoff": self.state.session_target_cutoff,
+            "session_power": self.state.session_power,
+            "session_fan_intensity": self.state.session_fan_intensity,
+            "session_mode": self.state.session_mode,
             "end_reason": end_reason,
             "kwh_start": self.state.cycle_start_kwh,
-            # kwh_end et kwh_consumed seront patchés par le coordinator
-            # quand un capteur de conso est configuré.
             "kwh_end": None,
             "kwh_consumed": None,
         }
         self.state.completed_sessions.append(record)
         if len(self.state.completed_sessions) > SESSION_HISTORY_MAX:
             self.state.completed_sessions = self.state.completed_sessions[-SESSION_HISTORY_MAX:]
+        self._clear_session_fields()
+
+    def _clear_session_fields(self) -> None:
         self.state.cycle_started_ts = None
         self.state.cycle_start_profile_name = None
         self.state.cycle_start_kwh = None
-
-    def _finalize_cycle_if_needed(self, prev_state: str, inp: ZoneInputs) -> None:
-        """Filet de sécurité : si on est sorti de RUNNING par un chemin qui n'a
-        pas appelé _finalize_session, on le fait ici."""
-        if prev_state == ZoneState.RUNNING and self.state.state != ZoneState.RUNNING:
-            if self.state.cycle_started_ts is not None:
-                self._finalize_session(inp, end_reason=self._end_reason_from_state())
-
-    def _end_reason_from_state(self) -> str:
-        return {
-            ZoneState.IDLE: "natural_end",
-            ZoneState.WINDOW_OPEN: "window_opened",
-            ZoneState.MANUAL_OVERRIDE_TIMED: "user_override",
-            ZoneState.MANUAL_OVERRIDE_FREE: "user_override",
-        }.get(self.state.state, self.state.state)
+        self.state.session_target = None
+        self.state.session_target_cutoff = None
+        self.state.session_power = None
+        self.state.session_fan_intensity = None
+        self.state.session_mode = None
+        self.state.session_max_end_ts = None
+        self.state.session_kickstart_until_ts = None
+        self.state.session_post_kickstart_power = None
+        self.state.session_post_kickstart_fan_intensity = None
+        self.state.session_cutoff_held_since_ts = None
+        self.state.session_manual = False
 
     # --- helpers ---
 

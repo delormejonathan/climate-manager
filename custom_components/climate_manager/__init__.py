@@ -29,6 +29,11 @@ SERVICE_BOOST = "boost"
 SERVICE_FORCE_START = "force_start"
 SERVICE_RELOAD_ZONES = "reload_zones"
 SERVICE_UPDATE_PROFILES = "update_profiles"
+# Sessions
+SERVICE_START_SESSION = "start_session"
+SERVICE_UPDATE_SESSION = "update_session"
+SERVICE_EXTEND_SESSION = "extend_session"
+SERVICE_CANCEL_SESSION = "cancel_session"
 
 SCHEMA_ZONE_ID = vol.Schema({vol.Required("zone_id"): cv.string})
 SCHEMA_SET_MODE = vol.Schema(
@@ -41,6 +46,34 @@ SCHEMA_UPDATE_PROFILES = vol.Schema(
     {
         vol.Required("zone_id"): cv.string,
         vol.Required("profiles"): [dict],
+    }
+)
+SCHEMA_START_SESSION = vol.Schema(
+    {
+        vol.Required("zone_id"): cv.string,
+        vol.Required("mode"): vol.In(["cool", "heat"]),
+        vol.Required("target"): vol.Coerce(float),
+        vol.Required("max_end_ts"): vol.Coerce(float),  # epoch s
+        vol.Optional("power", default="normal"): cv.string,
+        vol.Optional("fan_intensity", default="normal"): cv.string,
+        vol.Optional("target_cutoff"): vol.Any(None, vol.Coerce(float)),
+        vol.Optional("parent_profile_name"): vol.Any(None, cv.string),
+    }
+)
+SCHEMA_UPDATE_SESSION = vol.Schema(
+    {
+        vol.Required("zone_id"): cv.string,
+        vol.Optional("target"): vol.Coerce(float),
+        vol.Optional("target_cutoff"): vol.Any(None, vol.Coerce(float)),
+        vol.Optional("power"): cv.string,
+        vol.Optional("fan_intensity"): cv.string,
+        vol.Optional("max_end_ts"): vol.Coerce(float),
+    }
+)
+SCHEMA_EXTEND_SESSION = vol.Schema(
+    {
+        vol.Required("zone_id"): cv.string,
+        vol.Optional("hours", default=1): vol.Coerce(float),
     }
 )
 
@@ -302,6 +335,52 @@ def _register_services(hass: HomeAssistant) -> None:
         coord.update_zone_profiles(zone.config.zone_id, call.data["profiles"])
         await coord.async_tick_now()
 
+    async def _start_session(call: ServiceCall) -> None:
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            _LOGGER.warning("start_session: zone %r not found", call.data["zone_id"])
+            return
+        zone.start_manual_session(
+            now_ts=utc_now_ts(),
+            mode=call.data["mode"],
+            target=call.data["target"],
+            max_end_ts=call.data["max_end_ts"],
+            power=call.data.get("power", "normal"),
+            fan_intensity=call.data.get("fan_intensity", "normal"),
+            target_cutoff=call.data.get("target_cutoff"),
+            parent_profile_name=call.data.get("parent_profile_name"),
+        )
+        await coord.async_tick_now()
+
+    async def _update_session(call: ServiceCall) -> None:
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            return
+        kwargs: dict[str, Any] = {}
+        for k in ("target", "power", "fan_intensity", "max_end_ts"):
+            if k in call.data:
+                kwargs[k] = call.data[k]
+        # target_cutoff peut être explicitement None pour effacer la coupure
+        if "target_cutoff" in call.data:
+            kwargs["target_cutoff"] = call.data["target_cutoff"]
+        zone.update_active_session(**kwargs)
+        await coord.async_tick_now()
+
+    async def _extend_session(call: ServiceCall) -> None:
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            return
+        hours = float(call.data.get("hours", 1))
+        zone.extend_active_session(hours * 3600)
+        await coord.async_tick_now()
+
+    async def _cancel_session(call: ServiceCall) -> None:
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            return
+        zone.cancel_active_session(now_ts=utc_now_ts())
+        await coord.async_tick_now()
+
     hass.services.async_register(DOMAIN, SERVICE_SET_MODE, _set_mode, schema=SCHEMA_SET_MODE)
     hass.services.async_register(DOMAIN, SERVICE_FORCE_OFF, _force_off, schema=SCHEMA_ZONE_ID)
     hass.services.async_register(
@@ -315,6 +394,18 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, SERVICE_UPDATE_PROFILES, _update_profiles, schema=SCHEMA_UPDATE_PROFILES
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_START_SESSION, _start_session, schema=SCHEMA_START_SESSION
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_UPDATE_SESSION, _update_session, schema=SCHEMA_UPDATE_SESSION
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_EXTEND_SESSION, _extend_session, schema=SCHEMA_EXTEND_SESSION
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_CANCEL_SESSION, _cancel_session, schema=SCHEMA_ZONE_ID
+    )
 
 
 def _unregister_services(hass: HomeAssistant) -> None:
@@ -322,6 +413,8 @@ def _unregister_services(hass: HomeAssistant) -> None:
         SERVICE_SET_MODE, SERVICE_FORCE_OFF, SERVICE_RESET_OVERRIDE,
         SERVICE_BOOST, SERVICE_FORCE_START, SERVICE_RELOAD_ZONES,
         SERVICE_UPDATE_PROFILES,
+        SERVICE_START_SESSION, SERVICE_UPDATE_SESSION,
+        SERVICE_EXTEND_SESSION, SERVICE_CANCEL_SESSION,
     ):
         hass.services.async_remove(DOMAIN, service)
 
