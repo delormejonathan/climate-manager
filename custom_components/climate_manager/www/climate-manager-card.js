@@ -282,6 +282,11 @@ class DelormejClimateCard extends HTMLElement {
 
   _openModal(html) {
     this._closeModal();
+    // On append à document.body (et pas à `this`) parce que HA met les cartes
+    // dans des conteneurs avec transform/will-change qui cassent position:fixed.
+    // En contrepartie, les styles .dc-modal* sont injectés dans un <style>
+    // attaché à document.head pour être globalement disponibles.
+    this._ensureModalStyles();
     const m = document.createElement("div");
     m.className = "dc-modal-backdrop";
     m.innerHTML = `
@@ -296,11 +301,21 @@ class DelormejClimateCard extends HTMLElement {
     m.querySelector('[data-bind="modal-close"]').addEventListener("click", () => this._closeModal());
     this._escListener = (e) => { if (e.key === "Escape") this._closeModal(); };
     document.addEventListener("keydown", this._escListener);
-    this.appendChild(m);
+    document.body.appendChild(m);
     this._modalEl = m;
     // Auto-focus le premier input
     const firstInput = m.querySelector("input, select");
     if (firstInput) setTimeout(() => firstInput.focus(), 50);
+  }
+
+  _ensureModalStyles() {
+    // Idempotent : injecte un <style> global avec les règles modal, une seule
+    // fois pour toute la page (toutes les cartes climate-manager partagent).
+    if (document.getElementById("cm-modal-styles")) return;
+    const style = document.createElement("style");
+    style.id = "cm-modal-styles";
+    style.textContent = MODAL_STYLES;
+    document.head.appendChild(style);
   }
 
   _closeModal() {
@@ -360,7 +375,7 @@ class DelormejClimateCard extends HTMLElement {
         </div>
       </div>
     `);
-    const form = this.querySelector('[data-bind="session-modify-form"]');
+    const form = this._modalEl.querySelector('[data-bind="session-modify-form"]');
     form.querySelector('[data-bind="modal-cancel"]').addEventListener("click", () => this._closeModal());
     form.querySelector('[data-bind="modal-save"]').addEventListener("click", () => this._submitSessionModify(form));
   }
@@ -449,7 +464,7 @@ class DelormejClimateCard extends HTMLElement {
         </div>
       </div>
     `);
-    const form = this.querySelector('[data-bind="session-start-form"]');
+    const form = this._modalEl.querySelector('[data-bind="session-start-form"]');
     form.querySelector('[data-bind="modal-cancel"]').addEventListener("click", () => this._closeModal());
     form.querySelector('[data-bind="modal-save"]').addEventListener("click", () => this._submitSessionStart(form, attrs.active_profile_name));
   }
@@ -611,7 +626,7 @@ class DelormejClimateCard extends HTMLElement {
         </div>
       </div>
     `);
-    const form = this.querySelector('[data-bind="profile-modal-form"]');
+    const form = this._modalEl.querySelector('[data-bind="profile-modal-form"]');
     form.querySelector('[data-bind="modal-cancel"]').addEventListener("click", () => this._closeModal());
     form.querySelector('[data-bind="modal-save"]').addEventListener("click", () => this._submitProfileModal(form, idx));
   }
@@ -1702,6 +1717,147 @@ class DelormejClimateCard extends HTMLElement {
 }
 
 
+const MODAL_STYLES = `
+  .dc-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    backdrop-filter: blur(2px);
+  }
+  .dc-modal-backdrop * { box-sizing: border-box; }
+  .dc-modal {
+    background: var(--card-background-color, #ffffff);
+    color: var(--primary-text-color, #1c1c1c);
+    border-radius: 14px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    width: 100%;
+    max-width: 480px;
+    max-height: 90vh;
+    overflow: auto;
+    padding: 22px 22px 18px;
+    position: relative;
+    font-family: var(--primary-font-family, system-ui, -apple-system, sans-serif);
+  }
+  .dc-modal-close {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    background: none;
+    border: none;
+    color: var(--secondary-text-color, #6b6b6b);
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+  .dc-modal-title {
+    margin: 0 30px 18px 0;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--primary-text-color, #1c1c1c);
+  }
+  .dc-modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .dc-modal-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .dc-modal-field label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--secondary-text-color, #6b6b6b);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .dc-modal-field input,
+  .dc-modal-field select {
+    padding: 12px 14px;
+    font-size: 15px;
+    font-family: inherit;
+    background: var(--secondary-background-color, #f3f3f3);
+    color: var(--primary-text-color, #1c1c1c);
+    border: 1px solid var(--divider-color, #d8d8d8);
+    border-radius: 8px;
+  }
+  .dc-modal-field input:focus,
+  .dc-modal-field select:focus {
+    outline: none;
+    border-color: var(--primary-color, #2196f3);
+  }
+  .dc-modal-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .dc-modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 8px;
+  }
+  .dc-modal-hint {
+    font-size: 12px;
+    color: var(--secondary-text-color, #6b6b6b);
+    line-height: 1.4;
+  }
+  .dc-modal-advanced {
+    border-top: 1px solid var(--divider-color, #e0e0e0);
+    padding-top: 12px;
+  }
+  .dc-modal-advanced summary {
+    cursor: pointer;
+    padding: 6px 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--secondary-text-color, #6b6b6b);
+    user-select: none;
+  }
+  .dc-modal-advanced[open] summary {
+    margin-bottom: 10px;
+    color: var(--primary-text-color, #1c1c1c);
+  }
+  .dc-modal-advanced > .dc-modal-field,
+  .dc-modal-advanced > .dc-modal-pair {
+    margin-top: 10px;
+  }
+  /* Boutons dans le modal (clone des règles .dc-btn pour autonomie) */
+  .dc-modal .dc-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 16px;
+    background: var(--secondary-background-color, #f3f3f3);
+    color: var(--primary-text-color, #1c1c1c);
+    border: 1px solid var(--divider-color, #d8d8d8);
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .dc-modal .dc-btn:hover {
+    border-color: var(--secondary-text-color, #6b6b6b);
+  }
+  .dc-modal .dc-btn-primary {
+    background: var(--primary-color, #2196f3);
+    color: var(--text-primary-color, #ffffff);
+    border-color: transparent;
+  }
+  .dc-modal .dc-btn-primary:hover {
+    filter: brightness(1.08);
+  }
+`;
+
 const STYLES = `
   /* ─────────────────────────────────────────────────────────────────
      Clean / flat / soft palette — matches bubble-card aesthetic.
@@ -2029,69 +2185,7 @@ const STYLES = `
   }
   .dc-btn-wide { width: 100%; padding: 12px; }
 
-  /* ============ Modal ============ */
-  .dc-modal-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.55);
-    z-index: 1000;
-    display: flex; align-items: center; justify-content: center;
-    padding: 16px;
-    backdrop-filter: blur(2px);
-  }
-  .dc-modal {
-    background: var(--dc-card-bg, var(--card-background-color, white));
-    color: var(--dc-fg);
-    border-radius: var(--dc-radius-md);
-    box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-    width: 100%; max-width: 480px;
-    max-height: 90vh;
-    overflow: auto;
-    padding: 22px 22px 18px;
-    position: relative;
-  }
-  .dc-modal-close {
-    position: absolute; top: 12px; right: 14px;
-    background: none; border: none;
-    color: var(--dc-muted);
-    font-size: 22px; line-height: 1; cursor: pointer;
-    padding: 4px 8px;
-  }
-  .dc-modal-title {
-    margin: 0 30px 18px 0;
-    font-size: 17px; font-weight: 700; color: var(--dc-fg);
-  }
-  .dc-modal-form { display: flex; flex-direction: column; gap: 14px; }
-  .dc-modal-field { display: flex; flex-direction: column; gap: 4px; }
-  .dc-modal-field label {
-    font-size: 12px; font-weight: 600;
-    color: var(--dc-muted);
-    text-transform: uppercase; letter-spacing: 0.05em;
-  }
-  .dc-modal-field input,
-  .dc-modal-field select {
-    padding: 12px 14px;
-    font-size: 15px; font-family: inherit;
-    background: var(--dc-surface);
-    color: var(--dc-fg);
-    border: 1px solid var(--dc-border);
-    border-radius: var(--dc-radius-sm);
-  }
-  .dc-modal-field input:focus,
-  .dc-modal-field select:focus {
-    outline: none;
-    border-color: var(--dc-accent);
-  }
-  .dc-modal-pair {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-  }
-  .dc-modal-actions {
-    display: flex; gap: 8px; justify-content: flex-end;
-    margin-top: 8px;
-  }
-  .dc-modal-hint {
-    font-size: 12px; color: var(--dc-muted);
-    line-height: 1.4;
-  }
+  /* (Les styles modal sont injectés via MODAL_STYLES dans document.head) */
 
   .dc-narrative {
     font-size: 14px; line-height: 1.5;
