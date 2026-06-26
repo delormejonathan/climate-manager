@@ -441,6 +441,16 @@ class Zone:
         - Hors session (IDLE), la cascade peut spawner une nouvelle session si
           un profil match + room franchit son seuil.
         """
+        # Garde-fou migration v0.21→v0.22 : si on est en RUNNING mais sans
+        # paramètres de session (état pré-v0.22 restauré du disque), on
+        # réinitialise proprement pour laisser la cascade re-spawner.
+        if (
+            self.state.state == ZoneState.RUNNING
+            and self.state.session_target is None
+        ):
+            self._clear_session_fields()
+            self._transition(ZoneState.IDLE, inp.now_ts)
+
         # Mode OFF — on s'assure que la clim est éteinte.
         if self.state.mode == ZoneMode.OFF:
             cmds = self._force_off(inp)
