@@ -865,36 +865,55 @@ class Zone:
         """Sortir d'un override manuel et reprendre le pilotage auto."""
         self.state.override_until_ts = None
         if self.state.state in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE):
-            if clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
+            if self._has_suspended_session() and clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
+                # Reprise explicite: on réactive la session qui était suspendue
+                # par l'override, sans la re-créer ni perdre son historique.
+                self._transition(ZoneState.RUNNING, now_ts)
+            elif clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
+                # Compat legacy: override créé hors session, on adopte l'état
+                # courant pour laisser le prochain tick décider. Sans champs de
+                # session, le garde-fou RUNNING→IDLE s'appliquera.
                 self._transition(ZoneState.RUNNING, now_ts)
                 self.state.cycle_started_ts = clim_state_last_changed_ts or now_ts
             else:
+                if self._has_suspended_session():
+                    self._finalize_session(
+                        ZoneInputs(
+                            now_ts=now_ts,
+                            room_temperature=None,
+                            clim_internal_temperature=None,
+                            clim_current_hvac_mode=HVACMode.OFF,
+                            clim_current_setpoint=None,
+                            clim_current_fan_mode=None,
+                            clim_current_swing_mode=None,
+                            any_window_open=False,
+                        ),
+                        end_reason="user_canceled",
+                    )
                 self._transition(ZoneState.IDLE, now_ts)
 
     def on_external_override(self, now_ts: float, profile_active: bool) -> None:
-        """Un changement d'état non tracké a été détecté sur la clim. Si on
-        était en session, elle est clôturée."""
-        if self.state.state == ZoneState.RUNNING and self.state.cycle_started_ts is not None:
-            # Crée un input minimal pour finalize_session
-            self._finalize_session(
-                ZoneInputs(
-                    now_ts=now_ts,
-                    room_temperature=None,
-                    clim_internal_temperature=None,
-                    clim_current_hvac_mode=HVACMode.OFF,
-                    clim_current_setpoint=None,
-                    clim_current_fan_mode=None,
-                    clim_current_swing_mode=None,
-                    any_window_open=False,
-                ),
-                end_reason="user_override",
-            )
+        """Un changement d'état non tracké a été détecté sur la clim.
+
+        Un override manuel temporaire suspend la session en cours au lieu de la
+        clôturer: à l'expiration (ou via « reprendre auto »), la session reprend
+        avec ses paramètres figés. Si l'utilisateur coupe vraiment la clim, on
+        clôturera à la reprise/expiration comme annulation explicite.
+        """
         if profile_active:
             self._transition(ZoneState.MANUAL_OVERRIDE_TIMED, now_ts)
             self.state.override_until_ts = now_ts + self.config.override_duree_min * 60
         else:
             self._transition(ZoneState.MANUAL_OVERRIDE_FREE, now_ts)
             self.state.override_until_ts = None
+
+    def _has_suspended_session(self) -> bool:
+        """True when a manual override is temporarily holding a session open."""
+        return (
+            self.state.cycle_started_ts is not None
+            and self.state.session_target is not None
+            and self.state.session_mode is not None
+        )
 
     # --- hard gates ---
 
@@ -916,7 +935,12 @@ class Zone:
                 and inp.now_ts >= self.state.override_until_ts
             ):
                 self.state.override_until_ts = None
-                self._transition(ZoneState.IDLE, inp.now_ts)
+                if self._has_suspended_session() and inp.clim_current_hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
+                    self._transition(ZoneState.RUNNING, inp.now_ts)
+                else:
+                    if self._has_suspended_session():
+                        self._finalize_session(inp, end_reason="user_canceled")
+                    self._transition(ZoneState.IDLE, inp.now_ts)
             else:
                 return []
         elif self.state.state == ZoneState.MANUAL_OVERRIDE_FREE:
