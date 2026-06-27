@@ -26,8 +26,6 @@ from .const import (
     CONF_ZONES,
     DOMAIN,
     OVERRIDE_DEBOUNCE_SECONDS,
-    SENSOR_LAG_MIN_DETECTION_SECONDS,
-    SENSOR_LAG_THRESHOLD_C,
     SETPOINT_NOOP_DELTA,
     UPDATE_INTERVAL_SECONDS,
     ProfileMode,
@@ -42,7 +40,6 @@ from .zone import (
     ZoneConfig,
     ZoneInputs,
     ZoneRuntimeState,
-    detect_lagging_sensors,
     utc_now_ts,
 )
 
@@ -365,17 +362,18 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     def _effective_room_temp(
         self, zone: Zone, sensor_temps: dict[str, float]
     ) -> float | None:
-        """Moyenne des capteurs **non flagués**. Si tous flagués, fallback sur
-        la moyenne globale (mieux que None car ça laisserait le tick passer
-        sans rien faire alors qu'il faut quand même réagir)."""
-        flagged = set(zone.state.flagged_sensors)
-        active = [t for sid, t in sensor_temps.items() if sid not in flagged]
-        if active:
-            return sum(active) / len(active)
-        if sensor_temps:
-            vals = list(sensor_temps.values())
-            return sum(vals) / len(vals)
-        return None
+        """Moyenne de tous les capteurs disponibles de la zone.
+
+        Les anciens ``flagged_sensors`` restent exposés uniquement comme
+        information legacy, mais ils ne doivent plus exclure un capteur du
+        calcul. En pratique, exclure une pièce "isolée" rendait la température
+        de zone trop optimiste à l'étage et pouvait empêcher la climatisation
+        de démarrer alors que plusieurs pièces étaient chaudes.
+        """
+        if not sensor_temps:
+            return None
+        vals = list(sensor_temps.values())
+        return sum(vals) / len(vals)
 
     def _average_temperature(self, sensors: list[str]) -> float | None:
         values: list[float] = []
@@ -427,102 +425,34 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     def _maybe_seed_sensor_baselines(
         self, zone: Zone, prev_state: str, sensor_temps: dict[str, float]
     ) -> None:
-        """À l'entrée en RUNNING, snapshot les valeurs courantes par capteur
-        comme référence de comparaison pour le reste du cycle."""
+        """Nettoie l'ancien état de détection de capteurs isolés.
+
+        La détection existe encore dans les structures persistées pour ne pas
+        casser les états sauvegardés, mais elle ne doit plus influencer le
+        pilotage ni produire de notifications.
+        """
         if prev_state == ZoneState.RUNNING:
             return
         if zone.state.state != ZoneState.RUNNING:
             return
-        zone.state.cycle_baseline_temps = dict(sensor_temps)
+        zone.state.cycle_baseline_temps = {}
         zone.state.flagged_sensors = []
         zone.state.notified_sensors = []
 
     def _maybe_clear_sensor_baselines(self, zone: Zone, prev_state: str) -> None:
-        """À la sortie de RUNNING, on garde flagged_sensors visibles dans les
-        attrs (pour que l'utilisateur voie qui était isolé) mais on libère les
-        baselines (plus utiles). Reset complet au prochain démarrage."""
+        """Efface l'ancien état de détection à la sortie de RUNNING."""
         if prev_state == ZoneState.RUNNING and zone.state.state != ZoneState.RUNNING:
             zone.state.cycle_baseline_temps = {}
+            zone.state.flagged_sensors = []
+            zone.state.notified_sensors = []
 
     def _maybe_detect_lagging_sensors(
         self, zone: Zone, inputs: ZoneInputs, sensor_temps: dict[str, float]
     ) -> None:
-        """Pendant RUNNING, après MIN_DETECTION_TIME, marquer les capteurs
-        qui ne suivent pas la médiane des autres."""
-        if zone.state.state != ZoneState.RUNNING:
-            return
-        start_ts = zone.state.cycle_started_ts
-        if start_ts is None:
-            return
-        elapsed = inputs.now_ts - start_ts
-        if elapsed < SENSOR_LAG_MIN_DETECTION_SECONDS:
-            return
-        if inputs.active_profile is None:
-            return
-        direction = inputs.active_profile.mode
-        baselines = zone.state.cycle_baseline_temps
-        flagged = set(zone.state.flagged_sensors)
-        deltas: dict[str, float] = {}
-        for sid, current in sensor_temps.items():
-            if sid in flagged:
-                continue
-            base = baselines.get(sid)
-            if base is None:
-                continue
-            deltas[sid] = current - base
-        lagging = detect_lagging_sensors(
-            deltas, direction, threshold=SENSOR_LAG_THRESHOLD_C
-        )
-        if not lagging:
-            return
-        for sid in lagging:
-            flagged.add(sid)
-            if sid not in zone.state.notified_sensors:
-                zone.state.notified_sensors.append(sid)
-                self._notify_sensor_lag(zone, sid, deltas[sid], direction)
-        zone.state.flagged_sensors = list(flagged)
-
-    def _notify_sensor_lag(
-        self, zone: Zone, sensor_id: str, delta: float, direction: str
-    ) -> None:
-        """Crée une persistent_notification + fire un event HA pour l'automation."""
-        st = self.hass.states.get(sensor_id)
-        label = (
-            st.attributes.get("friendly_name", sensor_id)
-            if st else sensor_id
-        )
-        action = "refroidissement" if direction == "cool" else "chauffage"
-        msg = (
-            f"Pendant le {action} de la zone **{zone.config.name}**, le capteur "
-            f"**{label}** n'a quasi pas bougé ({delta:+.1f}°C) alors que les autres "
-            f"capteurs de la zone réagissent normalement.\n\n"
-            f"Probablement porte fermée ou pièce isolée. Le capteur est exclu du "
-            f"calcul de la température moyenne jusqu'à la fin du cycle."
-        )
-        self.hass.async_create_task(
-            self.hass.services.async_call(
-                "persistent_notification",
-                "create",
-                {
-                    "title": f"Climate Manager — {zone.config.name} : capteur isolé",
-                    "message": msg,
-                    "notification_id": (
-                        f"climate_manager_lag_{zone.config.zone_id}_{sensor_id}"
-                    ),
-                },
-            )
-        )
-        self.hass.bus.async_fire(
-            "climate_manager_sensor_lagging",
-            {
-                "zone_id": zone.config.zone_id,
-                "zone_name": zone.config.name,
-                "sensor_id": sensor_id,
-                "sensor_name": label,
-                "delta": round(delta, 2),
-                "direction": direction,
-            },
-        )
+        """Détection désactivée: aucun capteur n'est exclu automatiquement."""
+        if zone.state.flagged_sensors or zone.state.notified_sensors:
+            zone.state.flagged_sensors = []
+            zone.state.notified_sensors = []
 
     # === Session kWh tracking ===
 
