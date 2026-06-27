@@ -328,7 +328,7 @@ def test_override_does_not_pilot():
     assert cmds == []
 
 
-def test_override_timed_expires_to_idle():
+def test_override_timed_without_suspended_session_expires_to_idle():
     zone = Zone(_cfg(override_duree_min=5))
     zone.on_external_override(now_ts=1_000.0, profile_active=True)
     cmds = zone.tick(_inp(
@@ -338,6 +338,58 @@ def test_override_timed_expires_to_idle():
     ))
     assert zone.state.state == ZoneState.IDLE
     assert cmds == [] or all(c.service == "turn_off" for c in cmds)
+
+
+def test_override_during_running_suspends_then_resumes_session_without_turn_off():
+    zone = Zone(_cfg(override_duree_min=5))
+    _seed_running_session(
+        zone,
+        started_ts=500.0,
+        target=24.5,
+        power="normal",
+        fan="doux",
+        max_end_ts=10_000.0,
+    )
+
+    zone.on_external_override(now_ts=1_000.0, profile_active=True)
+
+    assert zone.state.state == ZoneState.MANUAL_OVERRIDE_TIMED
+    assert zone.state.cycle_started_ts == 500.0
+    assert zone.state.session_target == 24.5
+    assert zone.state.completed_sessions == []
+
+    cmds = zone.tick(_inp(
+        now_ts=1_000.0 + 5 * 60 + 1,
+        room_temperature=25.0,
+        clim_internal_temperature=26.0,
+        clim_current_hvac_mode=HVAC_COOL,
+        clim_current_setpoint=25.0,
+        clim_current_fan_mode="quiet",
+        active_profile=_profile_cool(seuil_demarrage=27.0),
+    ))
+
+    assert zone.state.state == ZoneState.RUNNING
+    assert zone.state.cycle_started_ts == 500.0
+    assert zone.state.session_target == 24.5
+    assert not any(c.service == "turn_off" for c in cmds)
+
+
+def test_override_expiry_with_suspended_session_and_clim_off_cancels_session():
+    zone = Zone(_cfg(override_duree_min=5))
+    _seed_running_session(zone, started_ts=500.0, max_end_ts=10_000.0)
+    zone.on_external_override(now_ts=1_000.0, profile_active=True)
+
+    cmds = zone.tick(_inp(
+        now_ts=1_000.0 + 5 * 60 + 1,
+        room_temperature=25.0,
+        clim_current_hvac_mode=HVAC_OFF,
+        active_profile=_profile_cool(seuil_demarrage=27.0),
+    ))
+
+    assert zone.state.state == ZoneState.IDLE
+    assert zone.state.session_target is None
+    assert zone.state.completed_sessions[-1]["end_reason"] == "user_canceled"
+    assert cmds == []
 
 
 def test_reset_override_clim_on_resumes_running():
@@ -351,6 +403,23 @@ def test_reset_override_clim_on_resumes_running():
     )
     assert zone.state.state == ZoneState.RUNNING
     assert zone.state.cycle_started_ts == 1_200.0
+
+
+def test_reset_override_with_suspended_session_preserves_original_session():
+    zone = Zone(_cfg())
+    _seed_running_session(zone, started_ts=500.0, target=24.5, max_end_ts=10_000.0)
+    zone.on_external_override(now_ts=1_000.0, profile_active=True)
+
+    zone.reset_override(
+        now_ts=2_000.0,
+        clim_current_hvac_mode=HVAC_COOL,
+        clim_state_last_changed_ts=1_200.0,
+    )
+
+    assert zone.state.state == ZoneState.RUNNING
+    assert zone.state.cycle_started_ts == 500.0
+    assert zone.state.session_target == 24.5
+    assert zone.state.completed_sessions == []
 
 
 def test_reset_override_clim_off_goes_idle():

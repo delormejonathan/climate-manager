@@ -555,10 +555,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 target_temperature = active.target
                 seuil_demarrage = active.seuil_demarrage
 
-            # Session active ? on expose ses paramètres SI la zone est en RUNNING
-            in_session = zone.state.state == ZoneState.RUNNING and (
-                zone.state.session_target is not None
-            )
+            # Session active ou temporairement suspendue par un override manuel :
+            # on expose ses paramètres tant qu'elle n'est pas clôturée.
+            in_session = zone.state.state in (
+                ZoneState.RUNNING,
+                ZoneState.MANUAL_OVERRIDE_TIMED,
+                ZoneState.MANUAL_OVERRIDE_FREE,
+            ) and (zone.state.session_target is not None)
             session = None
             if in_session:
                 session = {
