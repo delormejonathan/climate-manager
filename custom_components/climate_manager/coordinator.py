@@ -115,7 +115,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             commands = zone.tick(inputs)
             self._maybe_seed_entered_session_kwh(zone, prev_state)
             self._maybe_close_last_session_kwh(zone, prev_completed_count)
-            self._maybe_seed_sensor_baselines(zone, prev_state, sensor_temps)
+            await self._maybe_seed_sensor_baselines(zone, prev_state, inputs, sensor_temps)
             self._maybe_detect_lagging_sensors(zone, inputs, sensor_temps)
             self._maybe_clear_sensor_baselines(zone, prev_state)
             for cmd in commands:
@@ -424,25 +424,126 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     # === Sensor lag detection ===
 
-    def _maybe_seed_sensor_baselines(
-        self, zone: Zone, prev_state: str, sensor_temps: dict[str, float]
+    async def _maybe_seed_sensor_baselines(
+        self,
+        zone: Zone,
+        prev_state: str,
+        inputs: ZoneInputs,
+        sensor_temps: dict[str, float],
     ) -> None:
-        """Capture la référence capteurs au début d'une session.
+        """Capture/répare la référence capteurs au début d'une session.
 
         Sur un reload/restart HA, l'état runtime peut déjà être RUNNING au
-        premier tick. Dans ce cas `prev_state` vaut RUNNING et l'ancienne logique
-        ne capturait jamais de baseline, donc tous les gains restaient à 0/—.
-        On seed aussi une session RUNNING dont la baseline est encore vide.
+        premier tick. Dans ce cas l'ancienne logique ne capturait jamais de
+        baseline, ou la capturait trop tard au moment du redémarrage, donc les
+        gains restaient affichés à 0. Si la session existait déjà, on tente de
+        restaurer les températures au vrai ``cycle_started_ts`` depuis Recorder.
         """
         if zone.state.state != ZoneState.RUNNING:
             return
-        if prev_state == ZoneState.RUNNING and zone.state.cycle_baseline_temps:
-            return
         if not sensor_temps:
             return
-        zone.state.cycle_baseline_temps = dict(sensor_temps)
+
+        current_baselines = zone.state.cycle_baseline_temps
+        missing = [sid for sid in sensor_temps if sid not in current_baselines]
+        duration_s = None
+        if zone.state.cycle_started_ts is not None:
+            duration_s = max(0.0, inputs.now_ts - zone.state.cycle_started_ts)
+
+        # Une baseline non vide peut quand même être mauvaise: c'est le cas
+        # d'une session restaurée après restart où on a snapshoté les valeurs du
+        # restart au lieu des valeurs du début réel de session. On vérifie donc
+        # Recorder pour les sessions déjà entamées.
+        should_try_history = bool(duration_s and duration_s > 60) and (
+            bool(missing) or bool(current_baselines)
+        )
+        if should_try_history:
+            history_baselines = await self._history_sensor_baselines(
+                zone, zone.state.cycle_started_ts, inputs.now_ts, sensor_temps
+            )
+            if history_baselines:
+                history_avg = self._average_temp_values(history_baselines)
+                current_avg = self._average_temp_values(current_baselines)
+                missing_history = any(sid not in current_baselines for sid in history_baselines)
+                avg_changed = (
+                    history_avg is not None
+                    and current_avg is not None
+                    and abs(history_avg - current_avg) >= 0.05
+                )
+                if missing_history or not current_baselines or avg_changed:
+                    repaired = dict(current_baselines)
+                    repaired.update(history_baselines)
+                    for sid, value in sensor_temps.items():
+                        repaired.setdefault(sid, value)
+                    zone.state.cycle_baseline_temps = repaired
+                    zone.state.flagged_sensors = []
+                    zone.state.notified_sensors = []
+                    return
+
+        if prev_state == ZoneState.RUNNING and not missing:
+            return
+
+        repaired = dict(current_baselines)
+        for sid, value in sensor_temps.items():
+            repaired.setdefault(sid, value)
+        zone.state.cycle_baseline_temps = repaired
         zone.state.flagged_sensors = []
         zone.state.notified_sensors = []
+
+    async def _history_sensor_baselines(
+        self,
+        zone: Zone,
+        started_ts: float | None,
+        now_ts: float,
+        sensor_temps: dict[str, float],
+    ) -> dict[str, float]:
+        """Retourne les valeurs capteurs au début réel de session via Recorder."""
+        if started_ts is None or started_ts >= now_ts:
+            return {}
+        try:
+            from homeassistant.components.recorder import get_instance, history
+        except Exception:  # pragma: no cover - Recorder peut être absent en tests.
+            return {}
+
+        start = dt_util.utc_from_timestamp(started_ts)
+        # Fenêtre courte: include_start_time_state donne l'état exact/dernier état
+        # au début, et la marge couvre les capteurs qui publient juste après.
+        end = dt_util.utc_from_timestamp(min(now_ts, started_ts + 10 * 60))
+        entity_ids = [sid for sid in zone.config.temperature_sensors if sid in sensor_temps]
+        if not entity_ids:
+            return {}
+
+        def _read_history() -> dict[str, list[Any]]:
+            out: dict[str, list[Any]] = {}
+            for entity_id in entity_ids:
+                out.update(
+                    history.state_changes_during_period(
+                        self.hass,
+                        start,
+                        end,
+                        entity_id,
+                        include_start_time_state=True,
+                        no_attributes=True,
+                    )
+                )
+            return out
+
+        try:
+            states_by_entity = await get_instance(self.hass).async_add_executor_job(
+                _read_history
+            )
+        except Exception as err:  # pragma: no cover - dépend de Recorder/DB runtime.
+            _LOGGER.debug("Could not restore climate session baselines from recorder: %s", err)
+            return {}
+
+        baselines: dict[str, float] = {}
+        for sid, states in states_by_entity.items():
+            for st in states or []:
+                value = _as_float(getattr(st, "state", None))
+                if value is not None:
+                    baselines[sid] = value
+                    break
+        return baselines
 
     def _maybe_clear_sensor_baselines(self, zone: Zone, prev_state: str) -> None:
         """Efface l'ancien état de détection à la sortie de RUNNING."""
