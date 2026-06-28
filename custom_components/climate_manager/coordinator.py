@@ -427,15 +427,18 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     def _maybe_seed_sensor_baselines(
         self, zone: Zone, prev_state: str, sensor_temps: dict[str, float]
     ) -> None:
-        """Nettoie l'ancien état de détection de capteurs isolés.
+        """Capture la référence capteurs au début d'une session.
 
-        La détection existe encore dans les structures persistées pour ne pas
-        casser les états sauvegardés, mais elle ne doit plus influencer le
-        pilotage ni produire de notifications.
+        Sur un reload/restart HA, l'état runtime peut déjà être RUNNING au
+        premier tick. Dans ce cas `prev_state` vaut RUNNING et l'ancienne logique
+        ne capturait jamais de baseline, donc tous les gains restaient à 0/—.
+        On seed aussi une session RUNNING dont la baseline est encore vide.
         """
-        if prev_state == ZoneState.RUNNING:
-            return
         if zone.state.state != ZoneState.RUNNING:
+            return
+        if prev_state == ZoneState.RUNNING and zone.state.cycle_baseline_temps:
+            return
+        if not sensor_temps:
             return
         zone.state.cycle_baseline_temps = dict(sensor_temps)
         zone.state.flagged_sensors = []
