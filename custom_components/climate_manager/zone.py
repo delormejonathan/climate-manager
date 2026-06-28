@@ -380,6 +380,24 @@ def _as_float_or_zero(value: Any) -> float:
     return parsed if parsed is not None else 0.0
 
 
+def _average_temp_values(values: dict[str, float]) -> float | None:
+    vals = [v for v in values.values() if isinstance(v, (int, float))]
+    if not vals:
+        return None
+    return round(sum(vals) / len(vals), 2)
+
+
+def _session_temperature_delta(
+    start: float | None, current: float | None, mode: str | None
+) -> float | None:
+    if start is None or current is None:
+        return None
+    raw = current - start
+    if mode == ProfileMode.COOL:
+        raw = -raw
+    return round(raw, 2)
+
+
 # === Zone config ===
 
 
@@ -966,6 +984,10 @@ class Zone:
             self._clear_session_fields()
             return
         duration_min = round((inp.now_ts - start_ts) / 60, 1)
+        start_temperature = _average_temp_values(self.state.cycle_baseline_temps)
+        delta_temperature = _session_temperature_delta(
+            start_temperature, inp.room_temperature, self.state.session_mode
+        )
         record = {
             "start_ts": start_ts,
             "end_ts": inp.now_ts,
@@ -977,6 +999,10 @@ class Zone:
             "session_power": self.state.session_power,
             "session_fan_intensity": self.state.session_fan_intensity,
             "session_mode": self.state.session_mode,
+            "start_temperature": start_temperature,
+            "end_temperature": inp.room_temperature,
+            "delta_temperature": delta_temperature,
+            "sensor_start_temperatures": dict(self.state.cycle_baseline_temps),
             "end_reason": end_reason,
             "kwh_start": self.state.cycle_start_kwh,
             "kwh_end": None,
@@ -1002,6 +1028,7 @@ class Zone:
         self.state.session_post_kickstart_fan_intensity = None
         self.state.session_cutoff_held_since_ts = None
         self.state.session_manual = False
+        self.state.cycle_baseline_temps = {}
 
     # --- helpers ---
 

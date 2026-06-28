@@ -435,13 +435,17 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             return
         if zone.state.state != ZoneState.RUNNING:
             return
-        zone.state.cycle_baseline_temps = {}
+        zone.state.cycle_baseline_temps = dict(sensor_temps)
         zone.state.flagged_sensors = []
         zone.state.notified_sensors = []
 
     def _maybe_clear_sensor_baselines(self, zone: Zone, prev_state: str) -> None:
         """Efface l'ancien état de détection à la sortie de RUNNING."""
-        if prev_state == ZoneState.RUNNING and zone.state.state != ZoneState.RUNNING:
+        if prev_state == ZoneState.RUNNING and zone.state.state not in (
+            ZoneState.RUNNING,
+            ZoneState.MANUAL_OVERRIDE_TIMED,
+            ZoneState.MANUAL_OVERRIDE_FREE,
+        ):
             zone.state.cycle_baseline_temps = {}
             zone.state.flagged_sensors = []
             zone.state.notified_sensors = []
@@ -543,7 +547,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     def _build_coordinator_data(self) -> dict[str, Any]:
         out: dict[str, Any] = {"zones": {}}
         for zid, zone in self._zones.items():
-            inputs = self._gather_inputs(zone)
+            sensor_temps = self._read_sensor_temps(zone)
+            inputs = self._gather_inputs(zone, sensor_temps)
             entered_ts = zone.state.last_state_transition_ts or None
             active = inputs.active_profile
 
@@ -564,19 +569,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             ) and (zone.state.session_target is not None)
             session = None
             if in_session:
-                session = {
-                    "parent_profile_name": zone.state.cycle_start_profile_name,
-                    "manual": zone.state.session_manual,
-                    "started_ts": zone.state.cycle_started_ts,
-                    "max_end_ts": zone.state.session_max_end_ts,
-                    "target": zone.state.session_target,
-                    "target_cutoff": zone.state.session_target_cutoff,
-                    "power": zone.state.session_power,
-                    "fan_intensity": zone.state.session_fan_intensity,
-                    "mode": zone.state.session_mode,
-                    "kickstart_until_ts": zone.state.session_kickstart_until_ts,
-                    "cutoff_held_since_ts": zone.state.session_cutoff_held_since_ts,
-                }
+                session = self._build_session_payload(zone, inputs, sensor_temps)
 
             # Direction/target/seuil dans la carte :
             # - Si session active : direction + target depuis la SESSION (pas du profil cascade)
@@ -626,6 +619,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "session": session,
                 "sessions": zone.state.completed_sessions,
                 "temperature_sensors": list(zone.config.temperature_sensors),
+                "temperature_sensor_details": self._build_temperature_sensor_details(
+                    zone, inputs, sensor_temps
+                ),
                 "flagged_sensors": list(zone.state.flagged_sensors),
                 "flagged_sensors_labels": [
                     self._sensor_label(sid) for sid in zone.state.flagged_sensors
@@ -636,6 +632,94 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 ),
             }
         return out
+
+    def _build_session_payload(
+        self, zone: Zone, inputs: ZoneInputs, sensor_temps: dict[str, float]
+    ) -> dict[str, Any]:
+        """Payload lisible de la session active/suspendue pour l'UI."""
+        started_ts = zone.state.cycle_started_ts
+        start_temperature = self._average_temp_values(zone.state.cycle_baseline_temps)
+        current_temperature = inputs.room_temperature
+        delta = self._temperature_delta(
+            start_temperature, current_temperature, zone.state.session_mode
+        )
+        duration_min = None
+        rate_per_10min = None
+        if started_ts is not None:
+            duration_min = max(0.0, round((inputs.now_ts - started_ts) / 60, 1))
+            if delta is not None and duration_min > 0:
+                rate_per_10min = round(delta / duration_min * 10, 2)
+
+        return {
+            "parent_profile_name": zone.state.cycle_start_profile_name,
+            "manual": zone.state.session_manual,
+            "started_ts": started_ts,
+            "max_end_ts": zone.state.session_max_end_ts,
+            "target": zone.state.session_target,
+            "target_cutoff": zone.state.session_target_cutoff,
+            "power": zone.state.session_power,
+            "fan_intensity": zone.state.session_fan_intensity,
+            "mode": zone.state.session_mode,
+            "kickstart_until_ts": zone.state.session_kickstart_until_ts,
+            "cutoff_held_since_ts": zone.state.session_cutoff_held_since_ts,
+            "start_temperature": start_temperature,
+            "current_temperature": current_temperature,
+            "delta_temperature": delta,
+            "duration_minutes": duration_min,
+            "rate_per_10min": rate_per_10min,
+            "sensors": self._build_temperature_sensor_details(zone, inputs, sensor_temps),
+        }
+
+    def _build_temperature_sensor_details(
+        self, zone: Zone, inputs: ZoneInputs, sensor_temps: dict[str, float]
+    ) -> list[dict[str, Any]]:
+        details: list[dict[str, Any]] = []
+        avg = inputs.room_temperature
+        for sid in zone.config.temperature_sensors:
+            current = sensor_temps.get(sid)
+            start = zone.state.cycle_baseline_temps.get(sid)
+            delta = self._temperature_delta(start, current, zone.state.session_mode)
+            distance = None
+            if current is not None and avg is not None:
+                distance = round(current - avg, 2)
+            details.append({
+                "entity_id": sid,
+                "name": self._sensor_label(sid),
+                "current": current,
+                "start": start,
+                "delta": delta,
+                "distance_from_average": distance,
+                "included_in_average": current is not None,
+                "trend": self._sensor_trend(delta),
+            })
+        return details
+
+    def _average_temp_values(self, values: dict[str, float]) -> float | None:
+        vals = [v for v in values.values() if isinstance(v, (int, float))]
+        if not vals:
+            return None
+        return round(sum(vals) / len(vals), 2)
+
+    def _temperature_delta(
+        self, start: float | None, current: float | None, mode: str | None
+    ) -> float | None:
+        if start is None or current is None:
+            return None
+        raw = current - start
+        # Pour l'UI, un chiffre positif signifie toujours "gain" dans le sens
+        # de la session: fraîcheur gagnée en cool, chaleur gagnée en heat.
+        if mode == ProfileMode.COOL:
+            raw = -raw
+        return round(raw, 2)
+
+    def _sensor_trend(self, delta: float | None) -> str:
+        if delta is None:
+            return "unknown"
+        if delta > 0.1:
+            return "improving"
+        if delta < -0.1:
+            return "worsening"
+        return "stable"
 
 
 def _as_float(value: Any) -> float | None:

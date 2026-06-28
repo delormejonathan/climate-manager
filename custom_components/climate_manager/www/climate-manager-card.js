@@ -456,6 +456,17 @@ class DelormejClimateCard extends HTMLElement {
     $("session-max-end").textContent = session.max_end_ts
       ? this._fmtTimeFromTs(session.max_end_ts)
       : "—";
+    const gain = this._fmtSessionGain(session);
+    const rate = Number.isFinite(Number(session.rate_per_10min))
+      ? `${Number(session.rate_per_10min) >= 0 ? "+" : ""}${Number(session.rate_per_10min).toFixed(2)}°/10 min`
+      : "—";
+    const startCur = (session.start_temperature != null && session.current_temperature != null)
+      ? `${this._fmtTemp(session.start_temperature)}° → ${this._fmtTemp(session.current_temperature)}°`
+      : "—";
+    $("session-gain").textContent = gain;
+    $("session-rate").textContent = rate;
+    $("session-start-current").textContent = startCur;
+    this._renderSessionSensors(session);
     const cutoffRow = $("session-cutoff-row");
     if (session.target_cutoff != null) {
       cutoffRow.style.display = "";
@@ -482,6 +493,44 @@ class DelormejClimateCard extends HTMLElement {
           Coupure atteinte — confirmé depuis ${heldFor} min
         </div>`;
     }
+  }
+
+  _renderSessionSensors(session) {
+    const list = this.querySelector('[data-bind="session-sensors"]');
+    if (!list) return;
+    const sensors = Array.isArray(session.sensors) ? session.sensors : [];
+    const available = sensors.filter((s) => s && s.current != null);
+    if (!available.length) {
+      list.style.display = "none";
+      list.innerHTML = "";
+      return;
+    }
+    list.style.display = "";
+    list.innerHTML = available.map((s) => {
+      const delta = Number(s.delta);
+      const deltaTxt = Number.isFinite(delta)
+        ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}°`
+        : "—";
+      const dist = Number(s.distance_from_average);
+      const distTxt = Number.isFinite(dist) && Math.abs(dist) >= 0.1
+        ? `${dist > 0 ? "+" : ""}${dist.toFixed(1)}° vs moy.`
+        : "dans la moyenne";
+      const trendClass = delta > 0.1 ? "good" : (delta < -0.1 ? "bad" : "stable");
+      return `
+        <div class="dc-session-sensor ${trendClass}">
+          <span class="name">${this._escapeHTML(s.name || s.entity_id || "Capteur")}</span>
+          <span class="temp">${this._fmtTemp(s.current)}°</span>
+          <span class="delta">${deltaTxt}</span>
+          <span class="dist">${distTxt}</span>
+        </div>`;
+    }).join("");
+  }
+
+  _fmtSessionGain(session) {
+    const gain = Number(session.delta_temperature);
+    if (!Number.isFinite(gain)) return "gain —";
+    const label = session.mode === "heat" ? "chaleur" : "fraîcheur";
+    return `${gain >= 0 ? "+" : ""}${gain.toFixed(1)}° ${label}`;
   }
 
   _openModal(html) {
@@ -2449,6 +2498,46 @@ const STYLES = `
     color: var(--dc-muted);
     font-weight: 500;
   }
+  .dc-session-progress strong {
+    color: var(--dc-accent);
+    font-weight: 700;
+  }
+  .dc-session-sensors {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--dc-hairline);
+  }
+  .dc-session-sensor {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 7px;
+    align-items: baseline;
+    font-size: 12px;
+    color: var(--dc-muted);
+  }
+  .dc-session-sensor .name {
+    color: var(--dc-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dc-session-sensor .temp,
+  .dc-session-sensor .delta {
+    color: var(--dc-fg);
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-session-sensor.good .delta { color: var(--dc-accent); }
+  .dc-session-sensor.bad .delta { color: var(--dc-warm); }
+  .dc-session-sensor .dist {
+    grid-column: 2 / 4;
+    justify-self: end;
+    font-size: 11px;
+    color: var(--dc-dim);
+  }
   .dc-session-sep {
     color: var(--dc-dim);
     margin: 0 2px;
@@ -3272,6 +3361,14 @@ const TEMPLATE = `
             <span>coupure <span data-bind="session-cutoff">—</span></span>
           </span>
         </div>
+        <div class="dc-session-line dc-session-line-sub dc-session-progress">
+          <span data-bind="session-start-current">—</span>
+          <span class="dc-session-sep">·</span>
+          <strong data-bind="session-gain">gain —</strong>
+          <span class="dc-session-sep">·</span>
+          <span data-bind="session-rate">—</span>
+        </div>
+        <div class="dc-session-sensors" data-bind="session-sensors" style="display:none"></div>
         <div class="dc-session-banners" data-bind="session-banners"></div>
       </div>
 

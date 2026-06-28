@@ -656,3 +656,28 @@ def test_no_room_temp_does_nothing():
     ))
     assert zone.state.state == ZoneState.IDLE
     assert cmds == []
+
+def test_completed_session_records_temperature_gain_from_baseline():
+    zone = Zone(_cfg(temperature_sensors=["sensor.a", "sensor.b"]))
+    _seed_running_session(
+        zone,
+        mode=ProfileMode.COOL,
+        target=24.5,
+        started_ts=1_000.0,
+        max_end_ts=1_600.0,
+    )
+    zone.state.cycle_baseline_temps = {"sensor.a": 27.0, "sensor.b": 26.0}
+
+    cmds = zone.tick(_inp(
+        now_ts=1_700.0,
+        room_temperature=25.0,
+        clim_current_hvac_mode=HVAC_COOL,
+    ))
+
+    assert zone.state.completed_sessions
+    session = zone.state.completed_sessions[-1]
+    assert session["start_temperature"] == 26.5
+    assert session["end_temperature"] == 25.0
+    assert session["delta_temperature"] == 1.5
+    assert session["sensor_start_temperatures"] == {"sensor.a": 27.0, "sensor.b": 26.0}
+    assert any(c.service == "turn_off" for c in cmds)

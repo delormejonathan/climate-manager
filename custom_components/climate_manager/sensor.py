@@ -70,6 +70,7 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             ),
             "has_consumption_sensor": d.get("has_consumption_sensor", False),
             "temperature_sensors": d.get("temperature_sensors", []),
+            "temperature_sensor_details": d.get("temperature_sensor_details", []),
             "flagged_sensors": d.get("flagged_sensors", []),
             "flagged_sensors_labels": d.get("flagged_sensors_labels", []),
             "session": d.get("session"),
@@ -77,6 +78,12 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
         }
         sess = d.get("session")
         if sess:
+            attrs["session_start_temperature"] = sess.get("start_temperature")
+            attrs["session_current_temperature"] = sess.get("current_temperature")
+            attrs["session_delta_temperature"] = sess.get("delta_temperature")
+            attrs["session_duration_minutes"] = sess.get("duration_minutes")
+            attrs["session_rate_per_10min"] = sess.get("rate_per_10min")
+            attrs["session_sensor_breakdown"] = sess.get("sensors", [])
             for ts_key in ("started_ts", "max_end_ts", "kickstart_until_ts", "cutoff_held_since_ts"):
                 ts = sess.get(ts_key)
                 if ts:
