@@ -28,6 +28,7 @@ from custom_components.climate_manager.zone import (
 HVAC_OFF = "off"
 HVAC_HEAT = "heat"
 HVAC_COOL = "cool"
+HVAC_HEAT_COOL = "heat_cool"
 
 
 def _cfg(**overrides) -> ZoneConfig:
@@ -319,6 +320,26 @@ def test_external_override_without_active_profile_is_free():
     zone.on_external_override(now_ts=1_000.0, profile_active=False)
     assert zone.state.state == ZoneState.MANUAL_OVERRIDE_FREE
     assert zone.state.override_until_ts is None
+
+
+def test_free_override_entering_profile_adopts_manual_session_instead_of_turning_off():
+    zone = Zone(_cfg())
+    zone.on_external_override(now_ts=1_000.0, profile_active=False)
+
+    cmds = zone.tick(_inp(
+        now_ts=1_300.0,
+        room_temperature=26.8,
+        clim_current_hvac_mode=HVAC_HEAT_COOL,
+        clim_current_setpoint=25.0,
+        clim_current_fan_mode="auto",
+        active_profile=_profile_cool(seuil_demarrage=27.0, target=24.5),
+    ))
+
+    assert zone.state.state == ZoneState.RUNNING
+    assert zone.state.session_manual is True
+    assert zone.state.session_target == 25.0
+    assert zone.state.session_mode == ProfileMode.COOL
+    assert not any(c.service == "turn_off" for c in cmds)
 
 
 def test_override_does_not_pilot():
