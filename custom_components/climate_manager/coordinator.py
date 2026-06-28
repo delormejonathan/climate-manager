@@ -111,8 +111,10 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             inputs = self._gather_inputs(zone, sensor_temps)
             self._maybe_seed_cycle_start_kwh(zone, inputs)
             prev_state = zone.state.state
+            prev_completed_count = len(zone.state.completed_sessions)
             commands = zone.tick(inputs)
-            self._maybe_close_last_session_kwh(zone, prev_state)
+            self._maybe_seed_entered_session_kwh(zone, prev_state)
+            self._maybe_close_last_session_kwh(zone, prev_completed_count)
             self._maybe_seed_sensor_baselines(zone, prev_state, sensor_temps)
             self._maybe_detect_lagging_sensors(zone, inputs, sensor_temps)
             self._maybe_clear_sensor_baselines(zone, prev_state)
@@ -494,23 +496,46 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         # On l'écrit ; sera utilisé par Zone._finalize_session.
         zone.state.cycle_start_kwh = kwh
 
-    def _maybe_close_last_session_kwh(self, zone: Zone, prev_state: str) -> None:
-        """Si une session vient d'être finalisée par Zone.tick, patcher
-        kwh_end et kwh_consumed."""
-        if not zone.state.completed_sessions:
+    def _session_consumption_sensor(self, zone: Zone, mode: str | None) -> str | None:
+        if mode == ProfileMode.COOL:
+            return zone.config.consumption_sensor_cool
+        if mode == ProfileMode.HEAT:
+            return zone.config.consumption_sensor_heat
+        return None
+
+    def _has_session_runtime(self, zone: Zone) -> bool:
+        return zone.state.state in (
+            ZoneState.RUNNING,
+            ZoneState.MANUAL_OVERRIDE_TIMED,
+            ZoneState.MANUAL_OVERRIDE_FREE,
+        ) and zone.state.session_target is not None
+
+    def _maybe_seed_entered_session_kwh(self, zone: Zone, prev_state: str) -> None:
+        """Snapshot kWh when Zone.tick actually creates/adopts a session.
+
+        The older pre-tick prediction only covered automatic IDLE -> RUNNING starts.
+        Manual/adopted sessions and some edge transitions could therefore finish with
+        kwh_start missing, so the Sessions card had nothing to display.
+        """
+        was_in_session = prev_state in (
+            ZoneState.RUNNING,
+            ZoneState.MANUAL_OVERRIDE_TIMED,
+            ZoneState.MANUAL_OVERRIDE_FREE,
+        )
+        if was_in_session or not self._has_session_runtime(zone):
+            return
+        if zone.state.cycle_start_kwh is not None:
+            return
+        sensor = self._session_consumption_sensor(zone, zone.state.session_mode)
+        zone.state.cycle_start_kwh = self._read_kwh(sensor)
+
+    def _maybe_close_last_session_kwh(self, zone: Zone, prev_completed_count: int) -> None:
+        """Patch kWh on the session finalized during this tick."""
+        if len(zone.state.completed_sessions) <= prev_completed_count:
             return
         last = zone.state.completed_sessions[-1]
         if last.get("kwh_end") is not None:
             return  # déjà patché
-        # On ne snapshot la fin que si la session vient d'être ajoutée ce tick.
-        # Heuristique : prev_state == RUNNING et state != RUNNING.
-        if prev_state != ZoneState.RUNNING or zone.state.state == ZoneState.RUNNING:
-            return
-        # Détecter quel sensor : le `session_mode` enregistré est la source
-        # de vérité (vrai sens de la session, pas du profil cascade qui a pu
-        # changer en cours).
-        cool_sensor = zone.config.consumption_sensor_cool
-        heat_sensor = zone.config.consumption_sensor_heat
         mode = last.get("session_mode")
         if mode is None:
             profile_name = last.get("profile_name")
@@ -518,7 +543,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 if p.name == profile_name:
                     mode = p.mode
                     break
-        sensor = cool_sensor if mode == ProfileMode.COOL else heat_sensor
+        sensor = self._session_consumption_sensor(zone, mode)
         kwh_end = self._read_kwh(sensor)
         if kwh_end is None:
             return
