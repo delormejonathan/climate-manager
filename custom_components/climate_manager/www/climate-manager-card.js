@@ -513,8 +513,8 @@ class DelormejClimateCard extends HTMLElement {
         : "—";
       const dist = Number(s.distance_from_average);
       const distTxt = Number.isFinite(dist) && Math.abs(dist) >= 0.1
-        ? `${dist > 0 ? "+" : ""}${dist.toFixed(1)}° vs moy.`
-        : "dans la moyenne";
+        ? `${dist > 0 ? "+" : ""}${dist.toFixed(1)}° moy.`
+        : "≈ moy.";
       const trendClass = delta > 0.1 ? "good" : (delta < -0.1 ? "bad" : "stable");
       return `
         <div class="dc-session-sensor ${trendClass}">
@@ -2512,7 +2512,7 @@ const STYLES = `
   }
   .dc-session-sensor {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     gap: 7px;
     align-items: baseline;
     font-size: 12px;
@@ -2533,10 +2533,14 @@ const STYLES = `
   .dc-session-sensor.good .delta { color: var(--dc-accent); }
   .dc-session-sensor.bad .delta { color: var(--dc-warm); }
   .dc-session-sensor .dist {
-    grid-column: 2 / 4;
     justify-self: end;
-    font-size: 11px;
+    font-size: 10.5px;
+    line-height: 1;
     color: var(--dc-dim);
+    white-space: nowrap;
+    padding: 2px 5px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--dc-muted), transparent 92%);
   }
   .dc-session-sep {
     color: var(--dc-dim);
