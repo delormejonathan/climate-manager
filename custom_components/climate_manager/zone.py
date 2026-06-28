@@ -925,6 +925,32 @@ class Zone:
             self._transition(ZoneState.MANUAL_OVERRIDE_FREE, now_ts)
             self.state.override_until_ts = None
 
+    def _adopt_external_climate_session(self, inp: ZoneInputs) -> None:
+        """Transforme un allumage manuel externe en session manuelle.
+
+        Cas typique: Siri/HomeKit allume la clim juste avant le début d'un
+        profil. L'entrée en profil ne doit pas couper cette demande utilisateur;
+        on l'adopte comme session manuelle, puis le pilotage normal de session
+        prend le relais.
+        """
+        profile = inp.active_profile
+        if profile is None:
+            return
+        mode = _profile_mode_from_hvac(inp.clim_current_hvac_mode) or profile.mode
+        if mode not in ProfileMode.ALL:
+            return
+        target = inp.clim_current_setpoint if inp.clim_current_setpoint is not None else profile.target
+        self.start_manual_session(
+            inp.now_ts,
+            mode=mode,
+            target=target,
+            max_end_ts=self._default_max_end_ts(inp.now_ts, profile),
+            power=profile.power,
+            fan_intensity=profile.fan_intensity,
+            target_cutoff=profile.target_cutoff,
+            parent_profile_name=profile.name,
+        )
+
     def _has_suspended_session(self) -> bool:
         """True when a manual override is temporarily holding a session open."""
         return (
@@ -964,7 +990,12 @@ class Zone:
         elif self.state.state == ZoneState.MANUAL_OVERRIDE_FREE:
             if inp.active_profile is not None:
                 self.state.override_until_ts = None
-                self._transition(ZoneState.IDLE, inp.now_ts)
+                if self._has_suspended_session() and _hvac_is_active_for_session(inp.clim_current_hvac_mode):
+                    self._transition(ZoneState.RUNNING, inp.now_ts)
+                elif _hvac_is_active_for_session(inp.clim_current_hvac_mode):
+                    self._adopt_external_climate_session(inp)
+                else:
+                    self._transition(ZoneState.IDLE, inp.now_ts)
             else:
                 return []
 
@@ -1093,6 +1124,18 @@ class Zone:
 
 def utc_now_ts() -> float:
     return time.time()
+
+
+def _hvac_is_active_for_session(hvac_mode: str) -> bool:
+    return hvac_mode in (HVACMode.HEAT, HVACMode.COOL, "heat_cool")
+
+
+def _profile_mode_from_hvac(hvac_mode: str) -> str | None:
+    if hvac_mode == HVACMode.COOL:
+        return ProfileMode.COOL
+    if hvac_mode == HVACMode.HEAT:
+        return ProfileMode.HEAT
+    return None
 
 
 def detect_lagging_sensors(
