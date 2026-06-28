@@ -185,7 +185,7 @@ def test_session_inside_dead_band_holds_at_target():
     assert sp == pytest.approx(24.5, abs=0.5)
 
 
-def test_session_below_target_holds_at_target():
+def test_session_below_target_releases_cooling_pressure():
     zone = Zone(_cfg())
     _seed_running_session(zone, target=24.5, power="normal")
     cmds = zone.tick(_inp(
@@ -193,7 +193,19 @@ def test_session_below_target_holds_at_target():
         clim_current_hvac_mode=HVAC_COOL,
     ))
     sp = _find_setpoint(cmds)
-    assert sp == pytest.approx(24.5, abs=0.5)
+    assert sp == pytest.approx(24.5 + POWER_OFFSETS["normal"], abs=0.5)
+
+
+def test_session_at_target_with_aggressive_power_releases_to_max_setpoint():
+    """Cas salon: target 25.5, zone déjà à 25.1 → on arrête de pousser froid."""
+    zone = Zone(_cfg())
+    _seed_running_session(zone, target=25.5, power="agressif")
+    cmds = zone.tick(_inp(
+        room_temperature=25.1,
+        clim_current_hvac_mode=HVAC_COOL,
+    ))
+    sp = _find_setpoint(cmds)
+    assert sp == pytest.approx(32.0, abs=0.1)
 
 
 def test_session_heat_far_from_target_pushes_up():
@@ -229,18 +241,22 @@ def test_power_knob_controls_pendulum_offset(power, expected_offset):
 # === Setpoint sign correctness (the original bug) ===
 
 
-def test_cool_setpoint_always_at_or_below_target():
-    """Le bug historique du YAML : consigne au-dessus de la cible en cool."""
+def test_cool_setpoint_releases_above_target_once_room_is_cool_enough():
+    """En cool, atteindre la cible doit relâcher la pression, pas continuer à froid."""
     zone = Zone(_cfg())
-    _seed_running_session(zone, target=24.5)
-    for room in (26.0, 28.0, 24.5, 22.0):
-        cmds = zone.tick(_inp(
-            room_temperature=room,
-            clim_current_hvac_mode=HVAC_COOL,
-        ))
-        sp = _find_setpoint(cmds)
-        if sp is not None:
-            assert sp <= 24.5, f"room={room}: consigne {sp} doit être ≤ target 24.5"
+    _seed_running_session(zone, target=24.5, power="normal")
+
+    push_cmds = zone.tick(_inp(
+        room_temperature=26.0,
+        clim_current_hvac_mode=HVAC_COOL,
+    ))
+    release_cmds = zone.tick(_inp(
+        room_temperature=24.5,
+        clim_current_hvac_mode=HVAC_COOL,
+    ))
+
+    assert _find_setpoint(push_cmds) < 24.5
+    assert _find_setpoint(release_cmds) > 24.5
 
 
 # === Session protégée des changements de cascade ===

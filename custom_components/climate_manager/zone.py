@@ -761,12 +761,30 @@ class Zone:
     def _compute_pendulum_setpoint(
         self, room: float, target: float, power: str, mode: str
     ) -> float | None:
-        """Pendule pur : consigne = target ± offset(power) si room loin, target sinon."""
+        """Pendule de maintien autour de la cible.
+
+        Le point important: quand la température de zone a atteint/dépassé la
+        cible dans le bon sens, on ne doit pas envoyer simplement ``target``.
+        Sur les Daikin, leur sonde interne peut être nettement plus chaude que
+        la zone pilotée; une consigne égale à la cible peut donc continuer à
+        refroidir trop fort. On envoie alors une consigne de relâchement de
+        l'autre côté de la cible pour couper la pression sans arrêter la session.
+        """
         offset = POWER_OFFSETS.get(power, POWER_OFFSETS[DEFAULT_POWER])
         if mode == ProfileMode.COOL:
-            raw = target - offset if room > target + TARGET_DEAD_BAND else target
+            if room > target + TARGET_DEAD_BAND:
+                raw = target - offset  # pousse froid
+            elif room <= target:
+                raw = target + offset  # relâche froid
+            else:
+                raw = target  # zone neutre proche de la cible
         else:
-            raw = target + offset if room < target - TARGET_DEAD_BAND else target
+            if room < target - TARGET_DEAD_BAND:
+                raw = target + offset  # pousse chaud
+            elif room >= target:
+                raw = target - offset  # relâche chaud
+            else:
+                raw = target  # zone neutre proche de la cible
         rounded = round(raw * 2) / 2
         return max(CLIM_MIN_SETPOINT, min(CLIM_MAX_SETPOINT, rounded))
 
