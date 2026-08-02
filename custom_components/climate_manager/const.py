@@ -63,6 +63,9 @@ SENSOR_LAG_THRESHOLD_C = 0.5  # écart à la médiane pour considérer qu'un cap
 TARGET_CUTOFF_HOLD_SECONDS = 15 * 60
 # Bouton "Prolonger" idempotent
 EXTEND_SESSION_HOURS = 1
+# Session ventilation: brassage d'air simple, sans consigne de température.
+FAN_SESSION_DURATION_MIN = 45
+FAN_SESSION_FAN_MODE = "4"
 # Limite haute du max_end_ts d'une session (filet de sécurité côté UI)
 MAX_SESSION_DURATION_HOURS = 12
 
@@ -123,8 +126,12 @@ class ProfileMode:
 
     COOL = "cool"
     HEAT = "heat"
+    FAN_ONLY = "fan_only"
 
+    # Les profils automatiques restent cool/heat; FAN_ONLY sert aux sessions
+    # manuelles de brassage d'air.
     ALL: ClassVar[list[str]] = [COOL, HEAT]
+    SESSION_ALL: ClassVar[list[str]] = [COOL, HEAT, FAN_ONLY]
 
 
 class Power:

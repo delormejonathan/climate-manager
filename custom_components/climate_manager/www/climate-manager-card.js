@@ -72,6 +72,7 @@ class DelormejClimateCard extends HTMLElement {
     };
     this._title = config.title || fallbackTitles[this._variant] || this._capitalize(config.zone);
     this._climateEntity = config.climate_entity || null;
+    this._optimisticSession = null;
     this._rendered = false;
   }
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
@@ -276,16 +277,16 @@ class DelormejClimateCard extends HTMLElement {
       primary.push(info("mdi:power-off", "Pilotage désactivé."));
       primary.push(btn("primary", "mdi:auto-mode", "Réactiver le pilotage auto", "mode-auto"));
       primary.push(btn("secondary", "mdi:play-circle", "Démarrer une session manuelle", "session-start"));
+      primary.push(btn("secondary", "mdi:fan", "Ventilation 45 min", "session-fan"));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
     } else if (hasSession) {
-      primary.push(btn("primary", "mdi:pencil", "Modifier la session", "session-modify"));
-      primary.push(btn("secondary", "mdi:clock-plus-outline", "Ajouter 1 heure à la session", "session-extend"));
-      primary.push(btn("danger", "mdi:stop-circle-outline", "Arrêter la session", "session-cancel"));
+      primary.push(info("mdi:gesture-tap", "Session active — ajuste-la directement dans le bloc ci-dessus."));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
       secondary.push(btn("secondary-line", "mdi:power", "Désactiver le pilotage auto", "mode-off"));
     } else {
       // IDLE en auto, pas de session
       primary.push(btn("primary", "mdi:play-circle", "Démarrer une session", "session-start"));
+      primary.push(btn("secondary", "mdi:fan", "Ventilation 45 min", "session-fan"));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
       secondary.push(btn("secondary-line", "mdi:power", "Désactiver le pilotage auto", "mode-off"));
     }
@@ -302,10 +303,13 @@ class DelormejClimateCard extends HTMLElement {
 
   _onActionClick(e) {
     const a = e.currentTarget.dataset.action;
-    if (a === "session-start") return this._openSessionStartModal();
+    if (a === "session-start") return this._startDefaultSession();
+    if (a === "session-fan") {
+      return this._call("climate_manager", "start_fan_session", { zone_id: this._zone });
+    }
     if (a === "session-modify") return this._openSessionModifyModal();
     if (a === "session-extend") {
-      return this._call("climate_manager", "extend_session", { zone_id: this._zone, hours: 1 });
+      return this._extendSessionHours(1);
     }
     if (a === "session-cancel") {
       if (!confirm("Arrêter la session en cours ?")) return;
@@ -435,19 +439,31 @@ class DelormejClimateCard extends HTMLElement {
   }
 
   _updateSessionBlock(attrs) {
-    // Strip inline — affiché juste sous la narrative quand une session est active.
     const strip = this.querySelector('[data-bind="session-strip"]');
     if (!strip) return;
-    const session = attrs.session;
+    let session = attrs.session;
+    const now = Date.now() / 1000;
+    if (this._optimisticSession) {
+      if (session && this._optimisticSession.until > now) {
+        session = { ...session, ...this._optimisticSession.patch };
+      } else if (!session || this._optimisticSession.until <= now) {
+        this._optimisticSession = null;
+      }
+    }
     if (!session) {
       strip.style.display = "none";
       return;
     }
     strip.style.display = "";
     const $ = (k) => this.querySelector(`[data-bind="${k}"]`);
+    const isFanOnly = (session.mode || session.session_mode) === "fan_only";
+    const modeLabel = isFanOnly
+      ? "Session ventilation"
+      : ((session.mode || session.session_mode) === "heat" ? "Session chauffage" : "Session refroidissement");
     const parent = session.parent_profile_name || (session.manual ? "Manuelle" : "—");
     const parentLabel = session.manual ? `Manuel · ${parent}` : parent;
-    $("session-parent").textContent = parentLabel;
+
+    $("session-parent").textContent = `${modeLabel} · ${parentLabel}`;
     $("session-power-fan").textContent =
       `${this._capitalize(session.power || "—")} · Vent. ${this._capitalize(session.fan_intensity || "—")}`;
     $("session-started").textContent = session.started_ts
@@ -466,6 +482,15 @@ class DelormejClimateCard extends HTMLElement {
     $("session-gain").textContent = gain;
     $("session-rate").textContent = rate;
     $("session-start-current").textContent = startCur;
+
+    const targetWrap = $("session-target-control");
+    const targetValue = $("session-target-value");
+    if (targetWrap) targetWrap.style.display = isFanOnly ? "none" : "";
+    if (targetValue) targetValue.textContent = session.target != null ? `${this._fmtTemp(session.target)}°` : "—";
+    const endValue = $("session-end-value");
+    if (endValue) endValue.textContent = session.max_end_ts ? this._fmtTimeFromTs(session.max_end_ts) : "—";
+    this._updateSessionChips(session);
+
     this._renderSessionSensors(session);
     const cutoffRow = $("session-cutoff-row");
     if (session.target_cutoff != null) {
@@ -474,7 +499,6 @@ class DelormejClimateCard extends HTMLElement {
     } else {
       cutoffRow.style.display = "none";
     }
-    // Banners (kickstart, cutoff hold)
     const banners = $("session-banners");
     banners.innerHTML = "";
     if (session.kickstart_until_ts && session.kickstart_until_ts > Date.now() / 1000) {
@@ -493,6 +517,87 @@ class DelormejClimateCard extends HTMLElement {
           Coupure atteinte — confirmé depuis ${heldFor} min
         </div>`;
     }
+    if (!strip.dataset.controlsWired) {
+      strip.dataset.controlsWired = "1";
+      strip.addEventListener("click", (e) => this._onSessionInlineClick(e));
+    }
+  }
+
+  _updateSessionChips(session) {
+    const setActive = (kind, value) => {
+      this.querySelectorAll(`[data-session-${kind}]`).forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset[`session${kind[0].toUpperCase()}${kind.slice(1)}`] === value);
+      });
+    };
+    setActive("power", session.power || "normal");
+    setActive("fan", session.fan_intensity || "normal");
+  }
+
+  _onSessionInlineClick(e) {
+    const btn = e.target.closest("button[data-session-action], button[data-session-power], button[data-session-fan]");
+    if (!btn) return;
+    const session = this._stateAttrs().session;
+    if (!session) return;
+    if (btn.dataset.sessionAction === "target-dec") return this._bumpSessionTarget(-0.5);
+    if (btn.dataset.sessionAction === "target-inc") return this._bumpSessionTarget(0.5);
+    if (btn.dataset.sessionAction === "end-dec") return this._extendSessionHours(-1);
+    if (btn.dataset.sessionAction === "end-inc") return this._extendSessionHours(1);
+    if (btn.dataset.sessionAction === "cancel") {
+      if (!confirm("Arrêter la session en cours ?")) return;
+      this._optimisticSession = null;
+      return this._call("climate_manager", "cancel_session", { zone_id: this._zone });
+    }
+    if (btn.dataset.sessionPower) return this._updateSessionInline({ power: btn.dataset.sessionPower });
+    if (btn.dataset.sessionFan) return this._updateSessionInline({ fan_intensity: btn.dataset.sessionFan });
+  }
+
+  _updateSessionInline(patch) {
+    const session = this._stateAttrs().session;
+    if (!session) return;
+    this._optimisticSession = { patch, until: Date.now() / 1000 + 8 };
+    this._updateSessionBlock(this._stateAttrs());
+    return this._call("climate_manager", "update_session", { zone_id: this._zone, ...patch });
+  }
+
+  _bumpSessionTarget(delta) {
+    const session = this._stateAttrs().session;
+    if (!session || session.target == null) return;
+    const next = Math.round((Number(session.target) + delta) * 2) / 2;
+    return this._updateSessionInline({ target: next });
+  }
+
+  _extendSessionHours(hours) {
+    const session = this._stateAttrs().session;
+    if (session && session.max_end_ts) {
+      this._optimisticSession = {
+        patch: { max_end_ts: Math.max(Date.now() / 1000 + 5 * 60, session.max_end_ts + hours * 3600) },
+        until: Date.now() / 1000 + 8,
+      };
+      this._updateSessionBlock(this._stateAttrs());
+    }
+    return this._call("climate_manager", "extend_session", { zone_id: this._zone, hours });
+  }
+
+  _startDefaultSession() {
+    const attrs = this._stateAttrs();
+    const profiles = Array.isArray(attrs.profiles) ? attrs.profiles : [];
+    let inherit = profiles.find((p) => p.name === attrs.active_profile_name);
+    if (!inherit && profiles.length > 0) inherit = profiles[0];
+    inherit = inherit || { mode: "cool", target: 25, power: "normal", fan_intensity: "doux" };
+    const defaultEnd = new Date();
+    defaultEnd.setHours(23, 59, 0, 0);
+    if (defaultEnd.getTime() <= Date.now() + 5 * 60 * 1000) defaultEnd.setTime(Date.now() + 4 * 3600 * 1000);
+    const data = {
+      zone_id: this._zone,
+      mode: inherit.mode || "cool",
+      target: inherit.target ?? ((inherit.mode || "cool") === "heat" ? 21 : 25),
+      max_end_ts: defaultEnd.getTime() / 1000,
+      power: inherit.power || "normal",
+      fan_intensity: inherit.fan_intensity || "doux",
+    };
+    if (inherit.target_cutoff != null) data.target_cutoff = inherit.target_cutoff;
+    if (attrs.active_profile_name) data.parent_profile_name = attrs.active_profile_name;
+    return this._call("climate_manager", "start_session", data);
   }
 
   _renderSessionSensors(session) {
@@ -1786,13 +1891,22 @@ class DelormejClimateCard extends HTMLElement {
     return div;
   }
   _call(domain, service, data) {
-    if (!this._hass) return;
+    if (!this._hass) return Promise.resolve();
     const err = this.querySelector('[data-bind="error"]');
-    err.textContent = "";
-    this._hass.callService(domain, service, data).catch((e) => {
-      err.textContent = `${domain}.${service} : ${e?.message || e}`;
-      setTimeout(() => (err.textContent = ""), 4500);
-    });
+    if (err) err.textContent = "";
+    return this._hass.callService(domain, service, data)
+      .then(() => {
+        // HA push state usually arrives alone; this local refresh makes optimistic
+        // session controls feel instant even before the websocket catches up.
+        this._update();
+      })
+      .catch((e) => {
+        if (err) {
+          err.textContent = `${domain}.${service} : ${e?.message || e}`;
+          setTimeout(() => (err.textContent = ""), 4500);
+        }
+        throw e;
+      });
   }
   _fmtTemp(v) { if (v == null || v === "unknown" || v === "unavailable") return "—";
     const f = parseFloat(v); return Number.isNaN(f) ? "—" : f.toFixed(1); }
@@ -2554,6 +2668,101 @@ const STYLES = `
   .dc-session-metric-pill.accent .val {
     color: var(--dc-accent);
   }
+  .dc-session-inline-controls {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+    margin-bottom: 10px;
+  }
+  .dc-session-stepper {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr) 56px;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--dc-muted), transparent 96%);
+    border: 1px solid var(--dc-hairline);
+  }
+  .dc-round-btn {
+    min-height: 40px;
+    border: 0;
+    border-radius: 14px;
+    background: var(--dc-surface);
+    color: var(--dc-fg);
+    font: inherit;
+    font-weight: 850;
+    cursor: pointer;
+    box-shadow: inset 0 0 0 1px var(--dc-hairline);
+  }
+  .dc-stepper-value {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+  }
+  .dc-stepper-value span {
+    color: var(--dc-fg);
+    font-size: 24px;
+    line-height: 1;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-stepper-value small {
+    margin-top: 3px;
+    color: var(--dc-dim);
+    font-size: 10px;
+    font-weight: 750;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+  .dc-session-chip-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .dc-session-chip-row > span {
+    min-width: 76px;
+    color: var(--dc-dim);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  .dc-chip-btn {
+    border: 1px solid var(--dc-hairline);
+    border-radius: 999px;
+    padding: 7px 10px;
+    background: var(--dc-surface);
+    color: var(--dc-muted);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+  .dc-chip-btn.active {
+    background: color-mix(in srgb, var(--dc-accent), transparent 80%);
+    border-color: color-mix(in srgb, var(--dc-accent), transparent 45%);
+    color: var(--dc-fg);
+  }
+  .dc-session-stop {
+    width: 100%;
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 1px solid color-mix(in srgb, #c0392b, transparent 72%);
+    background: color-mix(in srgb, #c0392b, transparent 94%);
+    color: #c0392b;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .dc-session-stop ha-icon { --mdc-icon-size: 16px; }
   .dc-session-sensors {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3452,6 +3661,39 @@ const TEMPLATE = `
             <span class="lbl">Coupure</span>
             <span class="val" data-bind="session-cutoff">—</span>
           </div>
+        </div>
+        <div class="dc-session-inline-controls">
+          <div class="dc-session-stepper" data-bind="session-target-control">
+            <button class="dc-round-btn" data-session-action="target-dec" aria-label="Baisser la cible">−</button>
+            <div class="dc-stepper-value">
+              <span data-bind="session-target-value">—</span>
+              <small>Cible</small>
+            </div>
+            <button class="dc-round-btn" data-session-action="target-inc" aria-label="Monter la cible">+</button>
+          </div>
+          <div class="dc-session-stepper">
+            <button class="dc-round-btn" data-session-action="end-dec" aria-label="Retirer une heure">−1h</button>
+            <div class="dc-stepper-value">
+              <span data-bind="session-end-value">—</span>
+              <small>Fin</small>
+            </div>
+            <button class="dc-round-btn" data-session-action="end-inc" aria-label="Ajouter une heure">+1h</button>
+          </div>
+          <div class="dc-session-chip-row">
+            <span>Puissance</span>
+            <button class="dc-chip-btn" data-session-power="doux">Doux</button>
+            <button class="dc-chip-btn" data-session-power="normal">Normal</button>
+            <button class="dc-chip-btn" data-session-power="agressif">Fort</button>
+          </div>
+          <div class="dc-session-chip-row">
+            <span>Ventilation</span>
+            <button class="dc-chip-btn" data-session-fan="doux">Quiet</button>
+            <button class="dc-chip-btn" data-session-fan="normal">Auto</button>
+            <button class="dc-chip-btn" data-session-fan="fort">4/5</button>
+          </div>
+          <button class="dc-session-stop" data-session-action="cancel">
+            <ha-icon icon="mdi:stop-circle-outline"></ha-icon> Arrêter la session
+          </button>
         </div>
         <span data-bind="session-start-current" style="display:none">—</span>
         <div class="dc-session-sensors" data-bind="session-sensors" style="display:none"></div>

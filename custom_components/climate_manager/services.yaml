@@ -91,7 +91,7 @@ reload_zones:
 
 start_session:
   name: Démarrer une session
-  description: Lance une session manuelle (cool ou heat) avec params libres.
+  description: Lance une session manuelle (cool, heat ou fan_only) avec params libres.
   fields:
     zone_id:
       name: Zone ID
@@ -219,3 +219,24 @@ cancel_session:
       required: true
       selector:
         text:
+
+
+start_fan_session:
+  name: Démarrer ventilation
+  description: Lance une session de brassage d'air en mode ventilation seule (45 min par défaut, ventilateur 4/5).
+  fields:
+    zone_id:
+      name: Zone ID
+      required: true
+      selector:
+        text:
+    duration_min:
+      name: Durée (minutes)
+      required: false
+      default: 45
+      selector:
+        number:
+          min: 5
+          max: 240
+          step: 5
+          unit_of_measurement: min

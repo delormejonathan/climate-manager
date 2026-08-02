@@ -11,6 +11,7 @@ from homeassistant.components.climate import (
     ATTR_FAN_MODE,
     ATTR_SWING_MODE,
     ATTR_TEMPERATURE,
+    HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -97,6 +98,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self.async_set_updated_data(self._build_coordinator_data())
 
     async def async_tick_now(self) -> None:
+        # Publish in-memory session mutations immediately so Lovelace does not
+        # wait for the full poll/device-command round-trip (notably +1h).
+        self.async_set_updated_data(self._build_coordinator_data())
         await self.async_request_refresh()
 
     # === DataUpdateCoordinator hooks ===
@@ -225,9 +229,12 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             old_state, new_state
         ):
             return
-        now = utc_now_ts()
-        profile_active = self._active_profile(zone) is not None
-        zone.on_external_override(now, profile_active)
+        inputs = self._gather_inputs(zone)
+        if new_state.state == HVACMode.OFF or new_state.state == STATE_OFF:
+            zone.on_external_turn_off(inputs)
+        else:
+            profile_active = inputs.active_profile is not None
+            zone.on_external_override(inputs.now_ts, profile_active)
         self.hass.async_create_task(self.async_request_refresh())
 
     def _cancel_pending_overrides(self) -> None:
@@ -315,6 +322,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         supports_heat = True
         supports_fan_mode = True
         supports_windnice = True
+        supports_fan_only = True
         if clim_state and clim_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             clim_hvac = clim_state.state
             attrs = clim_state.attributes
@@ -327,6 +335,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             swing_modes = attrs.get("swing_modes") or []
             supports_cool = "cool" in hvac_modes
             supports_heat = "heat" in hvac_modes
+            supports_fan_only = HVACMode.FAN_ONLY in hvac_modes or "fan_only" in hvac_modes
             supports_fan_mode = bool(fan_modes)
             supports_windnice = "windnice" in swing_modes
             if clim_state.last_changed is not None:
@@ -345,6 +354,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             supports_heat=supports_heat,
             supports_fan_mode=supports_fan_mode,
             supports_windnice=supports_windnice,
+            supports_fan_only=supports_fan_only,
             clim_state_last_changed_ts=clim_last_changed_ts,
             active_profile=active_profile,
         )

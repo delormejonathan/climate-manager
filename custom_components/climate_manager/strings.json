@@ -176,6 +176,9 @@
       },
       "zone_force_start_heat": {
         "name": "Démarrer chauffage"
+      },
+      "zone_start_fan_session": {
+        "name": "Ventilation 45 min"
       }
     }
   },

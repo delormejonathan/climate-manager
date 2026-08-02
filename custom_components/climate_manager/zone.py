@@ -48,6 +48,7 @@ from .const import (
     DEFAULT_TARGET_COOL,
     DEFAULT_TARGET_HEAT,
     FAN_MODES,
+    FAN_SESSION_FAN_MODE,
     POWER_OFFSETS,
     RATE_LIMIT_SECONDS,
     SETPOINT_NOOP_DELTA,
@@ -80,6 +81,7 @@ class ZoneInputs:
     supports_heat: bool = True
     supports_fan_mode: bool = True
     supports_windnice: bool = True
+    supports_fan_only: bool = True
     clim_state_last_changed_ts: float | None = None
     active_profile: Profile | None = None
 
@@ -252,7 +254,7 @@ class ZoneRuntimeState:
     session_target_cutoff: float | None = None
     session_power: str | None = None
     session_fan_intensity: str | None = None
-    session_mode: str | None = None  # "cool" | "heat"
+    session_mode: str | None = None  # "cool" | "heat" | "fan_only"
     session_max_end_ts: float | None = None
     # Kickstart actif jusqu'à ce timestamp (None = pas de kickstart en cours)
     session_kickstart_until_ts: float | None = None
@@ -265,7 +267,10 @@ class ZoneRuntimeState:
     # True si la session a été démarrée manuellement (pas par la cascade).
     # Sert juste à afficher "Session manuelle" au lieu d'un nom de profil parent.
     session_manual: bool = False
-    # Snapshot des températures de chaque capteur au démarrage du cycle.
+    # Quand l'utilisateur éteint la clim pendant un profil auto, on clôt la
+    # session et on bloque seulement ce profil pour éviter un redémarrage immédiat.
+    manually_stopped_profile_name: str | None = None
+    # Baseline des capteurs au démarrage de session
     # Sert de référence pour détecter les capteurs qui ne suivent pas la
     # tendance (porte fermée). Vidé à la fin du cycle.
     cycle_baseline_temps: dict[str, float] = field(default_factory=dict)
@@ -305,6 +310,7 @@ class ZoneRuntimeState:
             "session_post_kickstart_fan_intensity": self.session_post_kickstart_fan_intensity,
             "session_cutoff_held_since_ts": self.session_cutoff_held_since_ts,
             "session_manual": self.session_manual,
+            "manually_stopped_profile_name": self.manually_stopped_profile_name,
             "cycle_baseline_temps": dict(self.cycle_baseline_temps),
             "flagged_sensors": list(self.flagged_sensors),
             "notified_sensors": list(self.notified_sensors),
@@ -351,7 +357,8 @@ class ZoneRuntimeState:
             session_cutoff_held_since_ts=_as_optional_float(
                 data.get("session_cutoff_held_since_ts")
             ),
-            session_manual=bool(data.get("session_manual") or False),
+            session_manual=bool(data.get("session_manual", False)),
+            manually_stopped_profile_name=data.get("manually_stopped_profile_name"),
             cycle_baseline_temps={
                 str(k): float(v)
                 for k, v in (data.get("cycle_baseline_temps") or {}).items()
@@ -505,6 +512,14 @@ class Zone:
                 return [self._cmd_turn_off()]
             return []
 
+        stopped_profile = self.state.manually_stopped_profile_name
+        if stopped_profile is not None:
+            if inp.active_profile.name == stopped_profile:
+                if inp.clim_current_hvac_mode != HVACMode.OFF:
+                    return [self._cmd_turn_off()]
+                return []
+            self.state.manually_stopped_profile_name = None
+
         if self._should_start_for_profile(inp.active_profile, inp):
             self._spawn_session(inp, inp.active_profile, manual=False)
             return self._pilot_session(inp)
@@ -549,6 +564,7 @@ class Zone:
         self.state.session_post_kickstart_fan_intensity = post_kick_fan
         self.state.session_cutoff_held_since_ts = None
         self.state.session_manual = manual
+        self.state.manually_stopped_profile_name = None
 
     def _default_max_end_ts(self, now_ts: float, profile: Profile) -> float:
         """Calcule un max_end_ts par défaut à partir du créneau actif du profil.
@@ -648,6 +664,7 @@ class Zone:
         self.state.session_post_kickstart_fan_intensity = None
         self.state.session_cutoff_held_since_ts = None
         self.state.session_manual = True
+        self.state.manually_stopped_profile_name = None
 
     def update_active_session(
         self,
@@ -728,14 +745,30 @@ class Zone:
         pour décider quoi envoyer à la clim — uniquement les session_* fields."""
         target = self.state.session_target
         mode = self.state.session_mode
-        if target is None or mode is None or inp.room_temperature is None:
+        if mode is None:
+            return []
+
+        cmds: list[Command] = []
+        if mode == ProfileMode.FAN_ONLY:
+            if not inp.supports_fan_only:
+                return []
+            if inp.clim_current_hvac_mode != HVACMode.FAN_ONLY:
+                cmds.append(self._cmd_set_hvac_mode(HVACMode.FAN_ONLY))
+                self.state.last_hvac_sent = HVACMode.FAN_ONLY
+            if inp.supports_fan_mode and inp.clim_current_fan_mode != FAN_SESSION_FAN_MODE:
+                cmds.append(self._cmd_set_fan_mode(FAN_SESSION_FAN_MODE))
+                self.state.last_fan_sent = FAN_SESSION_FAN_MODE
+            if cmds:
+                self.state.last_command_ts = inp.now_ts
+            return cmds
+
+        if target is None or inp.room_temperature is None:
             return []
 
         target_mode = HVACMode.COOL if mode == ProfileMode.COOL else HVACMode.HEAT
         power = self.state.session_power or DEFAULT_POWER
         fan_intensity = self.state.session_fan_intensity or DEFAULT_FAN_INTENSITY
 
-        cmds: list[Command] = []
         if inp.clim_current_hvac_mode != target_mode:
             cmds.append(self._cmd_set_hvac_mode(target_mode))
             self.state.last_hvac_sent = target_mode
@@ -928,13 +961,26 @@ class Zone:
                     )
                 self._transition(ZoneState.IDLE, now_ts)
 
+    def on_external_turn_off(self, inp: ZoneInputs) -> None:
+        """Une extinction externe est une intention d'arrêter la session.
+
+        Contrairement aux changements de consigne/mode/ventilation, un OFF venu
+        de Siri, HomeKit ou de l'interface HA ne doit pas suspendre la session
+        en override: il la clôture immédiatement comme annulation utilisateur.
+        """
+        self.state.override_until_ts = None
+        stopped_profile_name = inp.active_profile.name if inp.active_profile is not None else None
+        if self.state.state == ZoneState.RUNNING or self._has_suspended_session():
+            self._finalize_session(inp, end_reason="user_canceled")
+        self.state.manually_stopped_profile_name = stopped_profile_name
+        self._transition(ZoneState.IDLE, inp.now_ts)
+
     def on_external_override(self, now_ts: float, profile_active: bool) -> None:
         """Un changement d'état non tracké a été détecté sur la clim.
 
         Un override manuel temporaire suspend la session en cours au lieu de la
         clôturer: à l'expiration (ou via « reprendre auto »), la session reprend
-        avec ses paramètres figés. Si l'utilisateur coupe vraiment la clim, on
-        clôturera à la reprise/expiration comme annulation explicite.
+        avec ses paramètres figés.
         """
         if profile_active:
             self._transition(ZoneState.MANUAL_OVERRIDE_TIMED, now_ts)
@@ -1145,7 +1191,7 @@ def utc_now_ts() -> float:
 
 
 def _hvac_is_active_for_session(hvac_mode: str) -> bool:
-    return hvac_mode in (HVACMode.HEAT, HVACMode.COOL, "heat_cool")
+    return hvac_mode in (HVACMode.HEAT, HVACMode.COOL, HVACMode.FAN_ONLY, "heat_cool")
 
 
 def _profile_mode_from_hvac(hvac_mode: str) -> str | None:

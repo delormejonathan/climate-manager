@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, ProfileMode
+from .const import DOMAIN, FAN_SESSION_DURATION_MIN, ProfileMode
 from .coordinator import DelormejClimateCoordinator
 from .entity_base import DelormejClimateZoneEntity
 from .zone import Zone, utc_now_ts
@@ -41,6 +41,7 @@ async def async_setup_entry(
             ZoneResetOverrideButton(coord, zid),
             ZoneForceStartCoolButton(coord, zid),
             ZoneForceStartHeatButton(coord, zid),
+            ZoneStartFanSessionButton(coord, zid),
             ZoneExtendSessionButton(coord, zid),
             ZoneCancelSessionButton(coord, zid),
         ]
@@ -136,6 +137,31 @@ class ZoneForceStartHeatButton(DelormejClimateZoneEntity, ButtonEntity):
             "heat": self._zone_data.get("supports_heat", True),
         } if self._zone_data else None
         zone.force_start("heat", utc_now_ts(), supports=supports)
+        await self.coordinator.async_tick_now()
+
+
+class ZoneStartFanSessionButton(DelormejClimateZoneEntity, ButtonEntity):
+    _attr_translation_key = "zone_start_fan_session"
+    _attr_icon = "mdi:fan"
+
+    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
+        super().__init__(coord, zone_id, "start_fan_session")
+
+    async def async_press(self) -> None:
+        zone = self.coordinator.zone(self._zone_id)
+        if not zone:
+            return
+        now = utc_now_ts()
+        zone.start_manual_session(
+            now_ts=now,
+            mode=ProfileMode.FAN_ONLY,
+            target=0.0,
+            max_end_ts=now + FAN_SESSION_DURATION_MIN * 60,
+            power="normal",
+            fan_intensity="fort",
+            target_cutoff=None,
+            parent_profile_name="Ventilation",
+        )
         await self.coordinator.async_tick_now()
 
 

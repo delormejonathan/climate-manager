@@ -83,6 +83,13 @@ def _find_hvac(cmds):
     return None
 
 
+def _find_fan(cmds):
+    for c in cmds:
+        if c.service == "set_fan_mode":
+            return c.data.get("fan_mode")
+    return None
+
+
 def _seed_running_session(
     zone: Zone,
     *,
@@ -237,6 +244,45 @@ def test_power_knob_controls_pendulum_offset(power, expected_offset):
     expected = max(18.0, 24.5 - expected_offset)
     assert sp == pytest.approx(expected, abs=0.5)
 
+
+
+def test_fan_only_session_sends_fan_only_and_fan_level_4_without_setpoint():
+    zone = Zone(_cfg())
+    zone.start_manual_session(
+        now_ts=1_000.0,
+        mode=ProfileMode.FAN_ONLY,
+        target=0.0,
+        max_end_ts=1_000.0 + 45 * 60,
+        power="normal",
+        fan_intensity="fort",
+        parent_profile_name="Ventilation",
+    )
+
+    cmds = zone.tick(_inp(
+        room_temperature=None,
+        clim_current_hvac_mode=HVAC_OFF,
+        clim_current_fan_mode="auto",
+    ))
+
+    assert zone.state.state == ZoneState.RUNNING
+    assert _find_hvac(cmds) == "fan_only"
+    assert _find_fan(cmds) == "4"
+    assert _find_setpoint(cmds) is None
+
+
+def test_external_turn_off_closes_active_session_as_user_cancelled():
+    zone = Zone(_cfg())
+    _seed_running_session(zone)
+
+    zone.on_external_turn_off(_inp(
+        now_ts=1_200.0,
+        room_temperature=24.0,
+        clim_current_hvac_mode=HVAC_OFF,
+    ))
+
+    assert zone.state.state == ZoneState.IDLE
+    assert zone.state.session_mode is None
+    assert zone.state.completed_sessions[-1]["end_reason"] == "user_canceled"
 
 # === Setpoint sign correctness (the original bug) ===
 

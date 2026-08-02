@@ -12,7 +12,14 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
-from .const import CONF_ZONES, DOMAIN, PLATFORMS, ZoneMode
+from .const import (
+    CONF_ZONES,
+    DOMAIN,
+    FAN_SESSION_DURATION_MIN,
+    PLATFORMS,
+    ProfileMode,
+    ZoneMode,
+)
 from .coordinator import DelormejClimateCoordinator
 from .zone import utc_now_ts
 
@@ -34,6 +41,7 @@ SERVICE_START_SESSION = "start_session"
 SERVICE_UPDATE_SESSION = "update_session"
 SERVICE_EXTEND_SESSION = "extend_session"
 SERVICE_CANCEL_SESSION = "cancel_session"
+SERVICE_START_FAN_SESSION = "start_fan_session"
 
 SCHEMA_ZONE_ID = vol.Schema({vol.Required("zone_id"): cv.string})
 SCHEMA_SET_MODE = vol.Schema(
@@ -51,7 +59,7 @@ SCHEMA_UPDATE_PROFILES = vol.Schema(
 SCHEMA_START_SESSION = vol.Schema(
     {
         vol.Required("zone_id"): cv.string,
-        vol.Required("mode"): vol.In(["cool", "heat"]),
+        vol.Required("mode"): vol.In(ProfileMode.SESSION_ALL),
         vol.Required("target"): vol.Coerce(float),
         vol.Required("max_end_ts"): vol.Coerce(float),  # epoch s
         vol.Optional("power", default="normal"): cv.string,
@@ -74,6 +82,12 @@ SCHEMA_EXTEND_SESSION = vol.Schema(
     {
         vol.Required("zone_id"): cv.string,
         vol.Optional("hours", default=1): vol.Coerce(float),
+    }
+)
+SCHEMA_START_FAN_SESSION = vol.Schema(
+    {
+        vol.Required("zone_id"): cv.string,
+        vol.Optional("duration_min", default=FAN_SESSION_DURATION_MIN): vol.Coerce(float),
     }
 )
 
@@ -352,6 +366,25 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         await coord.async_tick_now()
 
+    async def _start_fan_session(call: ServiceCall) -> None:
+        coord, zone = _find_zone(hass, call.data["zone_id"])
+        if zone is None:
+            _LOGGER.warning("start_fan_session: zone %r not found", call.data["zone_id"])
+            return
+        now = utc_now_ts()
+        duration_min = float(call.data.get("duration_min", FAN_SESSION_DURATION_MIN))
+        zone.start_manual_session(
+            now_ts=now,
+            mode=ProfileMode.FAN_ONLY,
+            target=0.0,
+            max_end_ts=now + duration_min * 60,
+            power="normal",
+            fan_intensity="fort",
+            target_cutoff=None,
+            parent_profile_name="Ventilation",
+        )
+        await coord.async_tick_now()
+
     async def _update_session(call: ServiceCall) -> None:
         coord, zone = _find_zone(hass, call.data["zone_id"])
         if zone is None:
@@ -401,6 +434,9 @@ def _register_services(hass: HomeAssistant) -> None:
         DOMAIN, SERVICE_UPDATE_SESSION, _update_session, schema=SCHEMA_UPDATE_SESSION
     )
     hass.services.async_register(
+        DOMAIN, SERVICE_START_FAN_SESSION, _start_fan_session, schema=SCHEMA_START_FAN_SESSION
+    )
+    hass.services.async_register(
         DOMAIN, SERVICE_EXTEND_SESSION, _extend_session, schema=SCHEMA_EXTEND_SESSION
     )
     hass.services.async_register(
@@ -414,7 +450,7 @@ def _unregister_services(hass: HomeAssistant) -> None:
         SERVICE_BOOST, SERVICE_FORCE_START, SERVICE_RELOAD_ZONES,
         SERVICE_UPDATE_PROFILES,
         SERVICE_START_SESSION, SERVICE_UPDATE_SESSION,
-        SERVICE_EXTEND_SESSION, SERVICE_CANCEL_SESSION,
+        SERVICE_EXTEND_SESSION, SERVICE_CANCEL_SESSION, SERVICE_START_FAN_SESSION,
     ):
         hass.services.async_remove(DOMAIN, service)
 
