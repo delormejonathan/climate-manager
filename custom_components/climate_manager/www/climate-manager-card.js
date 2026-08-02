@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.23.16
+ * climate-manager-card  v0.23.17
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -476,12 +476,26 @@ class DelormejClimateCard extends HTMLElement {
     $("session-max-end").textContent = session.max_end_ts
       ? this._fmtTimeFromTs(session.max_end_ts)
       : "—";
-    const gain = this._fmtSessionGain(session);
+    const startTemp = Number(session.start_temperature);
+    let currentTemp = Number(session.current_temperature);
+    if (!Number.isFinite(currentTemp)) {
+      const roomText = this.querySelector('[data-bind="room-temp"]')?.textContent;
+      currentTemp = Number(String(roomText || "").replace(",", "."));
+    }
+    let deltaTemp = Number(session.delta_temperature);
+    if (!Number.isFinite(deltaTemp) && Number.isFinite(startTemp) && Number.isFinite(currentTemp)) {
+      deltaTemp = (session.mode || session.session_mode) === "heat"
+        ? currentTemp - startTemp
+        : startTemp - currentTemp;
+    }
+    const gain = Number.isFinite(deltaTemp)
+      ? `${deltaTemp >= 0 ? "+" : ""}${deltaTemp.toFixed(1)}°`
+      : this._fmtSessionGain(session);
     const rate = Number.isFinite(Number(session.rate_per_10min))
       ? `${Number(session.rate_per_10min) >= 0 ? "+" : ""}${Number(session.rate_per_10min).toFixed(2)}°/10 min`
       : "—";
-    const startCur = (session.start_temperature != null && session.current_temperature != null)
-      ? `${this._fmtTemp(session.start_temperature)}° → ${this._fmtTemp(session.current_temperature)}°`
+    const startCur = (Number.isFinite(startTemp) && Number.isFinite(currentTemp))
+      ? `${this._fmtTemp(startTemp)}° → ${this._fmtTemp(currentTemp)}°`
       : "—";
     $("session-gain").textContent = gain;
     $("session-rate").textContent = rate;
