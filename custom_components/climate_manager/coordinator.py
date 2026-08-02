@@ -118,7 +118,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             prev_completed_count = len(zone.state.completed_sessions)
             commands = zone.tick(inputs)
             self._maybe_seed_entered_session_kwh(zone, prev_state)
-            self._maybe_close_last_session_kwh(zone, prev_completed_count)
+            self._maybe_close_last_session_kwh(zone, prev_completed_count, sensor_temps)
             await self._maybe_seed_sensor_baselines(zone, prev_state, inputs, sensor_temps)
             self._maybe_detect_lagging_sensors(zone, inputs, sensor_temps)
             self._maybe_clear_sensor_baselines(zone, prev_state)
@@ -643,11 +643,18 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         sensor = self._session_consumption_sensor(zone, zone.state.session_mode)
         zone.state.cycle_start_kwh = self._read_kwh(sensor)
 
-    def _maybe_close_last_session_kwh(self, zone: Zone, prev_completed_count: int) -> None:
-        """Patch kWh on the session finalized during this tick."""
+    def _maybe_close_last_session_kwh(
+        self,
+        zone: Zone,
+        prev_completed_count: int,
+        sensor_temps: dict[str, float] | None = None,
+    ) -> None:
+        """Patch end details on the session finalized during this tick."""
         if len(zone.state.completed_sessions) <= prev_completed_count:
             return
         last = zone.state.completed_sessions[-1]
+        if sensor_temps:
+            last["sensor_end_temperatures"] = dict(sensor_temps)
         if last.get("kwh_end") is not None:
             return  # déjà patché
         mode = last.get("session_mode")

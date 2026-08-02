@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.19.0
+ * climate-manager-card  v0.23.14
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -74,6 +74,7 @@ class DelormejClimateCard extends HTMLElement {
     this._climateEntity = config.climate_entity || null;
     this._optimisticSession = null;
     this._rendered = false;
+    this._electricityPrice = this._resolveElectricityPrice(config);
   }
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
   getCardSize() {
@@ -210,6 +211,9 @@ class DelormejClimateCard extends HTMLElement {
     });
     const sessionStartBtn = $("session-start-btn");
     if (sessionStartBtn) sessionStartBtn.addEventListener("click", () => this._openSessionStartModal());
+
+    const cyclesList = $("cycles-list");
+    if (cyclesList) cyclesList.addEventListener("click", (e) => this._onCycleClick(e));
   }
 
   _bumpSetpoint(dir) {
@@ -1933,8 +1937,8 @@ class DelormejClimateCard extends HTMLElement {
   _renderCycleHistory(attrs) {
     const list = this.querySelector('[data-bind="cycles-list"]');
     const empty = this.querySelector('[data-bind="cycles-empty"]');
-    // v0.20: `sessions` replaces `cycle_history`. Schema differs (kwh, no temp).
     const cycles = Array.isArray(attrs.sessions) ? attrs.sessions : [];
+    this._cyclesForDetails = [];
     if (cycles.length === 0) {
       empty.style.display = "";
       list.innerHTML = "";
@@ -1944,101 +1948,281 @@ class DelormejClimateCard extends HTMLElement {
     empty.style.display = "none";
     // Newest first (server gives oldest-first)
     const newest = [...cycles].reverse();
-    const sig = JSON.stringify(newest);
+    this._cyclesForDetails = newest;
+    const sig = JSON.stringify(newest) + `|price:${this._electricityPrice ?? ""}`;
     if (list.dataset.sig === sig) return;
     list.dataset.sig = sig;
     list.innerHTML = newest.map((c, idx) => this._buildCycleRow(c, idx)).join("");
-    this._hydrateCycleSparklines(newest);
   }
 
   _buildCycleRow(c, idx) {
     const tStart = this._fmtTimeFromTs(c.start_ts);
     const tEnd = this._fmtTimeFromTs(c.end_ts);
     const duration = this._fmtDuration(c.duration_min);
-    const profile = c.profile_name || c.profile_at_start || c.profile_at_end || "—";
-    const dayLabel = this._fmtDayLabel(c.start_ts);
+    const profile = c.profile_name || c.profile_at_start || c.profile_at_end || "Session";
+    const dayLabel = this._fmtRelativeDayLabel(c.start_ts);
+    const fullDate = this._fmtDateLabel(c.start_ts);
     const reason = this._cycleEndReasonMeta(c.end_reason);
-    const kwh = c.kwh_consumed != null
-      ? `${Number(c.kwh_consumed).toFixed(2)} kWh`
-      : null;
+    const mode = this._sessionModeMeta(c.session_mode);
+    const delta = this._fmtCycleDelta(c);
+    const energy = this._sessionEnergyMeta(c);
+    const tempLine = this._fmtCycleTempLine(c);
     return `
-      <div class="dc-cycle-row">
+      <button class="dc-cycle-row" data-cycle-idx="${idx}" aria-label="Détails session ${this._escapeHTML(profile)}">
+        <div class="dc-cycle-date">
+          <span class="rel">${dayLabel}</span>
+          <span class="date">${fullDate}</span>
+        </div>
         <div class="dc-cycle-main">
           <div class="dc-cycle-top">
-            <div class="dc-cycle-times">${tStart} → <span class="end">${tEnd}</span></div>
+            <div>
+              <div class="dc-cycle-times">${tStart} → <span class="end">${tEnd}</span></div>
+              <div class="dc-cycle-meta">
+                <span class="pill"><ha-icon icon="${mode.icon}"></ha-icon>${mode.label}</span>
+                <span>${this._escapeHTML(profile)}</span>
+                <span>${reason.label}</span>
+              </div>
+            </div>
             <div class="dc-cycle-duration">
               ${duration}
-              <span class="sub">${dayLabel}</span>
+              <span class="sub">${delta}</span>
             </div>
           </div>
-          <div class="dc-cycle-spark" data-cycle-idx="${idx}">
-            ${this._buildCycleSparkline(c)}
-          </div>
-          <div class="dc-cycle-details">
-            ${kwh ? `<span class="v">${kwh}</span>` : ""}
-            <br>
-            <span class="profile">${this._escapeHTML(profile)}</span>
-            <span class="reason ${reason.klass}"><ha-icon icon="${reason.icon}"></ha-icon>${reason.label}</span>
+          <div class="dc-cycle-bottom">
+            <span>${tempLine}</span>
+            <span class="energy ${energy.cost ? "has-cost" : ""}">${energy.label}</span>
           </div>
         </div>
-      </div>
+        <ha-icon class="chevron" icon="mdi:chevron-right"></ha-icon>
+      </button>
     `;
   }
 
-  _hydrateCycleSparklines(cycles) {
-    if (!this._hass) return;
+  _onCycleClick(e) {
+    const row = e.target.closest(".dc-cycle-row[data-cycle-idx]");
+    if (!row) return;
+    const idx = Number(row.dataset.cycleIdx);
+    const cycle = this._cyclesForDetails?.[idx];
+    if (cycle) this._openCycleDetailModal(cycle);
+  }
+
+  async _openCycleDetailModal(c) {
+    const title = c.profile_name || c.profile_at_start || "Session";
+    const reason = this._cycleEndReasonMeta(c.end_reason);
+    const mode = this._sessionModeMeta(c.session_mode);
+    const energy = this._sessionEnergyMeta(c);
+    const metrics = [
+      ["Durée", this._fmtDuration(c.duration_min)],
+      ["Temp. zone", this._fmtCycleTempLine(c)],
+      ["Delta zone", this._fmtCycleDelta(c)],
+      ["Conso", energy.kwh || "—"],
+      ["Coût", energy.cost || "—"],
+      ["Fin", reason.label],
+    ];
+    this._openModal(`
+      <h2 class="dc-modal-title">${this._escapeHTML(title)}</h2>
+      <div class="dc-session-detail-head">
+        <span><ha-icon icon="${mode.icon}"></ha-icon>${mode.label}</span>
+        <span>${this._fmtDateTimeRange(c)}</span>
+      </div>
+      <div class="dc-detail-grid">
+        ${metrics.map(([k, v]) => `<div><span>${k}</span><strong>${v}</strong></div>`).join("")}
+      </div>
+      <h3 class="dc-detail-subtitle">Évolution moyenne</h3>
+      <div class="dc-detail-chart" data-bind="cycle-detail-chart">${this._buildCycleSparkline(c)}</div>
+      <h3 class="dc-detail-subtitle">Pièces liées</h3>
+      <div class="dc-detail-rooms" data-bind="cycle-detail-rooms">Chargement…</div>
+      <p class="dc-detail-note">${this._cycleDataQualityNote(c, energy)}</p>
+    `);
+    await this._hydrateCycleDetail(c);
+  }
+
+  async _hydrateCycleDetail(c) {
+    if (!this._modalEl || !this._hass || c.start_ts == null || c.end_ts == null) return;
+    const chart = this._modalEl.querySelector('[data-bind="cycle-detail-chart"]');
+    const rooms = this._modalEl.querySelector('[data-bind="cycle-detail-rooms"]');
     const ids = this._ids();
-    cycles.slice(0, 6).forEach((c, idx) => {
-      if (c.start_ts == null || c.end_ts == null) return;
-      const el = this.querySelector(`.dc-cycle-spark[data-cycle-idx="${idx}"]`);
-      if (!el) return;
-      const startMs = c.start_ts * 1000;
-      const endMs = c.end_ts * 1000;
-      this._ensureHistoryData(ids.roomTemp, startMs, endMs).then((points) => {
-        if (!points || points.length < 2) return; // keep 3-point fallback
-        const direction = this._cycleDirection(c);
-        this._renderSpark(el, points, null, direction);
-      });
-    });
+    const startMs = c.start_ts * 1000;
+    const endMs = c.end_ts * 1000;
+    const direction = this._cycleDirection(c);
+    const avgPoints = await this._ensureHistoryData(ids.roomTemp, startMs, endMs);
+    if (avgPoints && avgPoints.length >= 2) this._renderSpark(chart, avgPoints, null, direction);
+
+    const sensorIds = this._sessionTemperatureSensorIds(c);
+    if (!rooms) return;
+    if (!sensorIds.length) {
+      rooms.innerHTML = `<div class="dc-detail-empty">Aucun capteur pièce historisable pour cette session.</div>`;
+      return;
+    }
+    const rows = await Promise.all(sensorIds.map(async (sid) => {
+      const points = await this._ensureHistoryData(sid, startMs, endMs);
+      const start = this._firstHistoryValue(points) ?? this._num(c.sensor_start_temperatures?.[sid]);
+      const end = this._lastHistoryValue(points) ?? this._num(c.sensor_end_temperatures?.[sid]);
+      const delta = (Number.isFinite(start) && Number.isFinite(end)) ? end - start : null;
+      return { sid, start, end, delta };
+    }));
+    rooms.innerHTML = rows.map((r) => `
+      <div class="dc-detail-room">
+        <span class="name">${this._escapeHTML(this._compactSensorName(this._sensorFriendlyName(r.sid)))}</span>
+        <span class="temps">${this._fmtMaybeTemp(r.start)} → ${this._fmtMaybeTemp(r.end)}</span>
+        <strong>${this._fmtSignedTempDelta(r.delta)}</strong>
+      </div>
+    `).join("");
+  }
+
+  _sessionTemperatureSensorIds(c) {
+    const starts = c.sensor_start_temperatures && typeof c.sensor_start_temperatures === "object"
+      ? Object.keys(c.sensor_start_temperatures)
+      : [];
+    const ends = c.sensor_end_temperatures && typeof c.sensor_end_temperatures === "object"
+      ? Object.keys(c.sensor_end_temperatures)
+      : [];
+    const attrs = this._stateAttrs();
+    const configured = Array.isArray(attrs.temperature_sensors) ? attrs.temperature_sensors : [];
+    return [...new Set([...starts, ...ends, ...configured])].filter(Boolean);
+  }
+
+  _sensorFriendlyName(entityId) {
+    return this._hass?.states?.[entityId]?.attributes?.friendly_name || entityId;
+  }
+
+  _firstHistoryValue(points) {
+    const p = Array.isArray(points) ? points.find((x) => Number.isFinite(x.t)) : null;
+    return p ? p.t : null;
+  }
+
+  _lastHistoryValue(points) {
+    if (!Array.isArray(points)) return null;
+    for (let i = points.length - 1; i >= 0; i--) if (Number.isFinite(points[i].t)) return points[i].t;
+    return null;
+  }
+
+  _num(v) {
+    if (v == null || v === "unknown" || v === "unavailable") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  _fmtMaybeTemp(v) {
+    return Number.isFinite(v) ? `${v.toFixed(1)}°` : "—";
+  }
+
+  _fmtSignedTempDelta(v) {
+    if (!Number.isFinite(v)) return "—";
+    if (Math.abs(v) < 0.05) return "0.0°";
+    return `${v > 0 ? "+" : "−"}${Math.abs(v).toFixed(1)}°`;
+  }
+
+  _fmtCycleDelta(c) {
+    const d = this._num(c.delta_temperature);
+    if (Number.isFinite(d)) return this._fmtSignedTempDelta(c.session_mode === "cool" ? -Math.abs(d) : d);
+    const s = this._num(c.start_temperature ?? c.temp_start);
+    const e = this._num(c.end_temperature ?? c.temp_end);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return "Δ —";
+    return this._fmtSignedTempDelta(e - s);
+  }
+
+  _fmtCycleTempLine(c) {
+    const s = this._num(c.start_temperature ?? c.temp_start);
+    const e = this._num(c.end_temperature ?? c.temp_end);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return "Température —";
+    return `${s.toFixed(1)}° → ${e.toFixed(1)}°`;
+  }
+
+  _sessionEnergyMeta(c) {
+    const kwhNum = this._num(c.kwh_consumed);
+    const kwh = Number.isFinite(kwhNum) ? `${kwhNum.toFixed(2)} kWh` : null;
+    const storedCost = this._num(c.cost_eur ?? c.eur_cost ?? c.cost);
+    const price = this._num(c.price_eur_per_kwh) ?? this._electricityPrice;
+    const costNum = Number.isFinite(storedCost)
+      ? storedCost
+      : (Number.isFinite(kwhNum) && Number.isFinite(price) ? kwhNum * price : null);
+    const cost = Number.isFinite(costNum)
+      ? `${costNum.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
+      : null;
+    return {
+      kwh,
+      cost,
+      label: [kwh, cost].filter(Boolean).join(" · ") || "Conso —",
+    };
+  }
+
+  _resolveElectricityPrice(config) {
+    const candidates = [
+      config?.electricity_price_eur_per_kwh,
+      config?.price_eur_per_kwh,
+      config?.electricity_price,
+      config?.energy_price,
+    ];
+    for (const v of candidates) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    // Conservative default used only for display estimation when the card has kWh.
+    return 0.20;
+  }
+
+  _cycleDataQualityNote(c, energy) {
+    if (!energy.kwh) return "Conso indisponible : le compteur kWh de début ou de fin manque pour cette ancienne session.";
+    if (!energy.cost) return "Coût indisponible : tarif €/kWh non configuré.";
+    return `Coût estimé avec ${((this._num(c.price_eur_per_kwh) ?? this._electricityPrice) || 0).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €/kWh.`;
+  }
+
+  _fmtDateLabel(ts) {
+    if (ts == null) return "";
+    return new Date(ts * 1000).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+  }
+
+  _fmtRelativeDayLabel(ts) {
+    if (ts == null) return "";
+    const now = new Date();
+    const d = new Date(ts * 1000);
+    const startOfDay = (date) => {
+      const c = new Date(date);
+      c.setHours(0, 0, 0, 0);
+      return c.getTime();
+    };
+    const dayDiff = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
+    if (dayDiff === 0) return "Aujourd’hui";
+    if (dayDiff === 1) return "Hier";
+    return `Il y a ${dayDiff} jours`;
+  }
+
+  _fmtDateTimeRange(c) {
+    return `${this._fmtRelativeDayLabel(c.start_ts)} · ${this._fmtTimeFromTs(c.start_ts)} → ${this._fmtTimeFromTs(c.end_ts)}`;
+  }
+
+  _sessionModeMeta(mode) {
+    switch (mode) {
+      case "heat": return { icon: "mdi:fire", label: "Chauffage" };
+      case "fan_only": return { icon: "mdi:fan", label: "Ventilation" };
+      case "dry": return { icon: "mdi:water-percent", label: "Déshumidification" };
+      case "cool":
+      default: return { icon: "mdi:snowflake", label: "Refroidissement" };
+    }
   }
 
   _cycleDirection(c) {
-    const s = parseFloat(c.temp_start);
-    const e = parseFloat(c.temp_end);
+    if (c.session_mode === "heat") return "heat";
+    const s = parseFloat(c.temp_start ?? c.start_temperature);
+    const e = parseFloat(c.temp_end ?? c.end_temperature);
     if (!Number.isNaN(s) && !Number.isNaN(e)) return e >= s ? "heat" : "cool";
     return "cool";
   }
 
-  _cycleDeltaLabel(c) {
-    const s = parseFloat(c.temp_start);
-    const e = parseFloat(c.temp_end);
-    if (Number.isNaN(s) || Number.isNaN(e)) return "";
-    const d = e - s;
-    if (Math.abs(d) < 0.1) return "stable";
-    const sign = d > 0 ? "+" : "−";
-    return `${sign}${Math.abs(d).toFixed(1)}°C`;
-  }
-
-  /**
-   * Build a 3-point sparkline SVG (start → min → end). It's a "trajectory hint"
-   * — we don't have per-tick samples for completed cycles, only start/min/end
-   * temps. A bezier curve gives the eye a sense of the descent's shape.
-   */
   _buildCycleSparkline(c) {
-    const tS = parseFloat(c.temp_start);
-    const tE = parseFloat(c.temp_end);
-    const tM = parseFloat(c.temp_min);
+    const tS = parseFloat(c.start_temperature ?? c.temp_start);
+    const tE = parseFloat(c.end_temperature ?? c.temp_end);
+    const tM = parseFloat(c.temp_min ?? Math.min(tS, tE));
     if ([tS, tE, tM].some((v) => Number.isNaN(v))) {
       return `<svg viewBox="0 0 100 22" preserveAspectRatio="none"></svg>`;
     }
     const tMax = Math.max(tS, tE);
     const tMin = Math.min(tM, tS, tE);
     const range = Math.max(0.5, tMax - tMin);
-    // Y inverted: higher temp = higher up (closer to 0). Padding of 2 top/bot.
     const y = (t) => 2 + (1 - (t - tMin) / range) * 18;
     const x0 = 2, x1 = 50, x2 = 98;
     const y0 = y(tS), y1 = y(tM), y2 = y(tE);
-    // Smooth quadratic-ish curve through the 3 points
     const cp1x = (x0 + x1) / 2, cp1y = y0;
     const cp2x = (x1 + x2) / 2, cp2y = y2;
     const d = `M${x0} ${y0} Q ${cp1x} ${cp1y}, ${x1} ${y1} Q ${cp2x} ${cp2y}, ${x2} ${y2}`;
@@ -2053,21 +2237,6 @@ class DelormejClimateCard extends HTMLElement {
     `;
   }
 
-  _fmtDayLabel(ts) {
-    if (ts == null) return "";
-    const now = new Date();
-    const d = new Date(ts * 1000);
-    const startOfDay = (date) => {
-      const c = new Date(date);
-      c.setHours(0, 0, 0, 0);
-      return c.getTime();
-    };
-    const dayDiff = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
-    if (dayDiff === 0) return "AUJ";
-    if (dayDiff === 1) return "HIER";
-    return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
-  }
-
   _cycleEndReasonMeta(reason) {
     switch (reason) {
       case "stabilization_complete":
@@ -2080,8 +2249,19 @@ class DelormejClimateCard extends HTMLElement {
         return { icon: "mdi:window-open", klass: "warn", label: "Fenêtre ouverte" };
       case "user_override":
         return { icon: "mdi:hand-back-right", klass: "warn", label: "Override utilisateur" };
+      case "user_canceled":
+      case "mode_off":
+        return { icon: "mdi:power", klass: "warn", label: "Arrêt manuel" };
+      case "max_end_reached":
+        return { icon: "mdi:timer-check", klass: "", label: "Fin programmée" };
+      case "profile_change":
+        return { icon: "mdi:account-switch", klass: "", label: "Changement de profil" };
+      case "no_active_profile":
+        return { icon: "mdi:calendar-remove", klass: "", label: "Aucun profil actif" };
+      case "temperature_reached":
+        return { icon: "mdi:thermometer-check", klass: "success", label: "Température atteinte" };
       default:
-        return { icon: "mdi:circle-small", klass: "", label: reason || "—" };
+        return { icon: "mdi:circle-small", klass: "", label: reason ? String(reason).replace(/_/g, " ") : "—" };
     }
   }
 
@@ -2275,6 +2455,101 @@ const MODAL_STYLES = `
     font-size: 14px; color: var(--secondary-text-color, #6b6b6b);
     margin-left: 2px;
   }
+  /* Session history detail modal */
+  .dc-session-detail-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+    color: var(--secondary-text-color, #6b6b6b);
+    font-size: 12px;
+    margin: -8px 0 14px;
+  }
+  .dc-session-detail-head span:first-child {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--primary-color, #2196f3);
+    font-weight: 700;
+  }
+  .dc-session-detail-head ha-icon { --mdc-icon-size: 14px; }
+  .dc-detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .dc-detail-grid > div {
+    background: var(--secondary-background-color, #f3f3f3);
+    border-radius: 10px;
+    padding: 10px;
+    min-width: 0;
+  }
+  .dc-detail-grid span {
+    display: block;
+    color: var(--secondary-text-color, #6b6b6b);
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+  .dc-detail-grid strong {
+    display: block;
+    color: var(--primary-text-color, #1c1c1c);
+    font-size: 14px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-detail-subtitle {
+    font-size: 13px;
+    margin: 16px 0 8px;
+    color: var(--primary-text-color, #1c1c1c);
+  }
+  .dc-detail-chart {
+    height: 74px;
+    background: linear-gradient(180deg, rgba(0,188,212,0.13), transparent 72%);
+    border-radius: 12px;
+    overflow: hidden;
+    color: var(--primary-color, #2196f3);
+  }
+  .dc-detail-chart svg { width: 100%; height: 74px !important; display: block; }
+  .dc-detail-rooms {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .dc-detail-room {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--divider-color, #e0e0e0);
+    font-size: 13px;
+  }
+  .dc-detail-room:last-child { border-bottom: none; }
+  .dc-detail-room .name {
+    color: var(--primary-text-color, #1c1c1c);
+    font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dc-detail-room .temps {
+    color: var(--secondary-text-color, #6b6b6b);
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-detail-room strong {
+    color: var(--primary-text-color, #1c1c1c);
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-detail-note,
+  .dc-detail-empty {
+    color: var(--secondary-text-color, #6b6b6b);
+    font-size: 12px;
+    line-height: 1.4;
+    margin: 12px 0 0;
+  }
+
 `;
 
 const STYLES = `
@@ -2415,28 +2690,84 @@ const STYLES = `
     display: flex; flex-direction: column;
   }
   .dc-cycle-row {
-    padding: 14px 0 16px;
+    width: 100%;
+    appearance: none;
+    border: 0;
     border-bottom: 1px solid var(--dc-hairline);
+    background: transparent;
+    color: inherit;
+    padding: 13px 0;
+    display: grid;
+    grid-template-columns: 74px 1fr 18px;
+    gap: 10px;
+    align-items: center;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
   }
+  .dc-cycle-row:hover { background: color-mix(in srgb, var(--dc-accent-soft), transparent 55%); }
   .dc-cycle-row:last-child { border-bottom: none; }
-  .dc-cycle-main { display: block; }
+  .dc-cycle-date .rel {
+    display: block;
+    color: var(--dc-fg);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+  .dc-cycle-date .date {
+    display: block;
+    color: var(--dc-muted);
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: 2px;
+  }
+  .dc-cycle-main { min-width: 0; display: block; }
   .dc-cycle-top {
     display: flex;
     justify-content: space-between;
-    gap: 12px;
-    align-items: baseline;
-    margin-bottom: 8px;
+    gap: 10px;
+    align-items: flex-start;
+    margin-bottom: 7px;
   }
   .dc-cycle-times {
-    font-size: 13px; color: var(--dc-fg); font-weight: 600;
+    font-size: 13px; color: var(--dc-fg); font-weight: 700;
     line-height: 1.35;
     font-variant-numeric: tabular-nums;
   }
   .dc-cycle-times .end {
     color: var(--dc-muted);
-    font-weight: 500;
+    font-weight: 600;
   }
   .dc-cycle-icon { display: none; }
+  .dc-cycle-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    align-items: center;
+    margin-top: 3px;
+    color: var(--dc-muted);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .dc-cycle-meta .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--dc-accent);
+    font-weight: 700;
+  }
+  .dc-cycle-meta ha-icon { --mdc-icon-size: 12px; }
+  .dc-cycle-bottom {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: baseline;
+    color: var(--dc-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-cycle-bottom .energy { color: var(--dc-muted); white-space: nowrap; }
+  .dc-cycle-bottom .energy.has-cost { color: var(--dc-fg); font-weight: 700; }
   .dc-cycle-spark {
     height: 58px;
     margin: 2px 0 8px;
@@ -2446,33 +2777,27 @@ const STYLES = `
     overflow: hidden;
   }
   .dc-cycle-spark svg { width: 100%; height: 58px; display: block; }
-  .dc-cycle-details {
-    font-size: 12px; color: var(--dc-muted);
-    margin-top: 2px;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.55;
-  }
-  .dc-cycle-details .v,
-  .dc-cycle-details .delta { color: var(--dc-fg); font-weight: 600; }
-  .dc-cycle-details .profile { color: var(--dc-muted); }
-  .dc-cycle-details .reason {
-    display: inline-flex; align-items: center; gap: 4px;
-    margin-left: 8px;
-    color: var(--dc-muted);
-  }
-  .dc-cycle-details .reason.success { color: var(--dc-accent); }
-  .dc-cycle-details .reason.warn { color: var(--dc-warm); }
-  .dc-cycle-details .reason ha-icon { --mdc-icon-size: 13px; }
+  .dc-cycle-details { display: none; }
   .dc-cycle-duration {
-    font-size: 13px; color: var(--dc-fg); font-weight: 600;
+    font-size: 13px; color: var(--dc-fg); font-weight: 700;
     text-align: right; white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
   .dc-cycle-duration .sub {
     display: block;
     font-size: 11px; color: var(--dc-muted);
-    font-weight: 500;
+    font-weight: 600;
     margin-top: 1px;
+  }
+  .dc-cycle-row .chevron {
+    color: var(--dc-muted);
+    --mdc-icon-size: 18px;
+    opacity: 0.65;
+  }
+  @media (max-width: 420px) {
+    .dc-cycle-row { grid-template-columns: 66px 1fr 14px; gap: 8px; }
+    .dc-cycle-bottom { display: block; }
+    .dc-cycle-bottom .energy { display: block; margin-top: 2px; }
   }
 
   /* ============ §1 ÉTAT ACTUEL — clean minimal hero ============ */
@@ -3791,6 +4116,7 @@ DelormejClimatePilotageCard.widgetVariant = "pilotage";
 class DelormejClimateManualCard extends HTMLElement {
   setConfig(_config) {
     this._rendered = false;
+    this._electricityPrice = this._resolveElectricityPrice(config);
   }
   static getStubConfig() { return { type: "custom:climate-manager-manual-card" }; }
   getCardSize() { return 1; }
