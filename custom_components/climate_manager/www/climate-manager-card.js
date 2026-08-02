@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.23.17
+ * climate-manager-card  v0.23.18
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -1161,7 +1161,6 @@ class DelormejClimateCard extends HTMLElement {
     narEl.classList.toggle("warm", dir === "heat");
 
     this._updateThermalRail(stateVal, attrs, get, ids);
-    this._updateTimeline(stateVal, attrs, get, ids);
     this._updateSessionBlock(attrs);
     this._updateActionsBlock(stateVal, attrs);
 
@@ -1295,6 +1294,20 @@ class DelormejClimateCard extends HTMLElement {
 
   /* =================================================================== narrative */
 
+  _sessionNarrativeDelta(session, roomTemp, dir) {
+    if (!session) return "";
+    const start = Number(session.start_temperature);
+    let current = Number(session.current_temperature);
+    if (!Number.isFinite(current)) current = Number(roomTemp);
+    let delta = Number(session.delta_temperature);
+    if (!Number.isFinite(delta) && Number.isFinite(start) && Number.isFinite(current)) {
+      delta = dir === "heat" ? current - start : start - current;
+    }
+    if (!Number.isFinite(delta)) return "";
+    const verb = dir === "heat" ? (delta >= 0 ? "gagné" : "perdu") : (delta >= 0 ? "perdu" : "repris");
+    return ` On a ${verb} <span class="accent">${Math.abs(delta).toFixed(1)}°C</span> depuis le départ.`;
+  }
+
   _buildNarrative(state, regime, attrs, get, ids) {
     const dir = attrs.direction;
     const target = attrs.target_temperature;
@@ -1323,11 +1336,16 @@ class DelormejClimateCard extends HTMLElement {
     if (state === "starting")
       return { html: `Démarrage ${dir === "heat" ? "chauffage" : "refroidissement"} vers ${targetSpan(target)}.`, warn: false };
     if (state === "running") {
-      const reg = {
-        attaque: `${verb} en cours vers ${targetSpan(target)}.`,
-        boost: `Boost ${dir === "heat" ? "chauffage" : "refroidissement"} vers ${targetSpan(target)}.`,
-      }[regime] || `${verb} en cours.`;
-      return { html: reg, warn: false };
+      const room = parseFloat(get(ids.roomTemp)?.state);
+      const targetText = target != null ? `, on va vers ${targetSpan(target)}` : "";
+      const deltaText = this._sessionNarrativeDelta(attrs.session, room, dir);
+      const tempText = Number.isFinite(room)
+        ? `Actuellement il fait <span class="target">${this._fmtTemp(room)}°C</span>${targetText}.${deltaText}`
+        : `${verb} en cours${target != null ? ` vers ${targetSpan(target)}` : ""}.${deltaText}`;
+      if (regime === "boost") {
+        return { html: `Boost ${dir === "heat" ? "chauffage" : "refroidissement"}. ${tempText}`, warn: false };
+      }
+      return { html: tempText, warn: false };
     }
     if (state === "stabilizing") {
       const until = attrs.stabilization_ends_at;
@@ -3121,40 +3139,6 @@ const STYLES = `
     cursor: pointer;
   }
   .dc-session-stop ha-icon { --mdc-icon-size: 16px; }
-  .dc-session-delta-card {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-top: 16px;
-    padding: 12px 14px;
-    border-radius: 18px;
-    background: color-mix(in srgb, var(--dc-accent), transparent 90%);
-    border: 1px solid color-mix(in srgb, var(--dc-accent), transparent 74%);
-    text-align: left;
-  }
-  .dc-session-delta-card .lbl {
-    display: block;
-    color: var(--dc-fg);
-    font-size: 13px;
-    font-weight: 800;
-  }
-  .dc-session-delta-card .sub {
-    display: block;
-    margin-top: 2px;
-    color: var(--dc-muted);
-    font-size: 11px;
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
-  }
-  .dc-session-delta-card strong {
-    color: var(--dc-accent);
-    font-size: 23px;
-    line-height: 1;
-    font-weight: 900;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
   .dc-session-sensors {
     display: none !important;
   }
@@ -3407,10 +3391,7 @@ const STYLES = `
   /* Thermal rail kept hidden; live curve is intégrée sans boîte. */
   .dc-rail-wrap { display: none !important; }
   .dc-timeline {
-    display: block;
-    margin: 12px 0 4px;
-    background: transparent;
-    text-align: left;
+    display: none !important;
   }
   .dc-timeline span[data-bind="timeline-text"] {
     display: none;
@@ -4093,13 +4074,6 @@ const TEMPLATE = `
               <button class="dc-chip-btn" data-session-fan="fort">4/5</button>
             </div>
           </div>
-        </div>
-        <div class="dc-session-delta-card" data-bind="session-delta-card">
-          <div>
-            <span class="lbl">Depuis le départ</span>
-            <span class="sub" data-bind="session-delta-path">—</span>
-          </div>
-          <strong data-bind="session-delta-value">—</strong>
         </div>
         <span data-bind="session-start-current" style="display:none">—</span>
         <div class="dc-session-banners" data-bind="session-banners"></div>
