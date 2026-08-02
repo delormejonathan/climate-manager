@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.23.15
+ * climate-manager-card  v0.23.16
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -486,6 +486,10 @@ class DelormejClimateCard extends HTMLElement {
     $("session-gain").textContent = gain;
     $("session-rate").textContent = rate;
     $("session-start-current").textContent = startCur;
+    const deltaValue = $("session-delta-value");
+    if (deltaValue) deltaValue.textContent = gain;
+    const deltaPath = $("session-delta-path");
+    if (deltaPath) deltaPath.textContent = startCur !== "—" ? startCur : "Depuis le départ";
 
     const targetWrap = $("session-target-control");
     const targetValue = $("session-target-value");
@@ -495,7 +499,6 @@ class DelormejClimateCard extends HTMLElement {
     if (endValue) endValue.textContent = session.max_end_ts ? this._fmtTimeFromTs(session.max_end_ts) : "—";
     this._updateSessionChips(session);
 
-    this._renderSessionSensors(session);
     const cutoffRow = $("session-cutoff-row");
     if (session.target_cutoff != null) {
       cutoffRow.style.display = "";
@@ -2933,8 +2936,8 @@ const STYLES = `
 
   /* ============ Session compact summary (sous la narrative) ============ */
   .dc-session-strip {
-    margin-top: 10px;
-    padding-top: 10px;
+    margin-top: 14px;
+    padding-top: 14px;
     border-top: 1px solid var(--dc-hairline);
   }
   .dc-session-headline {
@@ -3005,8 +3008,7 @@ const STYLES = `
     display: none !important;
   }
   .dc-session-inline-controls {
-    border-top: 1px solid var(--dc-hairline);
-    padding-top: 14px;
+    padding-top: 0;
   }
   .dc-session-field {
     display: flex;
@@ -3016,11 +3018,13 @@ const STYLES = `
   }
   .dc-session-field:last-child { margin-bottom: 0; }
   .dc-session-field-label {
+    align-self: stretch;
     color: var(--dc-dim);
     font-size: 11px;
     font-weight: 850;
     text-transform: uppercase;
     letter-spacing: .06em;
+    text-align: left;
   }
   .dc-session-stepper {
     display: grid;
@@ -3103,13 +3107,42 @@ const STYLES = `
     cursor: pointer;
   }
   .dc-session-stop ha-icon { --mdc-icon-size: 16px; }
+  .dc-session-delta-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 12px 14px;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--dc-accent), transparent 90%);
+    border: 1px solid color-mix(in srgb, var(--dc-accent), transparent 74%);
+    text-align: left;
+  }
+  .dc-session-delta-card .lbl {
+    display: block;
+    color: var(--dc-fg);
+    font-size: 13px;
+    font-weight: 800;
+  }
+  .dc-session-delta-card .sub {
+    display: block;
+    margin-top: 2px;
+    color: var(--dc-muted);
+    font-size: 11px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+  .dc-session-delta-card strong {
+    color: var(--dc-accent);
+    font-size: 23px;
+    line-height: 1;
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
   .dc-session-sensors {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
-    margin-top: 14px;
-    padding-top: 14px;
-    border-top: 1px solid var(--dc-hairline);
+    display: none !important;
   }
   .dc-session-sensor {
     min-width: 0;
@@ -3913,7 +3946,11 @@ const STYLES = `
   ha-card.dc-split-widget .dc-section-head { margin-top: 2px; }
   ha-card.dc-widget-pilotage .dc-section-head { display: none; }
   ha-card.dc-widget-pilotage .section-status { padding-top: 2px; }
-  ha-card.dc-widget-pilotage .section-auto { padding-top: 0; }
+  ha-card.dc-widget-pilotage .section-auto {
+    margin: 4px var(--dc-pad) 0;
+    padding: 16px 0 18px;
+    border-top: 1px solid var(--dc-hairline);
+  }
   ha-card.dc-split-widget .dc-err:empty { display: none; }
   ha-card.dc-split-widget .dc-collapsible { margin-top: 0; }
   ha-card.dc-widget-status .section-auto,
@@ -4043,8 +4080,14 @@ const TEMPLATE = `
             </div>
           </div>
         </div>
+        <div class="dc-session-delta-card" data-bind="session-delta-card">
+          <div>
+            <span class="lbl">Depuis le départ</span>
+            <span class="sub" data-bind="session-delta-path">—</span>
+          </div>
+          <strong data-bind="session-delta-value">—</strong>
+        </div>
         <span data-bind="session-start-current" style="display:none">—</span>
-        <div class="dc-session-sensors" data-bind="session-sensors" style="display:none"></div>
         <div class="dc-session-banners" data-bind="session-banners"></div>
       </div>
 
