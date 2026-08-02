@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.23.14
+ * climate-manager-card  v0.23.15
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -284,7 +284,7 @@ class DelormejClimateCard extends HTMLElement {
       primary.push(btn("secondary", "mdi:fan", "Ventilation 45 min", "session-fan"));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
     } else if (hasSession) {
-      primary.push(info("mdi:gesture-tap", "Session active — ajuste-la directement dans le bloc ci-dessus."));
+      primary.push(btn("danger", "mdi:stop-circle-outline", "Arrêter la session", "session-cancel"));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
       secondary.push(btn("secondary-line", "mdi:power", "Désactiver le pilotage auto", "mode-off"));
     } else {
@@ -2999,6 +2999,29 @@ const STYLES = `
     margin-top: 10px;
     margin-bottom: 10px;
   }
+
+  .dc-session-headline,
+  .dc-session-metrics {
+    display: none !important;
+  }
+  .dc-session-inline-controls {
+    border-top: 1px solid var(--dc-hairline);
+    padding-top: 14px;
+  }
+  .dc-session-field {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-bottom: 12px;
+  }
+  .dc-session-field:last-child { margin-bottom: 0; }
+  .dc-session-field-label {
+    color: var(--dc-dim);
+    font-size: 11px;
+    font-weight: 850;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
   .dc-session-stepper {
     display: grid;
     grid-template-columns: 56px minmax(0, 1fr) 56px;
@@ -3047,14 +3070,6 @@ const STYLES = `
     gap: 6px;
     flex-wrap: wrap;
   }
-  .dc-session-chip-row > span {
-    min-width: 76px;
-    color: var(--dc-dim);
-    font-size: 11px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: .05em;
-  }
   .dc-chip-btn {
     border: 1px solid var(--dc-hairline);
     border-radius: 999px;
@@ -3092,7 +3107,9 @@ const STYLES = `
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
-    margin-top: 8px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--dc-hairline);
   }
   .dc-session-sensor {
     min-width: 0;
@@ -3224,11 +3241,12 @@ const STYLES = `
     border-color: var(--dc-border);
   }
   .dc-action-btn.danger {
-    background: #c0392b;
-    color: white;
-    border-color: transparent;
+    background: color-mix(in srgb, #c0392b, transparent 94%);
+    color: #c0392b;
+    border-color: color-mix(in srgb, #c0392b, transparent 72%);
+    font-weight: 800;
   }
-  .dc-action-btn.danger:hover { filter: brightness(1.1); }
+  .dc-action-btn.danger:hover { filter: brightness(1.02); border-color: color-mix(in srgb, #c0392b, transparent 45%); }
   .dc-action-btn.secondary-line {
     background: transparent;
     color: var(--dc-muted);
@@ -3988,37 +4006,42 @@ const TEMPLATE = `
           </div>
         </div>
         <div class="dc-session-inline-controls">
-          <div class="dc-session-stepper" data-bind="session-target-control">
-            <button class="dc-round-btn" data-session-action="target-dec" aria-label="Baisser la cible">−</button>
-            <div class="dc-stepper-value">
-              <span data-bind="session-target-value">—</span>
-              <small>Cible</small>
+          <div class="dc-session-field" data-bind="session-target-control">
+            <div class="dc-session-field-label">Cible</div>
+            <div class="dc-session-stepper">
+              <button class="dc-round-btn" data-session-action="target-dec" aria-label="Baisser la cible">−</button>
+              <div class="dc-stepper-value">
+                <span data-bind="session-target-value">—</span>
+              </div>
+              <button class="dc-round-btn" data-session-action="target-inc" aria-label="Monter la cible">+</button>
             </div>
-            <button class="dc-round-btn" data-session-action="target-inc" aria-label="Monter la cible">+</button>
           </div>
-          <div class="dc-session-stepper">
-            <button class="dc-round-btn" data-session-action="end-dec" aria-label="Retirer une heure">−1h</button>
-            <div class="dc-stepper-value">
-              <span data-bind="session-end-value">—</span>
-              <small>Fin</small>
+          <div class="dc-session-field">
+            <div class="dc-session-field-label">Fin</div>
+            <div class="dc-session-stepper">
+              <button class="dc-round-btn" data-session-action="end-dec" aria-label="Retirer une heure">−1h</button>
+              <div class="dc-stepper-value">
+                <span data-bind="session-end-value">—</span>
+              </div>
+              <button class="dc-round-btn" data-session-action="end-inc" aria-label="Ajouter une heure">+1h</button>
             </div>
-            <button class="dc-round-btn" data-session-action="end-inc" aria-label="Ajouter une heure">+1h</button>
           </div>
-          <div class="dc-session-chip-row">
-            <span>Puissance</span>
-            <button class="dc-chip-btn" data-session-power="doux">Doux</button>
-            <button class="dc-chip-btn" data-session-power="normal">Normal</button>
-            <button class="dc-chip-btn" data-session-power="agressif">Fort</button>
+          <div class="dc-session-field">
+            <div class="dc-session-field-label">Puissance</div>
+            <div class="dc-session-chip-row">
+              <button class="dc-chip-btn" data-session-power="doux">Doux</button>
+              <button class="dc-chip-btn" data-session-power="normal">Normal</button>
+              <button class="dc-chip-btn" data-session-power="agressif">Fort</button>
+            </div>
           </div>
-          <div class="dc-session-chip-row">
-            <span>Ventilation</span>
-            <button class="dc-chip-btn" data-session-fan="doux">Quiet</button>
-            <button class="dc-chip-btn" data-session-fan="normal">Auto</button>
-            <button class="dc-chip-btn" data-session-fan="fort">4/5</button>
+          <div class="dc-session-field">
+            <div class="dc-session-field-label">Ventilation</div>
+            <div class="dc-session-chip-row">
+              <button class="dc-chip-btn" data-session-fan="doux">Quiet</button>
+              <button class="dc-chip-btn" data-session-fan="normal">Auto</button>
+              <button class="dc-chip-btn" data-session-fan="fort">4/5</button>
+            </div>
           </div>
-          <button class="dc-session-stop" data-session-action="cancel">
-            <ha-icon icon="mdi:stop-circle-outline"></ha-icon> Arrêter la session
-          </button>
         </div>
         <span data-bind="session-start-current" style="display:none">—</span>
         <div class="dc-session-sensors" data-bind="session-sensors" style="display:none"></div>
