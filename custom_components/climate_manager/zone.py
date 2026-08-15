@@ -648,7 +648,7 @@ class Zone:
     ) -> None:
         """Démarre une session manuelle (peut être appelée même si IDLE sans
         profil actif)."""
-        if mode not in ProfileMode.ALL:
+        if mode not in ProfileMode.SESSION_ALL:
             return
         self._transition(ZoneState.RUNNING, now_ts)
         self.state.cycle_started_ts = now_ts
