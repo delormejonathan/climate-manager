@@ -24,11 +24,14 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_PRESENCE_ABSENT_STATES,
     CONF_PRESENCE_ENTITY,
+    CONF_PROFILE_BANKS,
+    CONF_SEASON,
     CONF_ZONES,
     DOMAIN,
     OVERRIDE_DEBOUNCE_SECONDS,
     SETPOINT_NOOP_DELTA,
     UPDATE_INTERVAL_SECONDS,
+    ClimateSeason,
     ProfileMode,
     ZoneMode,
     ZoneState,
@@ -78,14 +81,46 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         return self._zones.get(zone_id)
 
     def update_zone_profiles(self, zone_id: str, profiles: list[dict[str, Any]]) -> None:
-        """Remplace la cascade de profils d'une zone."""
+        """Remplace la cascade de la saison active d'une zone."""
         zone = self._zones.get(zone_id)
         if not zone:
             return
         parsed = [Profile.from_dict(p) for p in profiles]
-        zone.config.profiles = parsed
-        self._persist_zone_config(zone_id, profiles=[p.to_dict() for p in parsed])
+        zone.config.set_active_profiles(parsed)
+        serialized_banks = {
+            name: [p.to_dict() for p in zone.config.profile_banks.get(name, [])]
+            for name in ClimateSeason.ALL
+        }
+        persisted = {
+            CONF_PROFILE_BANKS: serialized_banks,
+            CONF_SEASON: zone.config.season,
+        }
+        # ``profiles`` reste un miroir legacy de la banque été. Ainsi un
+        # rollback vers v0.23.x ne peut jamais exposer les profils chauffage
+        # comme unique cascade active.
+        if zone.config.season == ClimateSeason.SUMMER:
+            persisted["profiles"] = [p.to_dict() for p in parsed]
+        self._persist_zone_config(zone_id, **persisted)
         self.async_set_updated_data(self._build_coordinator_data())
+
+    def set_zone_season(self, zone_id: str, season: str) -> bool:
+        """Bascule la banque active sans interrompre la session courante."""
+        zone = self._zones.get(zone_id)
+        if not zone or not zone.config.set_season(season):
+            return False
+        serialized_banks = {
+            name: [p.to_dict() for p in zone.config.profile_banks.get(name, [])]
+            for name in ClimateSeason.ALL
+        }
+        self._persist_zone_config(
+            zone_id,
+            **{
+                CONF_SEASON: season,
+                CONF_PROFILE_BANKS: serialized_banks,
+            },
+        )
+        self.async_set_updated_data(self._build_coordinator_data())
+        return True
 
     def update_zone_config(self, zone_id: str, **kwargs: Any) -> None:
         zone = self._zones.get(zone_id)
@@ -760,6 +795,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "windows_open": self._window_counts(zone)[0],
                 "windows_total": self._window_counts(zone)[1],
                 "profiles": [p.to_dict() for p in zone.config.profiles],
+                "season": zone.config.season,
+                "profile_bank_counts": {
+                    name: len(zone.config.profile_banks.get(name, []))
+                    for name in ClimateSeason.ALL
+                },
                 "active_profile_name": active.name if active else None,
                 "active_profile_mode": active.mode if active else None,
                 "session": session,

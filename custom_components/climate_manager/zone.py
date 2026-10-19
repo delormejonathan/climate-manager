@@ -54,6 +54,7 @@ from .const import (
     SETPOINT_NOOP_DELTA,
     TARGET_CUTOFF_HOLD_SECONDS,
     TARGET_DEAD_BAND,
+    ClimateSeason,
     ProfileMode,
     ZoneMode,
     ZoneState,
@@ -423,11 +424,31 @@ class ZoneConfig:
     consumption_sensor_heat: str | None = None
     override_duree_min: int = DEFAULT_OVERRIDE_DUREE_MIN
     profiles: list[Profile] = field(default_factory=list)
+    season: str = ClimateSeason.SUMMER
+    profile_banks: dict[str, list[Profile]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ZoneConfig:
         raw_profiles = d.get("profiles") or []
-        profiles = [Profile.from_dict(p) for p in raw_profiles]
+        raw_banks = d.get("profile_banks") or {}
+        season = d.get("season")
+        if season not in ClimateSeason.ALL:
+            first_mode = raw_profiles[0].get("mode") if raw_profiles else None
+            season = ClimateSeason.WINTER if first_mode == ProfileMode.HEAT else ClimateSeason.SUMMER
+
+        profile_banks: dict[str, list[Profile]] = {}
+        for bank_name in ClimateSeason.ALL:
+            bank_profiles = raw_banks.get(bank_name, [])
+            profile_banks[bank_name] = [Profile.from_dict(p) for p in bank_profiles]
+
+        # Migration depuis la configuration historique à cascade unique : la
+        # liste existante devient la banque de sa saison déduite. Elle n'est
+        # jamais copiée dans l'autre banque afin d'éviter qu'un profil froid
+        # puisse piloter la clim en hiver (ou inversement).
+        if raw_profiles and not raw_banks:
+            profile_banks[season] = [Profile.from_dict(p) for p in raw_profiles]
+
+        profiles = list(profile_banks.get(season, []))
         return cls(
             zone_id=d.get("id") or str(uuid.uuid4())[:8],
             name=d["name"],
@@ -438,7 +459,22 @@ class ZoneConfig:
             consumption_sensor_heat=d.get("consumption_sensor_heat") or None,
             override_duree_min=int(d.get("override_duree_min", DEFAULT_OVERRIDE_DUREE_MIN)),
             profiles=profiles,
+            season=season,
+            profile_banks=profile_banks,
         )
+
+    def set_season(self, season: str) -> bool:
+        """Active une banque sans interrompre une session déjà figée."""
+        if season not in ClimateSeason.ALL:
+            return False
+        self.season = season
+        self.profiles = list(self.profile_banks.get(season, []))
+        return True
+
+    def set_active_profiles(self, profiles: list[Profile]) -> None:
+        """Remplace uniquement la banque de la saison active."""
+        self.profiles = list(profiles)
+        self.profile_banks[self.season] = list(profiles)
 
 
 # === Zone (core logic) ===
@@ -670,7 +706,7 @@ class Zone:
         self,
         *,
         target: float | None = None,
-        target_cutoff: float | None | type(...) = ...,
+        target_cutoff: float | type(...) | None = ...,
         power: str | None = None,
         fan_intensity: str | None = None,
         max_end_ts: float | None = None,
@@ -912,6 +948,13 @@ class Zone:
                 self._transition(ZoneState.RUNNING, now_ts)
 
     def force_start(self, direction: str, now_ts: float, *, supports: dict | None = None) -> None:
+        """Démarre une vraie session manuelle sans attendre un seuil.
+
+        L'ancienne implémentation passait seulement l'état à RUNNING. Le garde-
+        fou de migration détectait alors l'absence de ``session_target`` et
+        annulait le démarrage au tick suivant. Le raccourci crée désormais une
+        session complète et autonome de quatre heures.
+        """
         if direction not in (HVACMode.COOL, HVACMode.HEAT):
             return
         if supports is not None:
@@ -921,9 +964,20 @@ class Zone:
                 return
         if self.state.state not in (ZoneState.IDLE, ZoneState.WINDOW_OPEN):
             return
-        self.state.forced_direction = direction
-        self._transition(ZoneState.RUNNING, now_ts)
-        self.state.cycle_started_ts = now_ts
+        target = DEFAULT_TARGET_COOL if direction == HVACMode.COOL else DEFAULT_TARGET_HEAT
+        self.start_manual_session(
+            now_ts=now_ts,
+            mode=direction,
+            target=target,
+            max_end_ts=now_ts + 4 * 3600,
+            power=DEFAULT_POWER,
+            fan_intensity=DEFAULT_FAN_INTENSITY,
+            target_cutoff=None,
+            parent_profile_name=(
+                "Démarrage refroidissement" if direction == HVACMode.COOL
+                else "Démarrage chauffage"
+            ),
+        )
 
     def reset_override(
         self,

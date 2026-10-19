@@ -110,6 +110,13 @@
           "off": "Off",
           "boost": "Boost"
         }
+      },
+      "zone_season": {
+        "name": "Saison",
+        "state": {
+          "summer": "Été",
+          "winter": "Hiver"
+        }
       }
     },
     "number": {

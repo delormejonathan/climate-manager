@@ -32,8 +32,9 @@ async def test_running_session_with_empty_baselines_gets_seeded_after_restore() 
     """A restored RUNNING session must not keep gains stuck at 0/unknown."""
     zone = _zone(baselines={})
 
+    coordinator = object.__new__(DelormejClimateCoordinator)
     await DelormejClimateCoordinator._maybe_seed_sensor_baselines(
-        None,  # type: ignore[arg-type]
+        coordinator,
         zone,
         ZoneState.RUNNING,
         _inputs(),
@@ -50,8 +51,9 @@ async def test_running_session_with_existing_baselines_preserves_original_start(
     """Once captured, baselines must not be overwritten every tick."""
     zone = _zone(baselines={"sensor.room": 27.1})
 
+    coordinator = object.__new__(DelormejClimateCoordinator)
     await DelormejClimateCoordinator._maybe_seed_sensor_baselines(
-        None,  # type: ignore[arg-type]
+        coordinator,
         zone,
         ZoneState.RUNNING,
         _inputs(),
@@ -75,8 +77,9 @@ async def test_existing_late_baseline_is_repaired_from_recorder_history(monkeypa
 
     monkeypatch.setattr(DelormejClimateCoordinator, "_history_sensor_baselines", fake_history)
 
+    coordinator = object.__new__(DelormejClimateCoordinator)
     await DelormejClimateCoordinator._maybe_seed_sensor_baselines(
-        None,  # type: ignore[arg-type]
+        coordinator,
         zone,
         ZoneState.RUNNING,
         _inputs(now_ts=700.0),

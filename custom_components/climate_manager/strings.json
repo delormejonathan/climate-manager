@@ -124,6 +124,13 @@
           "boost": "Boost"
         }
       },
+      "zone_season": {
+        "name": "Saison",
+        "state": {
+          "summer": "Été",
+          "winter": "Hiver"
+        }
+      },
       "zone_power": {
         "name": "Puissance",
         "state": {

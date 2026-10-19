@@ -165,6 +165,33 @@ def test_cool_profile_with_cold_room_stays_idle():
     assert cmds == []
 
 
+def test_force_start_heat_creates_complete_working_session():
+    zone = Zone(_cfg())
+    zone.force_start(HVAC_HEAT, 1_000.0, supports={"cool": True, "heat": True})
+    assert zone.state.state == ZoneState.RUNNING
+    assert zone.state.session_mode == ProfileMode.HEAT
+    assert zone.state.session_target == 21.0
+    assert zone.state.session_manual is True
+    assert zone.state.session_max_end_ts == 1_000.0 + 4 * 3600
+
+    cmds = zone.tick(_inp(
+        now_ts=1_001.0,
+        room_temperature=18.0,
+        clim_internal_temperature=18.0,
+        clim_current_hvac_mode=HVAC_OFF,
+        active_profile=None,
+    ))
+    assert zone.state.state == ZoneState.RUNNING
+    assert _find_hvac(cmds) == HVAC_HEAT
+
+
+def test_force_start_refuses_unsupported_heat():
+    zone = Zone(_cfg())
+    zone.force_start(HVAC_HEAT, 1_000.0, supports={"cool": True, "heat": False})
+    assert zone.state.state == ZoneState.IDLE
+    assert zone.state.session_target is None
+
+
 # === Pendule (maintien pendant la session) ===
 
 
@@ -181,7 +208,7 @@ def test_session_far_from_target_pushes_hard_with_power_offset():
     assert sp == pytest.approx(expected, abs=0.5)
 
 
-def test_session_inside_dead_band_holds_at_target():
+def test_session_below_target_releases_pressure_even_inside_dead_band():
     zone = Zone(_cfg())
     _seed_running_session(zone, target=24.5, power="agressif")
     cmds = zone.tick(_inp(
@@ -189,7 +216,7 @@ def test_session_inside_dead_band_holds_at_target():
         clim_current_hvac_mode=HVAC_COOL,
     ))
     sp = _find_setpoint(cmds)
-    assert sp == pytest.approx(24.5, abs=0.5)
+    assert sp == pytest.approx(31.5, abs=0.5)
 
 
 def test_session_below_target_releases_cooling_pressure():

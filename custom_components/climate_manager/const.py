@@ -34,6 +34,8 @@ CONF_WINDOW_SENSORS = "window_sensors"
 CONF_CONSUMPTION_SENSOR_COOL = "consumption_sensor_cool"
 CONF_CONSUMPTION_SENSOR_HEAT = "consumption_sensor_heat"
 CONF_OVERRIDE_DUREE_MIN = "override_duree_min"
+CONF_SEASON = "season"
+CONF_PROFILE_BANKS = "profile_banks"
 
 # === Defaults ===
 
@@ -132,6 +134,15 @@ class ProfileMode:
     # manuelles de brassage d'air.
     ALL: ClassVar[list[str]] = [COOL, HEAT]
     SESSION_ALL: ClassVar[list[str]] = [COOL, HEAT, FAN_ONLY]
+
+
+class ClimateSeason:
+    """Banque de profils active pour une zone."""
+
+    SUMMER = "summer"
+    WINTER = "winter"
+
+    ALL: ClassVar[list[str]] = [SUMMER, WINTER]
 
 
 class Power:

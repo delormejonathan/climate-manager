@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.23.18
+ * climate-manager-card  v0.24.0
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -104,6 +104,7 @@ class DelormejClimateCard extends HTMLElement {
       setpointSent: this._ent("sensor", "setpoint_sent"),
       overrideUntil: this._ent("sensor", "override_until"),
       modeSelect: this._ent("select", "mode"),
+      seasonSelect: this._ent("select", "season"),
       powerSelect: this._ent("select", "power"),
       fanIntensitySelect: this._ent("select", "fan_intensity"),
       heatStart: this._ent("number", "heat_start_threshold"),
@@ -195,6 +196,10 @@ class DelormejClimateCard extends HTMLElement {
     $("profiles-list").addEventListener("click", (e) => this._onProfileListClick(e));
     $("profiles-list").addEventListener("change", (e) => this._onProfileFieldChange(e));
     $("profile-add").addEventListener("click", () => this._onProfileAdd());
+    $("season").querySelectorAll("button").forEach((b) => {
+      b.addEventListener("click", () => this._call("select", "select_option",
+        { entity_id: ids.seasonSelect, option: b.dataset.season }));
+    });
 
     // Session actions
     const sessionModifyBtn = $("session-modify-btn");
@@ -1373,6 +1378,15 @@ class DelormejClimateCard extends HTMLElement {
     const empty = this.querySelector('[data-bind="profiles-empty"]');
     const profiles = Array.isArray(attrs.profiles) ? attrs.profiles : [];
     const activeName = attrs.active_profile_name;
+    const season = attrs.season || "summer";
+    this.querySelectorAll('[data-bind="season"] button').forEach((button) => {
+      button.classList.toggle("active", button.dataset.season === season);
+    });
+    const count = attrs.profile_bank_counts?.[season] ?? profiles.length;
+    const seasonHint = this.querySelector('[data-bind="season-hint"]');
+    if (seasonHint) {
+      seasonHint.textContent = `${season === "winter" ? "Banque hiver" : "Banque été"} · ${count} profil${count === 1 ? "" : "s"}`;
+    }
 
     if (profiles.length === 0) {
       list.innerHTML = "";
@@ -1383,7 +1397,7 @@ class DelormejClimateCard extends HTMLElement {
 
     // Re-render only when the underlying data signature changes (avoids
     // wiping a half-typed input on every coordinator tick).
-    const sig = JSON.stringify({ profiles, activeName, editing: this._editingProfileIdx });
+    const sig = JSON.stringify({ profiles, activeName, season, editing: this._editingProfileIdx });
     if (list.dataset.sig === sig) return;
     list.dataset.sig = sig;
     list.innerHTML = "";
@@ -1631,15 +1645,17 @@ class DelormejClimateCard extends HTMLElement {
 
   _onProfileAdd() {
     const profiles = this._currentProfiles();
+    const season = this._stateAttrs().season || "summer";
+    const winter = season === "winter";
     profiles.push({
       name: "Nouveau profil",
-      mode: "cool",
+      mode: winter ? "heat" : "cool",
       active_from: null,
       active_to: null,
       presence_entity: null,
       presence_required_state: null,
-      seuil_demarrage: 27.0,
-      target: 24.5,
+      seuil_demarrage: winter ? 19.0 : 27.0,
+      target: winter ? 20.0 : 24.5,
       target_cutoff: null,
       power: "normal",
       fan_intensity: "normal",
@@ -3513,6 +3529,37 @@ const STYLES = `
     display: flex; flex-direction: column; gap: 8px;
     margin-bottom: 10px;
   }
+  .dc-season-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+    padding: 4px;
+    margin: 0 0 6px;
+    border-radius: 12px;
+    background: var(--dc-soft);
+  }
+  .dc-season-switch button {
+    border: 0;
+    border-radius: 9px;
+    padding: 8px 10px;
+    color: var(--dc-muted);
+    background: transparent;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .dc-season-switch button.active {
+    color: var(--dc-text);
+    background: var(--card-background-color, #fff);
+    box-shadow: 0 1px 4px rgba(0,0,0,.10);
+  }
+  .dc-season-hint {
+    display: block;
+    margin: 0 2px 10px;
+    color: var(--dc-muted);
+    font-size: 11px;
+  }
   .dc-profiles-empty {
     background: var(--dc-surface);
     border-radius: var(--dc-radius-sm);
@@ -4145,8 +4192,13 @@ const TEMPLATE = `
 
   <!-- ════════════════════════════════════ PROFILS -->
   <section class="dc-section section-profiles">
+    <div class="dc-season-switch" data-bind="season" aria-label="Saison active">
+      <button type="button" data-season="summer"><ha-icon icon="mdi:white-balance-sunny"></ha-icon> Été</button>
+      <button type="button" data-season="winter"><ha-icon icon="mdi:snowflake"></ha-icon> Hiver</button>
+    </div>
+    <span class="dc-season-hint" data-bind="season-hint"></span>
     <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
-      Aucun profil configuré. Tant qu'aucun profil ne match, la zone reste OFF.
+      Aucun profil dans cette banque. Tant qu'aucun profil ne match, la zone reste OFF.
     </div>
     <div class="dc-profiles-list" data-bind="profiles-list"></div>
     <button class="dc-profile-add" data-bind="profile-add">

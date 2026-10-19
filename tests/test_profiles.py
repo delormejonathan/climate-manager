@@ -7,8 +7,8 @@ to_dict and the time-window helper are exercised here.
 
 from __future__ import annotations
 
-from custom_components.climate_manager.const import ProfileMode
-from custom_components.climate_manager.zone import Profile
+from custom_components.climate_manager.const import ClimateSeason, ProfileMode
+from custom_components.climate_manager.zone import Profile, ZoneConfig
 
 # === Roundtrip ===
 
@@ -48,6 +48,53 @@ def test_profile_heat_from_dict_uses_heat_defaults() -> None:
 def test_profile_invalid_mode_falls_back_to_cool() -> None:
     p = Profile.from_dict({"name": "X", "mode": "bogus"})
     assert p.mode == ProfileMode.COOL
+
+
+def test_legacy_profiles_migrate_to_summer_bank() -> None:
+    cfg = ZoneConfig.from_dict({
+        "id": "z1",
+        "name": "RDC",
+        "climate_entity": "climate.salon",
+        "temperature_sensors": ["sensor.salon"],
+        "profiles": [{"name": "Présent", "mode": "cool", "target": 25}],
+    })
+    assert cfg.season == ClimateSeason.SUMMER
+    assert [p.name for p in cfg.profiles] == ["Présent"]
+    assert [p.name for p in cfg.profile_banks[ClimateSeason.SUMMER]] == ["Présent"]
+    assert cfg.profile_banks[ClimateSeason.WINTER] == []
+
+
+def test_season_switch_activates_independent_profile_bank() -> None:
+    cfg = ZoneConfig.from_dict({
+        "id": "z1",
+        "name": "RDC",
+        "climate_entity": "climate.salon",
+        "temperature_sensors": ["sensor.salon"],
+        "season": "summer",
+        "profile_banks": {
+            "summer": [{"name": "Été", "mode": "cool", "target": 25}],
+            "winter": [{"name": "Hiver", "mode": "heat", "target": 21}],
+        },
+    })
+    assert [p.name for p in cfg.profiles] == ["Été"]
+    assert cfg.set_season(ClimateSeason.WINTER) is True
+    assert [p.name for p in cfg.profiles] == ["Hiver"]
+    cfg.set_active_profiles([Profile(name="Nuit", mode=ProfileMode.HEAT)])
+    assert [p.name for p in cfg.profile_banks[ClimateSeason.WINTER]] == ["Nuit"]
+    assert [p.name for p in cfg.profile_banks[ClimateSeason.SUMMER]] == ["Été"]
+
+
+def test_legacy_heat_profiles_migrate_to_winter_bank() -> None:
+    cfg = ZoneConfig.from_dict({
+        "id": "z1",
+        "name": "Étage",
+        "climate_entity": "climate.escalier",
+        "temperature_sensors": ["sensor.etage"],
+        "profiles": [{"name": "Hiver", "mode": "heat"}],
+    })
+    assert cfg.season == ClimateSeason.WINTER
+    assert [p.name for p in cfg.profile_banks[ClimateSeason.WINTER]] == ["Hiver"]
+    assert cfg.profile_banks[ClimateSeason.SUMMER] == []
 
 
 def test_profile_empty_strings_for_times_become_none() -> None:
