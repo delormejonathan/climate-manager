@@ -146,7 +146,7 @@ class ClimateSeason:
 
 
 class Power:
-    """Puissance — décale la consigne vs target quand on doit pousser.
+    """Puissance — correction relative à la température interne Daikin.
     Indépendante de la ventilation."""
 
     DOUX = "doux"
@@ -169,7 +169,7 @@ class FanIntensity:
 DEFAULT_POWER = Power.NORMAL
 DEFAULT_FAN_INTENSITY = FanIntensity.NORMAL
 
-# Offset °C appliqué à la consigne pendant la phase "pousser" (room loin de target).
+# Correction °C autour du zéro relatif fourni par la sonde interne Daikin.
 POWER_OFFSETS: dict[str, float] = {
     Power.DOUX: 2.0,
     Power.NORMAL: 4.0,

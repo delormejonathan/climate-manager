@@ -22,6 +22,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CLIM_MAX_SETPOINT,
+    CLIM_MIN_SETPOINT,
     CONF_PRESENCE_ABSENT_STATES,
     CONF_PRESENCE_ENTITY,
     CONF_PROFILE_BANKS,
@@ -352,6 +354,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         clim_setpoint = None
         clim_fan = None
         clim_swing = None
+        clim_min_setpoint = CLIM_MIN_SETPOINT
+        clim_max_setpoint = CLIM_MAX_SETPOINT
         clim_last_changed_ts: float | None = None
         supports_cool = True
         supports_heat = True
@@ -365,6 +369,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             clim_setpoint = _as_float(attrs.get(ATTR_TEMPERATURE))
             clim_fan = attrs.get(ATTR_FAN_MODE)
             clim_swing = attrs.get(ATTR_SWING_MODE)
+            clim_min_setpoint = _as_float(attrs.get("min_temp")) or CLIM_MIN_SETPOINT
+            clim_max_setpoint = _as_float(attrs.get("max_temp")) or CLIM_MAX_SETPOINT
             hvac_modes = attrs.get("hvac_modes") or []
             fan_modes = attrs.get("fan_modes") or []
             swing_modes = attrs.get("swing_modes") or []
@@ -385,6 +391,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             clim_current_fan_mode=clim_fan,
             clim_current_swing_mode=clim_swing,
             any_window_open=self._any_window_open(zone),
+            clim_min_setpoint=clim_min_setpoint,
+            clim_max_setpoint=clim_max_setpoint,
             supports_cool=supports_cool,
             supports_heat=supports_heat,
             supports_fan_mode=supports_fan_mode,

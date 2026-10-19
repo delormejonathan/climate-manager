@@ -78,6 +78,8 @@ class ZoneInputs:
     clim_current_fan_mode: str | None
     clim_current_swing_mode: str | None
     any_window_open: bool
+    clim_min_setpoint: float = CLIM_MIN_SETPOINT
+    clim_max_setpoint: float = CLIM_MAX_SETPOINT
     supports_cool: bool = True
     supports_heat: bool = True
     supports_fan_mode: bool = True
@@ -809,7 +811,15 @@ class Zone:
             cmds.append(self._cmd_set_hvac_mode(target_mode))
             self.state.last_hvac_sent = target_mode
 
-        setpoint = self._compute_pendulum_setpoint(inp.room_temperature, target, power, mode)
+        setpoint = self._compute_pendulum_setpoint(
+            inp.room_temperature,
+            inp.clim_internal_temperature,
+            inp.clim_min_setpoint,
+            inp.clim_max_setpoint,
+            target,
+            power,
+            mode,
+        )
         if setpoint is not None and self._setpoint_should_send(setpoint, inp):
             cmds.append(self._cmd_set_temperature(setpoint))
             self.state.last_setpoint_sent = setpoint
@@ -828,34 +838,42 @@ class Zone:
         return cmds
 
     def _compute_pendulum_setpoint(
-        self, room: float, target: float, power: str, mode: str
+        self,
+        room: float,
+        clim_internal: float | None,
+        clim_min_setpoint: float,
+        clim_max_setpoint: float,
+        target: float,
+        power: str,
+        mode: str,
     ) -> float | None:
-        """Pendule de maintien autour de la cible.
+        """Pilote la Daikin par correction relative à sa sonde interne.
 
-        Le point important: quand la température de zone a atteint/dépassé la
-        cible dans le bon sens, on ne doit pas envoyer simplement ``target``.
-        Sur les Daikin, leur sonde interne peut être nettement plus chaude que
-        la zone pilotée; une consigne égale à la cible peut donc continuer à
-        refroidir trop fort. On envoie alors une consigne de relâchement de
-        l'autre côté de la cible pour couper la pression sans arrêter la session.
+        La cible de zone sert uniquement à choisir le sens de la correction.
+        La valeur absolue envoyée est toujours ``température interne ± offset`` :
+        la sonde Daikin est le zéro relatif du contrôle. Sans cette référence,
+        une consigne ``target ± offset`` peut continuer à chauffer/refroidir
+        alors que la température de zone a déjà atteint sa cible.
         """
+        if clim_internal is None:
+            return None
         offset = POWER_OFFSETS.get(power, POWER_OFFSETS[DEFAULT_POWER])
         if mode == ProfileMode.COOL:
             if room > target + TARGET_DEAD_BAND:
-                raw = target - offset  # pousse froid
+                raw = clim_internal - offset  # pousse froid
             elif room <= target:
-                raw = target + offset  # relâche froid
+                raw = clim_internal + offset  # relâche froid
             else:
-                raw = target  # zone neutre proche de la cible
+                raw = clim_internal  # zéro relatif
         else:
             if room < target - TARGET_DEAD_BAND:
-                raw = target + offset  # pousse chaud
+                raw = clim_internal + offset  # pousse chaud
             elif room >= target:
-                raw = target - offset  # relâche chaud
+                raw = clim_internal - offset  # relâche chaud
             else:
-                raw = target  # zone neutre proche de la cible
+                raw = clim_internal  # zéro relatif
         rounded = round(raw * 2) / 2
-        return max(CLIM_MIN_SETPOINT, min(CLIM_MAX_SETPOINT, rounded))
+        return max(clim_min_setpoint, min(clim_max_setpoint, rounded))
 
     def _setpoint_should_send(self, setpoint: float, inp: ZoneInputs) -> bool:
         """Rate-limit : pas de réémission si trop proche du courant ou trop tôt."""

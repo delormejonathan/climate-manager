@@ -3,7 +3,7 @@
 The new model:
 - States: IDLE | RUNNING | WINDOW_OPEN | MANUAL_OVERRIDE_TIMED|FREE
 - A profile is required to enter RUNNING (no profile → IDLE).
-- RUNNING maintains room ≈ target via a pendulum setpoint (target ± offset
+- RUNNING maintains room ≈ target via a pendulum setpoint (Daikin internal ± offset
   depending on the Power knob), never cycling the clim off mid-session.
 - Profile change (different one OR none) cuts the clim and goes IDLE.
 """
@@ -196,7 +196,7 @@ def test_force_start_refuses_unsupported_heat():
 
 
 def test_session_far_from_target_pushes_hard_with_power_offset():
-    """Room loin de target → consigne = target - offset(power)."""
+    """Room loin de target → consigne relative à la sonde interne Daikin."""
     zone = Zone(_cfg())
     _seed_running_session(zone, target=24.5, power="normal")
     cmds = zone.tick(_inp(
@@ -204,7 +204,7 @@ def test_session_far_from_target_pushes_hard_with_power_offset():
         clim_current_hvac_mode=HVAC_COOL,
     ))
     sp = _find_setpoint(cmds)
-    expected = 24.5 - POWER_OFFSETS["normal"]
+    expected = 25.0 - POWER_OFFSETS["normal"]
     assert sp == pytest.approx(expected, abs=0.5)
 
 
@@ -216,7 +216,7 @@ def test_session_below_target_releases_pressure_even_inside_dead_band():
         clim_current_hvac_mode=HVAC_COOL,
     ))
     sp = _find_setpoint(cmds)
-    assert sp == pytest.approx(31.5, abs=0.5)
+    assert sp == pytest.approx(32.0, abs=0.1)
 
 
 def test_session_below_target_releases_cooling_pressure():
@@ -227,7 +227,7 @@ def test_session_below_target_releases_cooling_pressure():
         clim_current_hvac_mode=HVAC_COOL,
     ))
     sp = _find_setpoint(cmds)
-    assert sp == pytest.approx(24.5 + POWER_OFFSETS["normal"], abs=0.5)
+    assert sp == pytest.approx(25.0 + POWER_OFFSETS["normal"], abs=0.5)
 
 
 def test_session_at_target_with_aggressive_power_releases_to_max_setpoint():
@@ -251,8 +251,32 @@ def test_session_heat_far_from_target_pushes_up():
         clim_current_hvac_mode=HVAC_HEAT,
     ))
     sp = _find_setpoint(cmds)
-    expected = 21.0 + POWER_OFFSETS["normal"]
+    expected = 17.0 + POWER_OFFSETS["normal"]
     assert sp == pytest.approx(expected, abs=0.5)
+
+
+def test_session_heat_at_target_releases_below_daikin_internal_temperature():
+    """Régression RDC: 21-4 n'arrête pas une Daikin qui mesure 17°C en interne."""
+    zone = Zone(_cfg())
+    _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
+    cmds = zone.tick(_inp(
+        room_temperature=21.2,
+        clim_internal_temperature=17.0,
+        clim_min_setpoint=10.0,
+        clim_current_hvac_mode=HVAC_HEAT,
+    ))
+    assert _find_setpoint(cmds) == pytest.approx(13.0, abs=0.1)
+
+
+def test_session_without_daikin_internal_temperature_does_not_guess_setpoint():
+    zone = Zone(_cfg())
+    _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
+    cmds = zone.tick(_inp(
+        room_temperature=18.0,
+        clim_internal_temperature=None,
+        clim_current_hvac_mode=HVAC_HEAT,
+    ))
+    assert _find_setpoint(cmds) is None
 
 
 @pytest.mark.parametrize(("power", "expected_offset"), [
@@ -268,7 +292,7 @@ def test_power_knob_controls_pendulum_offset(power, expected_offset):
         clim_current_hvac_mode=HVAC_COOL,
     ))
     sp = _find_setpoint(cmds)
-    expected = max(18.0, 24.5 - expected_offset)
+    expected = max(18.0, 25.0 - expected_offset)
     assert sp == pytest.approx(expected, abs=0.5)
 
 
