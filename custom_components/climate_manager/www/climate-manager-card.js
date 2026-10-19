@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.24.0
+ * climate-manager-card  v0.24.1
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:

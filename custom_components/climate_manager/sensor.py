@@ -61,6 +61,8 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             "supports_heat": d.get("supports_heat", True),
             "windows_open": d.get("windows_open"),
             "windows_total": d.get("windows_total"),
+            "season": d.get("season", "summer"),
+            "profile_bank_counts": d.get("profile_bank_counts", {}),
             "profiles": d.get("profiles", []),
             "active_profile_name": d.get("active_profile_name"),
             "active_profile_mode": d.get("active_profile_mode"),
