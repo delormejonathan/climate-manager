@@ -361,6 +361,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         supports_heat = True
         supports_fan_mode = True
         supports_windnice = True
+        supports_swing = True
         supports_fan_only = True
         if clim_state and clim_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             clim_hvac = clim_state.state
@@ -379,6 +380,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             supports_fan_only = HVACMode.FAN_ONLY in hvac_modes or "fan_only" in hvac_modes
             supports_fan_mode = bool(fan_modes)
             supports_windnice = "windnice" in swing_modes
+            supports_swing = "swing" in swing_modes
             if clim_state.last_changed is not None:
                 clim_last_changed_ts = clim_state.last_changed.timestamp()
         active_profile = self._active_profile(zone)
@@ -397,6 +399,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             supports_heat=supports_heat,
             supports_fan_mode=supports_fan_mode,
             supports_windnice=supports_windnice,
+            supports_swing=supports_swing,
             supports_fan_only=supports_fan_only,
             clim_state_last_changed_ts=clim_last_changed_ts,
             active_profile=active_profile,

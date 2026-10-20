@@ -80,6 +80,7 @@ BOOST_FAN_MODE = "4"
 
 # Swing
 DEFAULT_SWING_MODE = "windnice"
+DEFAULT_HEAT_SWING_MODE = "swing"
 
 # === Profile defaults ===
 

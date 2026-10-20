@@ -90,6 +90,13 @@ def _find_fan(cmds):
     return None
 
 
+def _find_swing(cmds):
+    for c in cmds:
+        if c.service == "set_swing_mode":
+            return c.data.get("swing_mode")
+    return None
+
+
 def _seed_running_session(
     zone: Zone,
     *,
@@ -270,6 +277,31 @@ def test_session_heat_at_target_releases_to_device_minimum():
         clim_current_hvac_mode=HVAC_HEAT,
     ))
     assert _find_setpoint(cmds) == pytest.approx(10.0, abs=0.1)
+
+
+def test_heating_session_uses_swing_by_default():
+    zone = Zone(_cfg())
+    _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0)
+    cmds = zone.tick(_inp(
+        room_temperature=19.0,
+        clim_internal_temperature=19.0,
+        clim_current_hvac_mode=HVAC_HEAT,
+        clim_current_swing_mode="windnice",
+        supports_swing=True,
+    ))
+    assert _find_swing(cmds) == "swing"
+
+
+def test_cooling_session_keeps_windnice_by_default():
+    zone = Zone(_cfg())
+    _seed_running_session(zone, mode=ProfileMode.COOL, target=24.5)
+    cmds = zone.tick(_inp(
+        room_temperature=27.0,
+        clim_current_hvac_mode=HVAC_COOL,
+        clim_current_swing_mode="swing",
+        supports_windnice=True,
+    ))
+    assert _find_swing(cmds) == "windnice"
 
 
 def test_session_without_daikin_internal_temperature_stops_for_safety():

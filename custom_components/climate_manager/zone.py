@@ -39,6 +39,7 @@ from .const import (
     CLIM_MAX_SETPOINT,
     CLIM_MIN_SETPOINT,
     DEFAULT_FAN_INTENSITY,
+    DEFAULT_HEAT_SWING_MODE,
     DEFAULT_MODE,
     DEFAULT_OVERRIDE_DUREE_MIN,
     DEFAULT_POWER,
@@ -85,6 +86,7 @@ class ZoneInputs:
     supports_heat: bool = True
     supports_fan_mode: bool = True
     supports_windnice: bool = True
+    supports_swing: bool = True
     supports_fan_only: bool = True
     clim_state_last_changed_ts: float | None = None
     active_profile: Profile | None = None
@@ -896,8 +898,13 @@ class Zone:
                 cmds.append(self._cmd_set_fan_mode(target_fan))
                 self.state.last_fan_sent = target_fan
 
-        if inp.supports_windnice and inp.clim_current_swing_mode != DEFAULT_SWING_MODE:
-            cmds.append(self._cmd_set_swing_mode(DEFAULT_SWING_MODE))
+        target_swing = None
+        if mode == ProfileMode.HEAT and inp.supports_swing:
+            target_swing = DEFAULT_HEAT_SWING_MODE
+        elif inp.supports_windnice:
+            target_swing = DEFAULT_SWING_MODE
+        if target_swing and inp.clim_current_swing_mode != target_swing:
+            cmds.append(self._cmd_set_swing_mode(target_swing))
 
         if cmds:
             self.state.last_command_ts = inp.now_ts
