@@ -51,6 +51,7 @@ from .const import (
     FAN_SESSION_FAN_MODE,
     POWER_OFFSETS,
     RATE_LIMIT_SECONDS,
+    SESSION_SAFETY_OVERSHOOT_C,
     SETPOINT_NOOP_DELTA,
     TARGET_CUTOFF_HOLD_SECONDS,
     TARGET_DEAD_BAND,
@@ -268,7 +269,8 @@ class ZoneRuntimeState:
     # chronométrer. Reset si la T° remonte au-dessus du cutoff.
     session_cutoff_held_since_ts: float | None = None
     # True si la session a été démarrée manuellement (pas par la cascade).
-    # Sert juste à afficher "Session manuelle" au lieu d'un nom de profil parent.
+    # Les sessions manuelles préservent l'intention utilisateur quand le profil
+    # actif change; les sessions automatiques restent liées à leur profil parent.
     session_manual: bool = False
     # Quand l'utilisateur éteint la clim pendant un profil auto, on clôt la
     # session et on bloque seulement ce profil pour éviter un redémarrage immédiat.
@@ -495,12 +497,13 @@ class Zone:
         """Avance la machine à états + émet les commandes.
 
         Modèle session :
-        - RUNNING = une session active, ses paramètres sont **figés** et ne
-          dépendent plus du profil de la cascade (qui peut changer librement
-          sans impact).
-        - La session se termine sur : max_end_ts atteinte, target_cutoff tenu
-          TARGET_CUTOFF_HOLD_SECONDS, fenêtre ouverte, mode OFF, override
-          utilisateur, ou annulation explicite.
+        - RUNNING = une session active dont les paramètres sont figés.
+          Une session automatique reste toutefois liée au profil effectif qui
+          l'a créée; une session manuelle survit aux changements de cascade.
+        - La session automatique se termine si son profil parent change ou
+          disparaît. Toute session peut aussi se terminer sur : max_end_ts,
+          target_cutoff tenu TARGET_CUTOFF_HOLD_SECONDS, fenêtre ouverte, mode
+          OFF, override utilisateur ou annulation explicite.
         - Hors session (IDLE), la cascade peut spawner une nouvelle session si
           un profil match + room franchit son seuil.
         """
@@ -530,6 +533,11 @@ class Zone:
 
         # Boost legacy
         if self.state.boost_until_ts and self.state.boost_until_ts > inp.now_ts:
+            if self.state.state == ZoneState.RUNNING and self.state.session_target is not None:
+                end_reason = self._check_session_end(inp)
+                if end_reason is not None:
+                    self.state.boost_until_ts = None
+                    return self._end_session(inp, end_reason)
             return self._pilot_boost(inp)
 
         # === Session active ? (state == RUNNING) ===
@@ -622,7 +630,15 @@ class Zone:
 
     def _end_session(self, inp: ZoneInputs, reason: str) -> list[Command]:
         """Termine la session et passe en IDLE."""
+        # Après une coupure thermique, bloquer le profil courant jusqu'à son
+        # prochain changement. Cela évite une boucle arrêt/redémarrage si un
+        # profil est configuré avec un seuil incohérent par rapport à sa cible.
+        safety_profile_name = None
+        if reason == "safety_temperature_limit" and inp.active_profile is not None:
+            safety_profile_name = inp.active_profile.name
         self._finalize_session(inp, end_reason=reason)
+        if safety_profile_name is not None:
+            self.state.manually_stopped_profile_name = safety_profile_name
         if self.state.state != ZoneState.IDLE:
             self._transition(ZoneState.IDLE, inp.now_ts)
         if inp.clim_current_hvac_mode != HVACMode.OFF:
@@ -631,16 +647,48 @@ class Zone:
 
     def _check_session_end(self, inp: ZoneInputs) -> str | None:
         """Renvoie la raison de fin si la session doit se terminer ce tick."""
-        # 1. max_end_ts
+        # 1. Une session automatique appartient au profil qui l'a créée.
+        # Les sessions manuelles conservent, elles, l'intention utilisateur.
+        if not self.state.session_manual:
+            active = inp.active_profile
+            if active is None:
+                return "no_active_profile"
+            if not self._automatic_session_matches_profile(active):
+                return "profile_change"
+
+        # 2. Fail closed: garder l'ancienne consigne sans mesure fiable peut
+        # laisser une Daikin chauffer/refroidir sans contrôle.
+        mode = self.state.session_mode
+        if mode in (ProfileMode.COOL, ProfileMode.HEAT):
+            if inp.room_temperature is None:
+                return "zone_temperature_unavailable"
+            if inp.clim_internal_temperature is None:
+                return "climate_temperature_unavailable"
+
+        # 3. Dernier filet de sécurité si même la consigne de relâchement
+        # maximale n'arrête pas physiquement la machine.
+        target = self.state.session_target
+        room = inp.room_temperature
+        if target is not None and room is not None:
+            unsafe = (
+                mode == ProfileMode.HEAT
+                and room >= target + SESSION_SAFETY_OVERSHOOT_C
+            ) or (
+                mode == ProfileMode.COOL
+                and room <= target - SESSION_SAFETY_OVERSHOOT_C
+            )
+            if unsafe:
+                return "safety_temperature_limit"
+
+        # 4. max_end_ts
         if (
             self.state.session_max_end_ts is not None
             and inp.now_ts >= self.state.session_max_end_ts
         ):
             return "max_end_reached"
-        # 2. target_cutoff (si défini)
+        # 5. target_cutoff (si défini)
         cutoff = self.state.session_target_cutoff
         if cutoff is not None and inp.room_temperature is not None:
-            mode = self.state.session_mode
             met = (
                 (mode == ProfileMode.COOL and inp.room_temperature <= cutoff)
                 or (mode == ProfileMode.HEAT and inp.room_temperature >= cutoff)
@@ -655,6 +703,24 @@ class Zone:
                 # T° remontée → reset du compteur
                 self.state.session_cutoff_held_since_ts = None
         return None
+
+    def _automatic_session_matches_profile(self, profile: Profile) -> bool:
+        """Compare l'identité fonctionnelle du profil parent de la session."""
+        expected_power = (
+            self.state.session_post_kickstart_power or self.state.session_power
+        )
+        expected_fan = (
+            self.state.session_post_kickstart_fan_intensity
+            or self.state.session_fan_intensity
+        )
+        return (
+            profile.name == self.state.cycle_start_profile_name
+            and profile.mode == self.state.session_mode
+            and profile.target == self.state.session_target
+            and profile.target_cutoff == self.state.session_target_cutoff
+            and profile.power == expected_power
+            and profile.fan_intensity == expected_fan
+        )
 
     def _maybe_transition_kickstart(self, inp: ZoneInputs) -> None:
         """Bascule kickstart → steady quand l'horloge du kickstart expire."""
@@ -766,7 +832,7 @@ class Zone:
 
     def _should_start_for_profile(self, p: Profile, inp: ZoneInputs) -> bool:
         """True si on doit démarrer une session pour ce profil."""
-        if inp.room_temperature is None:
+        if inp.room_temperature is None or inp.clim_internal_temperature is None:
             return False
         if p.mode == ProfileMode.COOL:
             return inp.supports_cool and inp.room_temperature >= p.seuil_demarrage
@@ -847,13 +913,13 @@ class Zone:
         power: str,
         mode: str,
     ) -> float | None:
-        """Pilote la Daikin par correction relative à sa sonde interne.
+        """Pilote la Daikin avec une correction relative et un relâchement franc.
 
-        La cible de zone sert uniquement à choisir le sens de la correction.
-        La valeur absolue envoyée est toujours ``température interne ± offset`` :
-        la sonde Daikin est le zéro relatif du contrôle. Sans cette référence,
-        une consigne ``target ± offset`` peut continuer à chauffer/refroidir
-        alors que la température de zone a déjà atteint sa cible.
+        Tant que la zone demande un effort, la sonde Daikin sert de zéro relatif
+        (interne ± offset). À la cible, une petite correction inverse n'est pas
+        toujours suffisante pour neutraliser le compresseur: on envoie alors la
+        borne physique opposée de l'appareil (minimum en chauffage, maximum en
+        refroidissement).
         """
         if clim_internal is None:
             return None
@@ -862,14 +928,14 @@ class Zone:
             if room > target + TARGET_DEAD_BAND:
                 raw = clim_internal - offset  # pousse froid
             elif room <= target:
-                raw = clim_internal + offset  # relâche froid
+                raw = clim_max_setpoint  # relâche froid au maximum physique
             else:
                 raw = clim_internal  # zéro relatif
         else:
             if room < target - TARGET_DEAD_BAND:
                 raw = clim_internal + offset  # pousse chaud
             elif room >= target:
-                raw = clim_internal - offset  # relâche chaud
+                raw = clim_min_setpoint  # relâche chaud au minimum physique
             else:
                 raw = clim_internal  # zéro relatif
         rounded = round(raw * 2) / 2

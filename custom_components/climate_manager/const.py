@@ -63,6 +63,8 @@ SENSOR_LAG_THRESHOLD_C = 0.5  # écart à la médiane pour considérer qu'un cap
 # Combien de temps la cible de coupure (target_cutoff) doit-elle être tenue
 # en continu pour terminer la session.
 TARGET_CUTOFF_HOLD_SECONDS = 15 * 60
+# Arrêt physique si le relâchement maximal n'empêche pas une dérive franche.
+SESSION_SAFETY_OVERSHOOT_C = 2.0
 # Bouton "Prolonger" idempotent
 EXTEND_SESSION_HOURS = 1
 # Session ventilation: brassage d'air simple, sans consigne de température.

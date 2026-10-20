@@ -3,9 +3,9 @@
 The new model:
 - States: IDLE | RUNNING | WINDOW_OPEN | MANUAL_OVERRIDE_TIMED|FREE
 - A profile is required to enter RUNNING (no profile → IDLE).
-- RUNNING maintains room ≈ target via a pendulum setpoint (Daikin internal ± offset
-  depending on the Power knob), never cycling the clim off mid-session.
-- Profile change (different one OR none) cuts the clim and goes IDLE.
+- RUNNING pushes relative to the Daikin sensor and releases to the opposite
+  physical bound once the zone reaches its target.
+- Profile change cuts automatic sessions; manual sessions preserve user intent.
 """
 
 from __future__ import annotations
@@ -101,6 +101,7 @@ def _seed_running_session(
     started_ts: float = 500.0,
     max_end_ts: float | None = None,
     target_cutoff: float | None = None,
+    manual: bool = True,
 ) -> None:
     """Helper test : pré-positionne la zone dans une session active."""
     zone.state.state = ZoneState.RUNNING
@@ -112,6 +113,9 @@ def _seed_running_session(
     zone.state.session_fan_intensity = fan
     zone.state.session_mode = mode
     zone.state.session_max_end_ts = max_end_ts
+    zone.state.session_post_kickstart_power = power
+    zone.state.session_post_kickstart_fan_intensity = fan
+    zone.state.session_manual = manual
 
 
 # === Démarrage ===
@@ -227,7 +231,7 @@ def test_session_below_target_releases_cooling_pressure():
         clim_current_hvac_mode=HVAC_COOL,
     ))
     sp = _find_setpoint(cmds)
-    assert sp == pytest.approx(25.0 + POWER_OFFSETS["normal"], abs=0.5)
+    assert sp == pytest.approx(32.0, abs=0.1)
 
 
 def test_session_at_target_with_aggressive_power_releases_to_max_setpoint():
@@ -255,20 +259,20 @@ def test_session_heat_far_from_target_pushes_up():
     assert sp == pytest.approx(expected, abs=0.5)
 
 
-def test_session_heat_at_target_releases_below_daikin_internal_temperature():
-    """Régression RDC: 21-4 n'arrête pas une Daikin qui mesure 17°C en interne."""
+def test_session_heat_at_target_releases_to_device_minimum():
+    """À la cible, une correction relative ne suffit pas toujours à neutraliser Daikin."""
     zone = Zone(_cfg())
     _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
     cmds = zone.tick(_inp(
         room_temperature=21.2,
-        clim_internal_temperature=17.0,
+        clim_internal_temperature=29.0,
         clim_min_setpoint=10.0,
         clim_current_hvac_mode=HVAC_HEAT,
     ))
-    assert _find_setpoint(cmds) == pytest.approx(13.0, abs=0.1)
+    assert _find_setpoint(cmds) == pytest.approx(10.0, abs=0.1)
 
 
-def test_session_without_daikin_internal_temperature_does_not_guess_setpoint():
+def test_session_without_daikin_internal_temperature_stops_for_safety():
     zone = Zone(_cfg())
     _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
     cmds = zone.tick(_inp(
@@ -277,6 +281,57 @@ def test_session_without_daikin_internal_temperature_does_not_guess_setpoint():
         clim_current_hvac_mode=HVAC_HEAT,
     ))
     assert _find_setpoint(cmds) is None
+    assert zone.state.state == ZoneState.IDLE
+    assert any(c.service == "turn_off" for c in cmds)
+    assert zone.state.completed_sessions[-1]["end_reason"] == "climate_temperature_unavailable"
+
+
+def test_heating_session_hard_stops_two_degrees_above_target():
+    zone = Zone(_cfg())
+    _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0)
+    cmds = zone.tick(_inp(
+        room_temperature=23.0,
+        clim_internal_temperature=29.0,
+        clim_current_hvac_mode=HVAC_HEAT,
+    ))
+    assert zone.state.state == ZoneState.IDLE
+    assert any(c.service == "turn_off" for c in cmds)
+    assert zone.state.completed_sessions[-1]["end_reason"] == "safety_temperature_limit"
+
+
+def test_safety_stop_blocks_same_profile_from_immediate_restart():
+    zone = Zone(_cfg())
+    profile = _profile_heat(name="Malformed", seuil_demarrage=24.0, target=21.0)
+    _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0)
+    zone.tick(_inp(
+        room_temperature=23.0,
+        clim_internal_temperature=29.0,
+        clim_current_hvac_mode=HVAC_HEAT,
+        active_profile=profile,
+    ))
+
+    cmds = zone.tick(_inp(
+        now_ts=1_030.0,
+        room_temperature=23.0,
+        clim_internal_temperature=29.0,
+        clim_current_hvac_mode=HVAC_OFF,
+        active_profile=profile,
+    ))
+    assert zone.state.state == ZoneState.IDLE
+    assert cmds == []
+
+
+def test_cooling_session_hard_stops_two_degrees_below_target():
+    zone = Zone(_cfg())
+    _seed_running_session(zone, mode=ProfileMode.COOL, target=25.0)
+    cmds = zone.tick(_inp(
+        room_temperature=23.0,
+        clim_internal_temperature=20.0,
+        clim_current_hvac_mode=HVAC_COOL,
+    ))
+    assert zone.state.state == ZoneState.IDLE
+    assert any(c.service == "turn_off" for c in cmds)
+    assert zone.state.completed_sessions[-1]["end_reason"] == "safety_temperature_limit"
 
 
 @pytest.mark.parametrize(("power", "expected_offset"), [
@@ -356,36 +411,67 @@ def test_cool_setpoint_releases_above_target_once_room_is_cool_enough():
     assert _find_setpoint(release_cmds) > 24.5
 
 
-# === Session protégée des changements de cascade ===
+# === Propriété des sessions automatiques / manuelles ===
 
 
-def test_profile_change_during_session_does_not_stop():
-    """Cœur du modèle session : la cascade peut changer librement, la session
-    en cours est immortelle aux changements de profil."""
+def test_automatic_session_stops_when_active_profile_changes():
     zone = Zone(_cfg())
-    _seed_running_session(zone, target=24.5, parent="P1", started_ts=500.0)
+    _seed_running_session(
+        zone, target=24.5, parent="P1", started_ts=500.0, manual=False
+    )
     p2 = _profile_cool(name="P2", target=22.0)
-    zone.tick(_inp(
+    cmds = zone.tick(_inp(
         now_ts=1000.0,
         room_temperature=23.0,
         clim_current_hvac_mode=HVAC_COOL,
         active_profile=p2,
     ))
-    assert zone.state.state == ZoneState.RUNNING, "session doit continuer"
-    assert zone.state.session_target == 24.5, "params session non modifiés"
-    assert zone.state.cycle_start_profile_name == "P1", "parent profile inchangé"
+    assert zone.state.state == ZoneState.IDLE
+    assert any(c.service == "turn_off" for c in cmds)
+    assert zone.state.completed_sessions[-1]["end_reason"] == "profile_change"
 
 
-def test_profile_becomes_none_does_not_stop_session():
+def test_automatic_session_stops_when_no_profile_is_active():
     zone = Zone(_cfg())
-    _seed_running_session(zone, parent="P", started_ts=500.0)
-    zone.tick(_inp(
+    _seed_running_session(zone, parent="P", started_ts=500.0, manual=False)
+    cmds = zone.tick(_inp(
         now_ts=1000.0,
         room_temperature=24.0,
         clim_current_hvac_mode=HVAC_COOL,
         active_profile=None,
     ))
+    assert zone.state.state == ZoneState.IDLE
+    assert any(c.service == "turn_off" for c in cmds)
+    assert zone.state.completed_sessions[-1]["end_reason"] == "no_active_profile"
+
+
+def test_manual_session_survives_active_profile_change():
+    zone = Zone(_cfg())
+    _seed_running_session(
+        zone, target=24.5, parent="Manuel", started_ts=500.0, manual=True
+    )
+    cmds = zone.tick(_inp(
+        now_ts=1000.0,
+        room_temperature=25.0,
+        clim_current_hvac_mode=HVAC_COOL,
+        active_profile=_profile_cool(name="Absent", target=27.0),
+    ))
     assert zone.state.state == ZoneState.RUNNING
+    assert not any(c.service == "turn_off" for c in cmds)
+
+
+def test_same_name_profile_with_different_target_stops_automatic_session():
+    zone = Zone(_cfg())
+    _seed_running_session(
+        zone, target=24.5, parent="Nouveau profil", manual=False
+    )
+    cmds = zone.tick(_inp(
+        room_temperature=25.0,
+        clim_current_hvac_mode=HVAC_COOL,
+        active_profile=_profile_cool(name="Nouveau profil", target=22.0),
+    ))
+    assert zone.state.state == ZoneState.IDLE
+    assert any(c.service == "turn_off" for c in cmds)
 
 
 # === Hard gates ===

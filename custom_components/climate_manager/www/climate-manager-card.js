@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.24.1
+ * climate-manager-card  v0.24.3
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -2309,6 +2309,12 @@ class DelormejClimateCard extends HTMLElement {
         return { icon: "mdi:account-switch", klass: "", label: "Changement de profil" };
       case "no_active_profile":
         return { icon: "mdi:calendar-remove", klass: "", label: "Aucun profil actif" };
+      case "safety_temperature_limit":
+        return { icon: "mdi:shield-alert", klass: "warn", label: "Limite de sécurité atteinte" };
+      case "zone_temperature_unavailable":
+        return { icon: "mdi:thermometer-alert", klass: "warn", label: "Température de zone indisponible" };
+      case "climate_temperature_unavailable":
+        return { icon: "mdi:thermometer-alert", klass: "warn", label: "Sonde Daikin indisponible" };
       case "temperature_reached":
         return { icon: "mdi:thermometer-check", klass: "success", label: "Température atteinte" };
       default:
