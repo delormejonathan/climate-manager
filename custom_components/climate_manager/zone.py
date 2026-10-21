@@ -50,6 +50,8 @@ from .const import (
     DEFAULT_TARGET_HEAT,
     FAN_MODES,
     FAN_SESSION_FAN_MODE,
+    HEAT_APPROACH_MIN_OFFSET_C,
+    HEAT_APPROACH_POWER_RATIO,
     POWER_OFFSETS,
     RATE_LIMIT_SECONDS,
     SESSION_SAFETY_OVERSHOOT_C,
@@ -941,10 +943,18 @@ class Zone:
         else:
             if room < target - TARGET_DEAD_BAND:
                 raw = clim_internal + offset  # pousse chaud
-            elif room >= target:
-                raw = clim_min_setpoint  # relâche chaud au minimum physique
+            elif room < target:
+                # Contrairement au froid, ne pas anticiper l'arrêt dans le
+                # dernier demi-degré : une PAC air/air cale sinon sous la cible.
+                approach_offset = max(
+                    HEAT_APPROACH_MIN_OFFSET_C,
+                    offset * HEAT_APPROACH_POWER_RATIO,
+                )
+                raw = clim_internal + approach_offset
+            elif room < target + TARGET_DEAD_BAND:
+                raw = clim_internal  # maintien neutre une fois la cible atteinte
             else:
-                raw = clim_internal  # zéro relatif
+                raw = clim_min_setpoint  # relâche chaud au minimum physique
         rounded = round(raw * 2) / 2
         return max(clim_min_setpoint, min(clim_max_setpoint, rounded))
 

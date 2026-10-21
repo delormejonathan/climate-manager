@@ -266,13 +266,37 @@ def test_session_heat_far_from_target_pushes_up():
     assert sp == pytest.approx(expected, abs=0.5)
 
 
-def test_session_heat_at_target_releases_to_device_minimum():
-    """À la cible, une correction relative ne suffit pas toujours à neutraliser Daikin."""
+def test_session_heat_approaches_target_with_reduced_positive_offset():
+    """Le dernier demi-degré continue à chauffer au lieu de caler sous la cible."""
+    zone = Zone(_cfg())
+    _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
+    cmds = zone.tick(_inp(
+        room_temperature=20.5,
+        clim_internal_temperature=15.0,
+        clim_min_setpoint=10.0,
+        clim_current_hvac_mode=HVAC_HEAT,
+    ))
+    assert _find_setpoint(cmds) == pytest.approx(18.0, abs=0.1)
+
+
+def test_session_heat_at_target_holds_neutral():
     zone = Zone(_cfg())
     _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
     cmds = zone.tick(_inp(
         room_temperature=21.2,
-        clim_internal_temperature=29.0,
+        clim_internal_temperature=15.0,
+        clim_min_setpoint=10.0,
+        clim_current_hvac_mode=HVAC_HEAT,
+    ))
+    assert _find_setpoint(cmds) == pytest.approx(15.0, abs=0.1)
+
+
+def test_session_heat_above_target_releases_to_device_minimum():
+    zone = Zone(_cfg())
+    _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
+    cmds = zone.tick(_inp(
+        room_temperature=21.5,
+        clim_internal_temperature=15.0,
         clim_min_setpoint=10.0,
         clim_current_hvac_mode=HVAC_HEAT,
     ))

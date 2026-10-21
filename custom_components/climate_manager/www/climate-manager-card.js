@@ -1,5 +1,5 @@
 /**
- * climate-manager-card  v0.24.4
+ * climate-manager-card  v0.24.5
  *
  * Instrument-panel redesign. Can be used as an all-in-one card or as
  * five separate widgets for dashboards:
@@ -214,9 +214,6 @@ class DelormejClimateCard extends HTMLElement {
         this._call("climate_manager", "cancel_session", { zone_id: this._zone });
       }
     });
-    const sessionStartBtn = $("session-start-btn");
-    if (sessionStartBtn) sessionStartBtn.addEventListener("click", () => this._openSessionStartModal());
-
     const cyclesList = $("cycles-list");
     if (cyclesList) cyclesList.addEventListener("click", (e) => this._onCycleClick(e));
   }
@@ -610,19 +607,25 @@ class DelormejClimateCard extends HTMLElement {
     let inherit = profiles.find((p) => p.name === attrs.active_profile_name);
     if (!inherit && profiles.length > 0) inherit = profiles[0];
     inherit = inherit || { mode: "cool", target: 25, power: "normal", fan_intensity: "doux" };
+    const mode = inherit.mode || "cool";
+    const inheritedTarget = Number(inherit.target);
+    // Une session manuelle de chauffage vise le confort, même si le profil
+    // actif est le profil Absent à 18 °C.
+    const target = mode === "heat"
+      ? Math.max(Number.isFinite(inheritedTarget) ? inheritedTarget : 21, 21)
+      : (Number.isFinite(inheritedTarget) ? inheritedTarget : 25);
     const defaultEnd = new Date();
     defaultEnd.setHours(23, 59, 0, 0);
     if (defaultEnd.getTime() <= Date.now() + 5 * 60 * 1000) defaultEnd.setTime(Date.now() + 4 * 3600 * 1000);
     const data = {
       zone_id: this._zone,
-      mode: inherit.mode || "cool",
-      target: inherit.target ?? ((inherit.mode || "cool") === "heat" ? 21 : 25),
+      mode,
+      target,
       max_end_ts: defaultEnd.getTime() / 1000,
       power: inherit.power || "normal",
       fan_intensity: inherit.fan_intensity || "doux",
     };
     if (inherit.target_cutoff != null) data.target_cutoff = inherit.target_cutoff;
-    if (attrs.active_profile_name) data.parent_profile_name = attrs.active_profile_name;
     return this._call("climate_manager", "start_session", data);
   }
 
