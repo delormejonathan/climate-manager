@@ -411,8 +411,7 @@ def _register_services(hass: HomeAssistant) -> None:
         coord, zone = _find_zone(hass, call.data["zone_id"])
         if zone is None:
             return
-        zone.cancel_active_session(now_ts=utc_now_ts())
-        await coord.async_tick_now()
+        await coord.async_cancel_zone_session(zone)
 
     hass.services.async_register(DOMAIN, SERVICE_SET_MODE, _set_mode, schema=SCHEMA_SET_MODE)
     hass.services.async_register(DOMAIN, SERVICE_FORCE_OFF, _force_off, schema=SCHEMA_ZONE_ID)

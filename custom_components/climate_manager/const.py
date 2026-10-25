@@ -34,6 +34,10 @@ CONF_WINDOW_SENSORS = "window_sensors"
 CONF_CONSUMPTION_SENSOR_COOL = "consumption_sensor_cool"
 CONF_CONSUMPTION_SENSOR_HEAT = "consumption_sensor_heat"
 CONF_OVERRIDE_DUREE_MIN = "override_duree_min"
+CONF_ANOMALY_DELAY_MIN = "anomaly_delay_min"
+CONF_ANOMALY_HEAT_GAIN_PER_HOUR = "anomaly_heat_gain_per_hour"
+CONF_ANOMALY_COOL_GAIN_PER_HOUR = "anomaly_cool_gain_per_hour"
+CONF_ANOMALY_NOTIFICATION_SERVICE = "anomaly_notification_service"
 CONF_SEASON = "season"
 CONF_PROFILE_BANKS = "profile_banks"
 
@@ -42,6 +46,14 @@ CONF_PROFILE_BANKS = "profile_banks"
 DEFAULT_OVERRIDE_DUREE_MIN = 30
 MIN_OVERRIDE_DUREE_MIN = 5
 MAX_OVERRIDE_DUREE_MIN = 240
+
+# Détection informative des pièces qui ne suivent pas la session. Les gains
+# sont orientés (chaleur gagnée en heat, fraîcheur gagnée en cool).
+DEFAULT_ANOMALY_DELAY_MIN = 60
+MIN_ANOMALY_DELAY_MIN = 15
+MAX_ANOMALY_DELAY_MIN = 180
+DEFAULT_ANOMALY_HEAT_GAIN_PER_HOUR = 0.5
+DEFAULT_ANOMALY_COOL_GAIN_PER_HOUR = 0.5
 
 # Bornes de consigne envoyée à la clim
 CLIM_MIN_SETPOINT = 18.0
@@ -54,10 +66,6 @@ SETPOINT_NOOP_DELTA = 0.5
 # Override
 CONTEXT_WINDOW_SECONDS = 30
 OVERRIDE_DEBOUNCE_SECONDS = 2
-
-# Sensor lag detection (porte fermée, pièce isolée)
-SENSOR_LAG_MIN_DETECTION_SECONDS = 20 * 60  # attendre 20min après start avant de juger
-SENSOR_LAG_THRESHOLD_C = 0.5  # écart à la médiane pour considérer qu'un capteur lag
 
 # Sessions
 # Combien de temps la cible de coupure (target_cutoff) doit-elle être tenue

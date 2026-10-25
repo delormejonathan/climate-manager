@@ -46,10 +46,15 @@ from .zone import (
     ZoneConfig,
     ZoneInputs,
     ZoneRuntimeState,
+    detect_temperature_gain_anomalies,
     utc_now_ts,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+NOTIFICATION_ACTION_EVENT = "mobile_app_notification_action"
+ANOMALY_EVENT = "climate_manager_temperature_anomaly"
+ANOMALY_CANCEL_ACTION_PREFIX = "CLIMATE_MANAGER_CANCEL_SESSION"
 
 
 class DelormejClimateCoordinator(DataUpdateCoordinator):
@@ -66,6 +71,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._context_tracker = ContextTracker()
         self._zones: dict[str, Zone] = {}
         self._unsub_state_listener = None
+        self._unsub_notification_action = None
         self._pending_overrides: dict[str, dict[str, Any]] = {}
         self._runtime_store: Store = Store(
             hass, 3, f"{DOMAIN}_runtime_{entry.entry_id}"
@@ -140,11 +146,23 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self.async_set_updated_data(self._build_coordinator_data())
         await self.async_request_refresh()
 
+    async def async_cancel_zone_session(self, zone: Zone) -> None:
+        """Cancel a session, apply its physical off command, then publish state."""
+        commands = zone.cancel_active_session(now_ts=utc_now_ts())
+        for command in commands:
+            await self._apply_command(command)
+        await self._save_runtime_state_if_changed()
+        self.async_set_updated_data(self._build_coordinator_data())
+        await self.async_request_refresh()
+
     # === DataUpdateCoordinator hooks ===
 
     async def _async_setup(self) -> None:
         await self._load_runtime_state()
         await self._setup_state_listeners()
+        self._unsub_notification_action = self.hass.bus.async_listen(
+            NOTIFICATION_ACTION_EVENT, self._on_notification_action
+        )
 
     async def _async_update_data(self) -> dict[str, Any]:
         for zone in self._zones.values():
@@ -157,7 +175,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             self._maybe_seed_entered_session_kwh(zone, prev_state)
             self._maybe_close_last_session_kwh(zone, prev_completed_count, sensor_temps)
             await self._maybe_seed_sensor_baselines(zone, prev_state, inputs, sensor_temps)
-            self._maybe_detect_lagging_sensors(zone, inputs, sensor_temps)
+            await self._maybe_detect_temperature_anomalies(zone, inputs, sensor_temps)
             self._maybe_clear_sensor_baselines(zone, prev_state)
             for cmd in commands:
                 await self._apply_command(cmd)
@@ -286,7 +304,47 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         if self._unsub_state_listener:
             self._unsub_state_listener()
             self._unsub_state_listener = None
+        if self._unsub_notification_action:
+            self._unsub_notification_action()
+            self._unsub_notification_action = None
         await super().async_shutdown()
+
+    @callback
+    def _on_notification_action(self, event: Event) -> None:
+        """Handle the destructive action from an anomaly mobile notification."""
+        action = str(event.data.get("action") or "")
+        prefix = f"{ANOMALY_CANCEL_ACTION_PREFIX}_"
+        if not action.startswith(prefix):
+            return
+        payload = action[len(prefix):]
+        try:
+            zone_id, cycle_started = payload.rsplit("_", 1)
+            expected_cycle_started_ms = int(cycle_started)
+        except (TypeError, ValueError):
+            return
+        self.hass.async_create_task(
+            self._async_cancel_session_from_notification(
+                zone_id, expected_cycle_started_ms
+            )
+        )
+
+    async def _async_cancel_session_from_notification(
+        self, zone_id: str, expected_cycle_started_ms: int
+    ) -> None:
+        """Cancel only the exact session that emitted the notification."""
+        zone = self._zones.get(zone_id)
+        if zone is None or zone.state.cycle_started_ts is None:
+            return
+        if round(zone.state.cycle_started_ts * 1000) != expected_cycle_started_ms:
+            _LOGGER.info("Ignored stale anomaly notification action for zone %s", zone_id)
+            return
+        if zone.state.state not in (
+            ZoneState.RUNNING,
+            ZoneState.MANUAL_OVERRIDE_TIMED,
+            ZoneState.MANUAL_OVERRIDE_FREE,
+        ):
+            return
+        await self.async_cancel_zone_session(zone)
 
     def _user_action_changed(self, old_state, new_state) -> bool:
         old_attrs = old_state.attributes or {}
@@ -529,8 +587,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 if missing_history or not current_baselines or avg_changed:
                     repaired = dict(current_baselines)
                     repaired.update(history_baselines)
-                    for sid, value in sensor_temps.items():
-                        repaired.setdefault(sid, value)
                     zone.state.cycle_baseline_temps = repaired
                     zone.state.flagged_sensors = []
                     zone.state.notified_sensors = []
@@ -540,11 +596,17 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             return
 
         repaired = dict(current_baselines)
-        for sid, value in sensor_temps.items():
-            repaired.setdefault(sid, value)
+        # Capture directe uniquement au véritable début. Un capteur qui revient
+        # tard ne doit pas recevoir une baseline "maintenant" puis être divisé
+        # par toute la durée de la session.
+        if prev_state != ZoneState.RUNNING or not duration_s or duration_s <= 60:
+            for sid, value in sensor_temps.items():
+                repaired.setdefault(sid, value)
         zone.state.cycle_baseline_temps = repaired
         zone.state.flagged_sensors = []
         zone.state.notified_sensors = []
+        if prev_state != ZoneState.RUNNING:
+            zone.state.anomaly_detection_done = False
 
     async def _history_sensor_baselines(
         self,
@@ -611,14 +673,118 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             zone.state.cycle_baseline_temps = {}
             zone.state.flagged_sensors = []
             zone.state.notified_sensors = []
+            zone.state.anomaly_detection_done = False
 
-    def _maybe_detect_lagging_sensors(
+    async def _maybe_detect_temperature_anomalies(
         self, zone: Zone, inputs: ZoneInputs, sensor_temps: dict[str, float]
     ) -> None:
-        """Détection désactivée: aucun capteur n'est exclu automatiquement."""
-        if zone.state.flagged_sensors or zone.state.notified_sensors:
-            zone.state.flagged_sensors = []
-            zone.state.notified_sensors = []
+        """Evaluate room gains once, then notify without altering the zone average."""
+        if zone.state.state != ZoneState.RUNNING or zone.state.anomaly_detection_done:
+            return
+        started_ts = zone.state.cycle_started_ts
+        if started_ts is None:
+            return
+        duration_seconds = max(0.0, inputs.now_ts - started_ts)
+        delay_seconds = max(1, zone.config.anomaly_delay_min) * 60
+        if duration_seconds < delay_seconds:
+            return
+
+        # Donne dix minutes à un capteur ayant une vraie baseline mais
+        # momentanément indisponible au contrôle. Ensuite, évalue les autres
+        # sans bloquer indéfiniment la détection de la session.
+        temporarily_missing = set(zone.state.cycle_baseline_temps) - set(sensor_temps)
+        if temporarily_missing and duration_seconds < delay_seconds + 10 * 60:
+            return
+
+        # A single evaluation measures the attack phase. Re-evaluating during
+        # maintenance would make a healthy long session look progressively worse.
+        zone.state.anomaly_detection_done = True
+        direction = zone.state.session_mode
+        if direction == ProfileMode.HEAT:
+            threshold = zone.config.anomaly_heat_gain_per_hour
+        elif direction == ProfileMode.COOL:
+            threshold = zone.config.anomaly_cool_gain_per_hour
+        else:
+            return
+
+        anomalies = detect_temperature_gain_anomalies(
+            zone.state.cycle_baseline_temps,
+            sensor_temps,
+            direction,
+            duration_seconds / 3600,
+            threshold,
+            target=zone.state.session_target,
+        )
+        zone.state.flagged_sensors = list(anomalies)
+        zone.state.notified_sensors = list(anomalies)
+        if not anomalies:
+            return
+
+        event_data = {
+            "zone_id": zone.config.zone_id,
+            "zone_name": zone.config.name,
+            "mode": direction,
+            "threshold_gain_per_hour": threshold,
+            "duration_minutes": round(duration_seconds / 60, 1),
+            "sensors": [
+                {"entity_id": sid, "name": self._sensor_label(sid), **details}
+                for sid, details in anomalies.items()
+            ],
+            "cycle_started_ts": started_ts,
+        }
+        self.hass.bus.async_fire(ANOMALY_EVENT, event_data)
+        await self._send_temperature_anomaly_notification(zone, event_data)
+
+    async def _send_temperature_anomaly_notification(
+        self, zone: Zone, event_data: dict[str, Any]
+    ) -> None:
+        service_name = zone.config.anomaly_notification_service
+        if not service_name:
+            _LOGGER.warning(
+                "Temperature anomaly detected for %s, but no notification service is configured",
+                zone.config.name,
+            )
+            return
+        if service_name.startswith("notify."):
+            service_name = service_name.split(".", 1)[1]
+        if not self.hass.services.has_service("notify", service_name):
+            _LOGGER.warning("Notification service notify.%s is unavailable", service_name)
+            return
+
+        mode_label = "chauffage" if event_data["mode"] == ProfileMode.HEAT else "refroidissement"
+        sensor_lines = [
+            f"{item['name']}: {item['gain']:+.1f} °C ({item['gain_per_hour']:+.1f} °C/h)"
+            for item in event_data["sensors"]
+        ]
+        action = (
+            f"{ANOMALY_CANCEL_ACTION_PREFIX}_{zone.config.zone_id}_"
+            f"{round(event_data['cycle_started_ts'] * 1000)}"
+        )
+        await self.hass.services.async_call(
+            "notify",
+            service_name,
+            {
+                "title": f"Diffusion anormale · {zone.config.name}",
+                "message": (
+                    f"Après {event_data['duration_minutes']:.0f} min de {mode_label}, "
+                    f"certaines pièces restent sous le seuil de "
+                    f"{event_data['threshold_gain_per_hour']:.1f} °C/h.\n"
+                    + "\n".join(sensor_lines)
+                    + "\nVérifie les portes ou la circulation d'air."
+                ),
+                "data": {
+                    "tag": f"climate_manager_anomaly_{zone.config.zone_id}",
+                    "actions": [
+                        {
+                            "action": action,
+                            "title": "Couper la session",
+                            "destructive": True,
+                        }
+                    ],
+                },
+            },
+            blocking=False,
+        )
 
     # === Session kWh tracking ===
 
@@ -823,6 +989,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "flagged_sensors_labels": [
                     self._sensor_label(sid) for sid in zone.state.flagged_sensors
                 ],
+                "anomaly_detection_done": zone.state.anomaly_detection_done,
+                "anomaly_delay_min": zone.config.anomaly_delay_min,
+                "anomaly_heat_gain_per_hour": zone.config.anomaly_heat_gain_per_hour,
+                "anomaly_cool_gain_per_hour": zone.config.anomaly_cool_gain_per_hour,
+                "anomaly_notification_service": zone.config.anomaly_notification_service,
                 "has_consumption_sensor": bool(
                     zone.config.consumption_sensor_cool
                     or zone.config.consumption_sensor_heat

@@ -19,6 +19,10 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_ANOMALY_COOL_GAIN_PER_HOUR,
+    CONF_ANOMALY_DELAY_MIN,
+    CONF_ANOMALY_HEAT_GAIN_PER_HOUR,
+    CONF_ANOMALY_NOTIFICATION_SERVICE,
     CONF_CLIMATE_ENTITY,
     CONF_CONSUMPTION_SENSOR_COOL,
     CONF_CONSUMPTION_SENSOR_HEAT,
@@ -30,9 +34,14 @@ from .const import (
     CONF_ZONE_ID,
     CONF_ZONE_NAME,
     CONF_ZONES,
+    DEFAULT_ANOMALY_COOL_GAIN_PER_HOUR,
+    DEFAULT_ANOMALY_DELAY_MIN,
+    DEFAULT_ANOMALY_HEAT_GAIN_PER_HOUR,
     DEFAULT_OVERRIDE_DUREE_MIN,
     DOMAIN,
+    MAX_ANOMALY_DELAY_MIN,
     MAX_OVERRIDE_DUREE_MIN,
+    MIN_ANOMALY_DELAY_MIN,
     MIN_OVERRIDE_DUREE_MIN,
 )
 
@@ -97,6 +106,41 @@ def _zone_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 unit_of_measurement="min",
             )
         ),
+        vol.Optional(
+            CONF_ANOMALY_DELAY_MIN,
+            default=defaults.get(CONF_ANOMALY_DELAY_MIN, DEFAULT_ANOMALY_DELAY_MIN),
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=MIN_ANOMALY_DELAY_MIN, max=MAX_ANOMALY_DELAY_MIN, step=5,
+                unit_of_measurement="min",
+            )
+        ),
+        vol.Optional(
+            CONF_ANOMALY_HEAT_GAIN_PER_HOUR,
+            default=defaults.get(
+                CONF_ANOMALY_HEAT_GAIN_PER_HOUR,
+                DEFAULT_ANOMALY_HEAT_GAIN_PER_HOUR,
+            ),
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0, max=5, step=0.1, unit_of_measurement="°C/h"
+            )
+        ),
+        vol.Optional(
+            CONF_ANOMALY_COOL_GAIN_PER_HOUR,
+            default=defaults.get(
+                CONF_ANOMALY_COOL_GAIN_PER_HOUR,
+                DEFAULT_ANOMALY_COOL_GAIN_PER_HOUR,
+            ),
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0, max=5, step=0.1, unit_of_measurement="°C/h"
+            )
+        ),
+        vol.Optional(
+            CONF_ANOMALY_NOTIFICATION_SERVICE,
+            default=defaults.get(CONF_ANOMALY_NOTIFICATION_SERVICE, vol.UNDEFINED),
+        ): str,
     })
 
 

@@ -87,3 +87,25 @@ async def test_existing_late_baseline_is_repaired_from_recorder_history(monkeypa
     )
 
     assert zone.state.cycle_baseline_temps == {"sensor.room": 27.2}
+
+
+@pytest.mark.asyncio
+async def test_sensor_returning_late_without_history_is_not_seeded(monkeypatch) -> None:
+    """Do not compare a late current value against the whole session duration."""
+    zone = _zone(baselines={})
+
+    async def no_history(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(DelormejClimateCoordinator, "_history_sensor_baselines", no_history)
+
+    coordinator = object.__new__(DelormejClimateCoordinator)
+    await DelormejClimateCoordinator._maybe_seed_sensor_baselines(
+        coordinator,
+        zone,
+        ZoneState.RUNNING,
+        _inputs(now_ts=700.0),
+        {"sensor.room": 26.3},
+    )
+
+    assert zone.state.cycle_baseline_temps == {}

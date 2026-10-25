@@ -41,7 +41,11 @@
           "window_sensors": "Window sensors (optional)",
           "duree_stabilisation_min": "Stabilization duration",
           "duree_cooldown_min": "Cooldown duration",
-          "override_duree_min": "Manual override duration"
+          "override_duree_min": "Manual override duration",
+          "anomaly_delay_min": "Delay before anomaly check",
+          "anomaly_heat_gain_per_hour": "Minimum heating gain",
+          "anomaly_cool_gain_per_hour": "Minimum cooling gain",
+          "anomaly_notification_service": "Actionable notification service (e.g. notify.mobile_app_iphone)"
         }
       },
       "edit_zone": {
@@ -60,7 +64,11 @@
           "window_sensors": "Window sensors (optional)",
           "duree_stabilisation_min": "Stabilization duration",
           "duree_cooldown_min": "Cooldown duration",
-          "override_duree_min": "Manual override duration"
+          "override_duree_min": "Manual override duration",
+          "anomaly_delay_min": "Delay before anomaly check",
+          "anomaly_heat_gain_per_hour": "Minimum heating gain",
+          "anomaly_cool_gain_per_hour": "Minimum cooling gain",
+          "anomaly_notification_service": "Actionable notification service (e.g. notify.mobile_app_iphone)"
         }
       },
       "remove_zone": {

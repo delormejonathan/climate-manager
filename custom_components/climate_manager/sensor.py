@@ -75,6 +75,11 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             "temperature_sensor_details": d.get("temperature_sensor_details", []),
             "flagged_sensors": d.get("flagged_sensors", []),
             "flagged_sensors_labels": d.get("flagged_sensors_labels", []),
+            "anomaly_detection_done": d.get("anomaly_detection_done", False),
+            "anomaly_delay_min": d.get("anomaly_delay_min"),
+            "anomaly_heat_gain_per_hour": d.get("anomaly_heat_gain_per_hour"),
+            "anomaly_cool_gain_per_hour": d.get("anomaly_cool_gain_per_hour"),
+            "anomaly_notification_service": d.get("anomaly_notification_service"),
             "session": d.get("session"),
             "zone_id": self._zone_id,
         }

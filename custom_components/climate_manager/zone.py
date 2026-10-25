@@ -38,6 +38,9 @@ from .const import (
     BOOST_OFFSET,
     CLIM_MAX_SETPOINT,
     CLIM_MIN_SETPOINT,
+    DEFAULT_ANOMALY_COOL_GAIN_PER_HOUR,
+    DEFAULT_ANOMALY_DELAY_MIN,
+    DEFAULT_ANOMALY_HEAT_GAIN_PER_HOUR,
     DEFAULT_FAN_INTENSITY,
     DEFAULT_HEAT_SWING_MODE,
     DEFAULT_MODE,
@@ -290,6 +293,10 @@ class ZoneRuntimeState:
     # Capteurs pour lesquels une notif a déjà été émise dans le cycle courant
     # (évite le spam — un capteur flagué reste flagué jusqu'à fin de cycle).
     notified_sensors: list[str] = field(default_factory=list)
+    # Le contrôle n'est exécuté qu'une fois par session, même lorsqu'aucune
+    # anomalie n'est trouvée. Évite qu'une longue phase de maintien dégrade
+    # artificiellement le gain horaire moyen.
+    anomaly_detection_done: bool = False
     # Historique des sessions terminées (max 20, sliding window).
     completed_sessions: list[dict[str, Any]] = field(default_factory=list)
 
@@ -323,6 +330,7 @@ class ZoneRuntimeState:
             "cycle_baseline_temps": dict(self.cycle_baseline_temps),
             "flagged_sensors": list(self.flagged_sensors),
             "notified_sensors": list(self.notified_sensors),
+            "anomaly_detection_done": self.anomaly_detection_done,
             "completed_sessions": list(self.completed_sessions),
         }
 
@@ -375,6 +383,7 @@ class ZoneRuntimeState:
             },
             flagged_sensors=list(data.get("flagged_sensors") or []),
             notified_sensors=list(data.get("notified_sensors") or []),
+            anomaly_detection_done=bool(data.get("anomaly_detection_done", False)),
             completed_sessions=list(data.get("completed_sessions") or []),
         )
 
@@ -431,6 +440,10 @@ class ZoneConfig:
     consumption_sensor_cool: str | None = None
     consumption_sensor_heat: str | None = None
     override_duree_min: int = DEFAULT_OVERRIDE_DUREE_MIN
+    anomaly_delay_min: int = DEFAULT_ANOMALY_DELAY_MIN
+    anomaly_heat_gain_per_hour: float = DEFAULT_ANOMALY_HEAT_GAIN_PER_HOUR
+    anomaly_cool_gain_per_hour: float = DEFAULT_ANOMALY_COOL_GAIN_PER_HOUR
+    anomaly_notification_service: str | None = None
     profiles: list[Profile] = field(default_factory=list)
     season: str = ClimateSeason.SUMMER
     profile_banks: dict[str, list[Profile]] = field(default_factory=dict)
@@ -466,6 +479,14 @@ class ZoneConfig:
             consumption_sensor_cool=d.get("consumption_sensor_cool") or None,
             consumption_sensor_heat=d.get("consumption_sensor_heat") or None,
             override_duree_min=int(d.get("override_duree_min", DEFAULT_OVERRIDE_DUREE_MIN)),
+            anomaly_delay_min=int(d.get("anomaly_delay_min", DEFAULT_ANOMALY_DELAY_MIN)),
+            anomaly_heat_gain_per_hour=float(
+                d.get("anomaly_heat_gain_per_hour", DEFAULT_ANOMALY_HEAT_GAIN_PER_HOUR)
+            ),
+            anomaly_cool_gain_per_hour=float(
+                d.get("anomaly_cool_gain_per_hour", DEFAULT_ANOMALY_COOL_GAIN_PER_HOUR)
+            ),
+            anomaly_notification_service=d.get("anomaly_notification_service") or None,
             profiles=profiles,
             season=season,
             profile_banks=profile_banks,
@@ -816,9 +837,18 @@ class Zone:
 
     def cancel_active_session(self, now_ts: float) -> list[Command]:
         """Annule la session en cours."""
-        if self.state.state != ZoneState.RUNNING:
+        if self.state.state not in (
+            ZoneState.RUNNING,
+            ZoneState.MANUAL_OVERRIDE_TIMED,
+            ZoneState.MANUAL_OVERRIDE_FREE,
+        ):
             return []
-        return self._end_session(
+        blocked_profile = (
+            self.state.cycle_start_profile_name
+            if not self.state.session_manual
+            else None
+        )
+        commands = self._end_session(
             ZoneInputs(  # synthétique : on passe juste now_ts + hvac courant
                 now_ts=now_ts,
                 room_temperature=None,
@@ -831,6 +861,11 @@ class Zone:
             ),
             "user_canceled",
         )
+        # Une annulation explicite ne doit pas relancer la même session
+        # automatique au tick suivant tant que le profil parent reste actif.
+        if blocked_profile:
+            self.state.manually_stopped_profile_name = blocked_profile
+        return commands
 
     # --- décisions ---
 
@@ -1279,6 +1314,7 @@ class Zone:
         self.state.session_cutoff_held_since_ts = None
         self.state.session_manual = False
         self.state.cycle_baseline_temps = {}
+        self.state.anomaly_detection_done = False
 
     # --- helpers ---
 
@@ -1392,3 +1428,48 @@ def detect_lagging_sensors(
         elif direction == "heat" and median - d >= threshold:
             lagging.append(eid)
     return lagging
+
+
+def detect_temperature_gain_anomalies(
+    baselines: dict[str, float],
+    current: dict[str, float],
+    direction: str,
+    duration_hours: float,
+    min_gain_per_hour: float,
+    target: float | None = None,
+) -> dict[str, dict[str, float]]:
+    """Return sensors whose useful temperature gain is below the configured rate.
+
+    A positive gain always means progress: ``current - start`` in heat and
+    ``start - current`` in cool. Sensors without a valid baseline/current value
+    are ignored and handled separately by Home Assistant availability.
+    """
+    if direction not in (ProfileMode.HEAT, ProfileMode.COOL):
+        return {}
+    if duration_hours <= 0 or min_gain_per_hour <= 0:
+        return {}
+
+    anomalies: dict[str, dict[str, float]] = {}
+    for entity_id, start in baselines.items():
+        value = current.get(entity_id)
+        if not isinstance(start, (int, float)) or not isinstance(value, (int, float)):
+            continue
+        # Une pièce déjà confortable n'a pas besoin de gagner encore 0,5 °C/h.
+        if target is not None and (
+            (direction == ProfileMode.HEAT and value >= target)
+            or (direction == ProfileMode.COOL and value <= target)
+        ):
+            continue
+        gain = value - start
+        if direction == ProfileMode.COOL:
+            gain = -gain
+        gain = round(gain, 2)
+        gain_per_hour = round(gain / duration_hours, 2)
+        if gain_per_hour < min_gain_per_hour:
+            anomalies[entity_id] = {
+                "start": round(float(start), 2),
+                "current": round(float(value), 2),
+                "gain": gain,
+                "gain_per_hour": gain_per_hour,
+            }
+    return anomalies
