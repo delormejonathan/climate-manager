@@ -55,6 +55,7 @@ from .const import (
     FAN_SESSION_FAN_MODE,
     HEAT_APPROACH_MIN_OFFSET_C,
     HEAT_APPROACH_POWER_RATIO,
+    HEAT_HOLD_RELEASE_OFFSET_C,
     POWER_OFFSETS,
     RATE_LIMIT_SECONDS,
     SESSION_SAFETY_OVERSHOOT_C,
@@ -979,15 +980,23 @@ class Zone:
             if room < target - TARGET_DEAD_BAND:
                 raw = clim_internal + offset  # pousse chaud
             elif room < target:
-                # Contrairement au froid, ne pas anticiper l'arrêt dans le
-                # dernier demi-degré : une PAC air/air cale sinon sous la cible.
+                # Continuer à chauffer dans le dernier demi-degré, mais réduire
+                # l'effort linéairement pour ne pas traverser la cible avec trop
+                # d'inertie. Le plancher garde une progression douce.
+                remaining_ratio = min(
+                    1.0,
+                    max(0.0, (target - room) / TARGET_DEAD_BAND),
+                )
                 approach_offset = max(
                     HEAT_APPROACH_MIN_OFFSET_C,
-                    offset * HEAT_APPROACH_POWER_RATIO,
+                    offset * HEAT_APPROACH_POWER_RATIO * remaining_ratio,
                 )
                 raw = clim_internal + approach_offset
             elif room < target + TARGET_DEAD_BAND:
-                raw = clim_internal  # maintien neutre une fois la cible atteinte
+                # Une consigne égale à la sonde interne peut encore chauffer à
+                # cause de l'hystérésis Daikin. Relâcher légèrement sans envoyer
+                # immédiatement la borne minimale évite l'effet chaud/froid.
+                raw = clim_internal - HEAT_HOLD_RELEASE_OFFSET_C
             else:
                 raw = clim_min_setpoint  # relâche chaud au minimum physique
         rounded = round(raw * 2) / 2

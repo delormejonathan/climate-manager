@@ -266,20 +266,32 @@ def test_session_heat_far_from_target_pushes_up():
     assert sp == pytest.approx(expected, abs=0.5)
 
 
-def test_session_heat_approaches_target_with_reduced_positive_offset():
-    """Le dernier demi-degré continue à chauffer au lieu de caler sous la cible."""
+def test_session_heat_approaches_target_with_tapered_positive_offset():
+    """Le dernier demi-degré chauffe encore, mais l'effort baisse vers la cible."""
     zone = Zone(_cfg())
     _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
-    cmds = zone.tick(_inp(
+
+    at_band_start = zone.tick(_inp(
         room_temperature=20.5,
         clim_internal_temperature=15.0,
         clim_min_setpoint=10.0,
         clim_current_hvac_mode=HVAC_HEAT,
     ))
-    assert _find_setpoint(cmds) == pytest.approx(18.0, abs=0.1)
+    assert _find_setpoint(at_band_start) == pytest.approx(17.0, abs=0.1)
+
+    near_target = zone.tick(_inp(
+        now_ts=2000.0,
+        room_temperature=20.9,
+        clim_internal_temperature=15.0,
+        clim_min_setpoint=10.0,
+        clim_current_hvac_mode=HVAC_HEAT,
+        clim_current_setpoint=17.0,
+    ))
+    assert _find_setpoint(near_target) == pytest.approx(15.5, abs=0.1)
 
 
-def test_session_heat_at_target_holds_neutral():
+def test_session_heat_at_target_applies_gentle_release():
+    """À la cible, passer légèrement sous la sonde Daikin évite son hystérésis."""
     zone = Zone(_cfg())
     _seed_running_session(zone, mode=ProfileMode.HEAT, target=21.0, power="normal")
     cmds = zone.tick(_inp(
@@ -288,7 +300,7 @@ def test_session_heat_at_target_holds_neutral():
         clim_min_setpoint=10.0,
         clim_current_hvac_mode=HVAC_HEAT,
     ))
-    assert _find_setpoint(cmds) == pytest.approx(15.0, abs=0.1)
+    assert _find_setpoint(cmds) == pytest.approx(14.5, abs=0.1)
 
 
 def test_session_heat_above_target_releases_to_device_minimum():

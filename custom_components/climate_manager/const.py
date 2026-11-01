@@ -99,12 +99,15 @@ DEFAULT_SEUIL_DEMARRAGE_HEAT = 18.0
 DEFAULT_TARGET_HEAT = 21.0
 
 # Largeur de transition autour de la cible. Le froid anticipe le relâchement;
-# le chauffage conserve une approche positive jusqu'à la cible puis neutralise.
+# le chauffage réduit progressivement l'effort puis relâche doucement.
 TARGET_DEAD_BAND = 0.5
-# En chauffage, continuer à pousser doucement dans le dernier demi-degré au
-# lieu d'appliquer la bande neutre anticipative conçue pour le refroidissement.
-HEAT_APPROACH_POWER_RATIO = 0.75
-HEAT_APPROACH_MIN_OFFSET_C = 2.0
+# En chauffage, continuer à pousser dans le dernier demi-degré, mais réduire
+# progressivement l'effort à mesure que la zone approche de la cible. Une fois
+# la cible atteinte, passer légèrement sous la sonde interne Daikin évite que
+# son hystérésis continue à chauffer la pièce.
+HEAT_APPROACH_POWER_RATIO = 0.5
+HEAT_APPROACH_MIN_OFFSET_C = 0.5
+HEAT_HOLD_RELEASE_OFFSET_C = 0.5
 
 # === Enums ===
 
