@@ -87,6 +87,9 @@
           "normal": "Normal",
           "fort": "Strong"
         }
+      },
+      "operating_mode": {
+        "name": "Operating mode"
       }
     },
     "number": {

@@ -58,6 +58,9 @@
           "summer": "Été",
           "winter": "Hiver"
         }
+      },
+      "operating_mode": {
+        "name": "Mode de fonctionnement"
       }
     },
     "number": {

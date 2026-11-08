@@ -39,6 +39,19 @@ from .const import (
     ZoneState,
 )
 from .context_tracker import ContextTracker
+from .plant import (
+    BANK_FOR_DIRECTION,
+    COOL,
+    HEAT,
+    BoostMemory,
+    CentralOrder,
+    Equipment,
+    EquipmentKind,
+    Plant,
+    ZoneDemand,
+    central_orders,
+    engaged_equipment,
+)
 from .zone import (
     Command,
     Profile,
@@ -77,6 +90,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             hass, 3, f"{DOMAIN}_runtime_{entry.entry_id}"
         )
         self._last_runtime_payload: dict[str, Any] | None = None
+        self.plant = Plant.from_options(entry.options)
+        self._boost: dict[str, BoostMemory] = {}
+        self._engaged: dict[str, list[Equipment]] = {}
+        self._central: dict[str, CentralOrder] = {}
+        self._central_sent: dict[tuple[str, str], tuple[Any, float]] = {}
         self._rebuild_zones()
 
     # === Public API ===
@@ -152,6 +170,41 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self.async_set_updated_data(self._build_coordinator_data())
         return True
 
+    # --- plant (equipment + operating modes) ---
+
+    def save_plant(self, plant: Plant) -> None:
+        """Persist the plant; zones follow the bank of the mode in service."""
+        self.plant = plant
+        mode = plant.current_mode
+        zones = list(self.entry.options.get(CONF_ZONES, []))
+        for i, raw in enumerate(zones):
+            hp = plant.heat_pump_of(raw.get("id"))
+            raw = {**raw, "climate_entity": hp.entity if hp else None}
+            if mode is not None:
+                raw[CONF_SEASON] = BANK_FOR_DIRECTION[mode.direction]
+            zones[i] = raw
+        self.hass.config_entries.async_update_entry(
+            self.entry, options={**self.entry.options, **plant.to_options(), CONF_ZONES: zones}
+        )
+        self._apply_plant_to_zones()
+        self.async_set_updated_data(self._build_coordinator_data())
+
+    def set_active_mode(self, mode_id: str | None) -> bool:
+        if mode_id is not None and self.plant.mode(mode_id) is None:
+            return False
+        plant = Plant.from_options({**self.entry.options, **self.plant.to_options()})
+        plant.active_mode = mode_id
+        self.save_plant(plant)
+        return True
+
+    def _apply_plant_to_zones(self) -> None:
+        mode = self.plant.current_mode
+        for zid, zone in self._zones.items():
+            hp = self.plant.heat_pump_of(zid)
+            zone.config.climate_entity = hp.entity if hp else None
+            if mode is not None:
+                zone.config.set_season(BANK_FOR_DIRECTION[mode.direction])
+
     def set_house_season(self, season: str) -> bool:
         """Switch every zone to the same season bank in one options write."""
         if season not in ClimateSeason.ALL:
@@ -196,6 +249,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     # === DataUpdateCoordinator hooks ===
 
     async def _async_setup(self) -> None:
+        if "equipments" not in self.entry.options:
+            # First start with the plant model: store the migrated plant so ids stay stable.
+            self.save_plant(self.plant)
         await self._load_runtime_state()
         await self._setup_state_listeners()
         self._unsub_notification_action = self.hass.bus.async_listen(
@@ -203,6 +259,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
+        demands: dict[str, ZoneDemand] = {}
         for zone in self._zones.values():
             sensor_temps = self._read_sensor_temps(zone)
             inputs = self._gather_inputs(zone, sensor_temps)
@@ -215,10 +272,146 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             await self._maybe_seed_sensor_baselines(zone, prev_state, inputs, sensor_temps)
             await self._maybe_detect_temperature_anomalies(zone, inputs, sensor_temps)
             self._maybe_clear_sensor_baselines(zone, prev_state)
+            demand = self._zone_demand(zone, inputs)
+            demands[zone.config.zone_id] = demand
+            commands = self._dispatch_heat_pump(zone, demand, inputs, commands)
             for cmd in commands:
                 await self._apply_command(cmd)
+        self._central = central_orders(self.plant, self._engaged, demands)
+        for eq_id, order in self._central.items():
+            await self._drive_central(self.plant.equipment(eq_id), order)
         await self._save_runtime_state_if_changed()
         return self._build_coordinator_data()
+
+    # === Plant dispatch ===
+
+    def _zone_demand(self, zone: Zone, inputs: ZoneInputs) -> ZoneDemand:
+        running = zone.state.state == ZoneState.RUNNING and zone.state.session_mode in (HEAT, COOL)
+        return ZoneDemand(
+            zone_id=zone.config.zone_id,
+            direction=zone.state.session_mode if running else None,
+            target=zone.state.session_target if running else None,
+            room=inputs.room_temperature,
+            session_started_ts=zone.state.cycle_started_ts if running else None,
+            manual=bool(zone.state.session_manual),
+        )
+
+    def _equipment_available(self, eq: Equipment) -> bool:
+        if not eq.entity:
+            return False
+        st = self.hass.states.get(eq.entity)
+        return st is not None and st.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+
+    def _dispatch_heat_pump(
+        self, zone: Zone, demand: ZoneDemand, inputs: ZoneInputs, commands: list[Command]
+    ) -> list[Command]:
+        """Keep the zone's heat pump off when the mode answers with other equipment."""
+        zid = zone.config.zone_id
+        engaged = engaged_equipment(
+            self.plant, demand, utc_now_ts(), self._equipment_available,
+            self._boost.setdefault(zid, BoostMemory()),
+        )
+        self._engaged[zid] = engaged
+        hp = self.plant.heat_pump_of(zid)
+        commands = [c for c in commands if c.data.get("entity_id")]
+        if hp is None or demand.direction is None:
+            return commands
+        if demand.manual and self.plant.current_mode is None:
+            # « Arrêt »: nothing starts on its own, but a session started by hand
+            # still runs on the zone's heat pump.
+            return commands
+        if any(e.id == hp.id for e in engaged):
+            return commands
+        # Automatic session served by other equipment: the heat pump stays off.
+        kept = [c for c in commands if c.service == "turn_off"]
+        if not kept and inputs.clim_current_hvac_mode not in (STATE_OFF, None):
+            kept = [zone._cmd_turn_off()]
+        return kept
+
+    async def _drive_central(self, eq: Equipment | None, order: CentralOrder) -> None:
+        if eq is None or not eq.entity:
+            return
+        st = self.hass.states.get(eq.entity)
+        if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return
+        domain = eq.entity.split(".", 1)[0]
+        calls: list[Command] = []
+        if domain == "climate":
+            if order.on:
+                if st.state != order.direction:
+                    calls.append(Command("climate", "set_hvac_mode", {"entity_id": eq.entity, "hvac_mode": order.direction}))
+                current = _as_float(st.attributes.get(ATTR_TEMPERATURE))
+                if order.setpoint is not None and (current is None or abs(current - order.setpoint) >= SETPOINT_NOOP_DELTA):
+                    calls.append(Command("climate", "set_temperature", {"entity_id": eq.entity, "temperature": round(order.setpoint * 2) / 2}))
+            elif st.state != STATE_OFF:
+                calls.append(Command("climate", "turn_off", {"entity_id": eq.entity}))
+        elif domain in ("select", "input_select"):
+            wanted = eq.on_option if order.on else eq.off_option
+            if wanted and st.state != wanted:
+                calls.append(Command(domain, "select_option", {"entity_id": eq.entity, "option": wanted}))
+        elif domain in ("switch", "input_boolean", "light", "fan"):
+            wanted = STATE_ON if order.on else STATE_OFF
+            if st.state != wanted:
+                calls.append(Command(domain, f"turn_{wanted}", {"entity_id": eq.entity}))
+        if order.on and order.setpoint is not None and eq.setpoint_entity and domain != "climate":
+            sp = self.hass.states.get(eq.setpoint_entity)
+            value = round(order.setpoint * 2) / 2
+            if sp is not None and _as_float(sp.state) != value:
+                sp_domain = eq.setpoint_entity.split(".", 1)[0]
+                calls.append(Command(sp_domain, "set_value", {"entity_id": eq.setpoint_entity, "value": value}))
+        now = utc_now_ts()
+        for cmd in calls:
+            # The device may report its new state a few seconds later: do not repeat an order.
+            key = (eq.id, f"{cmd.domain}.{cmd.service}")
+            value = {k: v for k, v in cmd.data.items() if k != "entity_id"}
+            last = self._central_sent.get(key)
+            if last and last[0] == value and now - last[1] < 90:
+                continue
+            self._central_sent[key] = (value, now)
+            _LOGGER.info("Central %s: %s.%s %s", eq.name, cmd.domain, cmd.service, cmd.data)
+            await self._apply_command(cmd)
+
+    def _equipment_running(self, eq: Equipment) -> bool:
+        if eq.kind == EquipmentKind.HEAT_PUMP:
+            st = self.hass.states.get(eq.entity) if eq.entity else None
+            return bool(st and st.state in (HEAT, COOL, "heat_cool", "fan_only"))
+        if eq.running_entity:
+            st = self.hass.states.get(eq.running_entity)
+            return bool(st and st.state == STATE_ON)
+        order = self._central.get(eq.id)
+        return bool(order and order.on)
+
+    def _plant_payload(self) -> dict[str, Any]:
+        mode = self.plant.current_mode
+        return {
+            "active_mode": mode.id if mode else None,
+            "active_mode_name": mode.name if mode else None,
+            "direction": mode.direction if mode else None,
+            "relation": mode.relation if mode else None,
+            "modes": [{"id": m.id, "name": m.name, "direction": m.direction, "icon": m.icon} for m in self.plant.modes],
+            "equipments": [
+                {
+                    "id": e.id, "name": e.name, "kind": e.kind, "zones": list(e.zones),
+                    "on": bool(self._central.get(e.id) and self._central[e.id].on) if e.kind == EquipmentKind.CENTRAL else None,
+                    "running": self._equipment_running(e),
+                }
+                for e in self.plant.equipments
+            ],
+        }
+
+    def _zone_sources(self, zone_id: str) -> list[dict[str, Any]]:
+        mode = self.plant.current_mode
+        engaged = {e.id for e in self._engaged.get(zone_id, [])}
+        in_mode = {e.id for e in self.plant.mode_equipments_for(mode, zone_id)} if mode else set()
+        out = []
+        for e in self.plant.serving(zone_id):
+            out.append({
+                "id": e.id, "name": e.name, "kind": e.kind,
+                "in_mode": e.id in in_mode,
+                "engaged": e.id in engaged,
+                "running": self._equipment_running(e) and (e.kind == EquipmentKind.HEAT_PUMP or e.id in engaged or bool(e.running_entity)),
+            })
+        return out
 
     async def _load_runtime_state(self) -> None:
         data = await self._runtime_store.async_load() or {}
@@ -241,6 +434,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     # === Zone setup ===
 
     def _rebuild_zones(self) -> None:
+        if "equipments" in self.entry.options:
+            self.plant = Plant.from_options(self.entry.options)
         zones_cfg = self.entry.options.get(CONF_ZONES, [])
         new_zones: dict[str, Zone] = {}
         for cfg_dict in zones_cfg:
@@ -250,6 +445,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 zc, state=existing.state if existing else ZoneRuntimeState()
             )
         self._zones = new_zones
+        self._apply_plant_to_zones()
 
     async def _setup_state_listeners(self) -> None:
         if self._unsub_state_listener:
@@ -258,7 +454,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._cancel_pending_overrides()
         if not self._zones:
             return
-        entities = [z.config.climate_entity for z in self._zones.values()]
+        entities = [z.config.climate_entity for z in self._zones.values() if z.config.climate_entity]
         self._unsub_state_listener = async_track_state_change_event(
             self.hass, entities, self._on_clim_state_changed
         )
@@ -407,7 +603,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     # === Profile cascade ===
 
     def _active_profile(self, zone: Zone) -> Profile | None:
-        """Premier profil dont les gates matchent (time window + présence)."""
+        """Premier profil dont les gates matchent (time window + présence).
+
+        No operating mode in service: nothing starts on its own."""
+        if self.plant.current_mode is None:
+            return None
         for p in zone.config.profiles:
             if not self._profile_time_window_on(p):
                 continue
@@ -444,7 +644,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         if sensor_temps is None:
             sensor_temps = self._read_sensor_temps(zone)
         room_temperature = self._effective_room_temp(zone, sensor_temps)
-        clim_state = self.hass.states.get(zone.config.climate_entity)
+        clim_state = (
+            self.hass.states.get(zone.config.climate_entity) if zone.config.climate_entity else None
+        )
         clim_internal = None
         clim_hvac = STATE_OFF
         clim_setpoint = None
@@ -479,6 +681,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             supports_swing = "swing" in swing_modes
             if clim_state.last_changed is not None:
                 clim_last_changed_ts = clim_state.last_changed.timestamp()
+        # Heat/cold may come from other equipment than the zone's heat pump.
+        serving = self.plant.serving(zone.config.zone_id)
+        if any(e.kind == EquipmentKind.CENTRAL for e in serving):
+            supports_heat = supports_heat or any(e.heat for e in serving)
+            supports_cool = supports_cool or any(e.cool for e in serving)
+        if clim_internal is None and not zone.config.climate_entity:
+            clim_internal = room_temperature
         active_profile = self._active_profile(zone)
         return ZoneInputs(
             now_ts=now,
@@ -941,7 +1150,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     # === Data exposed to platforms ===
 
     def _build_coordinator_data(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"zones": {}}
+        out: dict[str, Any] = {"zones": {}, "plant": self._plant_payload()}
         for zid, zone in self._zones.items():
             sensor_temps = self._read_sensor_temps(zone)
             inputs = self._gather_inputs(zone, sensor_temps)
@@ -1016,6 +1225,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                     for name in ClimateSeason.ALL
                 },
                 "active_profile_name": active.name if active else None,
+                "operating_mode": out["plant"]["active_mode"],
+                "operating_mode_name": out["plant"]["active_mode_name"],
+                "sources": self._zone_sources(zid),
                 "active_profile_mode": active.mode if active else None,
                 "session": session,
                 "sessions": zone.state.completed_sessions,

@@ -209,6 +209,27 @@ class DelormejClimateCard extends HTMLElement {
     if (cyclesList) cyclesList.addEventListener("click", (e) => this._onCycleClick(e));
   }
 
+  /** Equipment of the operating mode that serve this zone, and what each one does now. */
+  _updateSources(attrs, dir, cycleActive) {
+    const el = this.querySelector('[data-bind="sources"]');
+    if (!el) return;
+    // Power and fan only mean something while the zone's heat pump runs.
+    const hpEngaged = (attrs.sources || []).some((s) => s.kind === "heat_pump" && s.engaged);
+    const hasPlant = (attrs.sources || []).some((s) => s.kind === "central");
+    this.querySelectorAll("[data-hp-only]").forEach((f) => { f.style.display = hasPlant && !hpEngaged ? "none" : ""; });
+    this.querySelector(".dc-session-inline-controls")?.classList.toggle("no-hp", hasPlant && !hpEngaged);
+    const sources = (attrs.sources || []).filter((s) => s.in_mode);
+    if (!sources.length) { el.innerHTML = ""; el.style.display = "none"; return; }
+    el.style.display = "";
+    const verb = dir === "cool" ? "refroidit" : "chauffe";
+    const icon = (s) => (s.kind === "central" ? "mdi:water-boiler" : "mdi:air-conditioner");
+    el.innerHTML = sources.map((s) => {
+      const on = cycleActive && s.engaged;
+      const label = on ? (s.running || s.kind !== "central" ? verb : "démarre") : s.running ? "en marche" : "au repos";
+      return `<span class="dc-source ${on ? "on" : ""}"><ha-icon icon="${icon(s)}"></ha-icon><b>${s.name}</b><span>${label}</span></span>`;
+    }).join("");
+  }
+
   _bumpSetpoint(dir) {
     if (!this._climateEntity || !this._hass) return;
     const clim = this._hass.states[this._climateEntity];
@@ -260,8 +281,8 @@ class DelormejClimateCard extends HTMLElement {
       const n = attrs.windows_open || 1;
       primary.push(info(
         "mdi:window-open-variant",
-        n > 1 ? `${n} fenêtres ouvertes — la clim reprendra automatiquement à la fermeture.`
-              : "Fenêtre ouverte — la clim reprendra automatiquement à la fermeture.",
+        n > 1 ? `${n} fenêtres ouvertes : reprise automatique à la fermeture.`
+              : "Fenêtre ouverte : reprise automatique à la fermeture.",
       ));
     } else if (inOverride) {
       const until = attrs.override_until_at
@@ -938,17 +959,20 @@ class DelormejClimateCard extends HTMLElement {
     const climMode = climObj0?.state || "off";
     const headIco = $("head-icon");
     const headIcoSvg = $("head-icon-ico");
-    if (climMode === "cool") {
+    // The zone heats or cools, whatever the equipment: follow the session direction.
+    const zoneAttrs = this._stateAttrs();
+    const zoneDir = zoneAttrs.session ? zoneAttrs.direction : null;
+    if (climMode === "cool" || zoneDir === "cool") {
       headIcoSvg.setAttribute("icon", "mdi:snowflake");
       headIco.classList.add("active");
       headIco.style.setProperty("--dc-state-color", HVAC_COLORS.cool);
-    } else if (climMode === "heat") {
+    } else if (climMode === "heat" || zoneDir === "heat") {
       headIcoSvg.setAttribute("icon", "mdi:fire");
       headIco.classList.add("active");
       headIco.style.setProperty("--dc-state-color", HVAC_COLORS.heat);
     } else {
       // Idle / off / fan_only / dry — show the device, not an action button
-      headIcoSvg.setAttribute("icon", "mdi:air-conditioner");
+      headIcoSvg.setAttribute("icon", "mdi:home-thermometer-outline");
       headIco.classList.remove("active");
       headIco.style.removeProperty("--dc-state-color");
     }
@@ -995,6 +1019,7 @@ class DelormejClimateCard extends HTMLElement {
     narEl.classList.toggle("warn", !!nar.warn);
     narEl.classList.toggle("warm", dir === "heat");
 
+    this._updateSources(attrs, dir, cycleActive);
     this._updateThermalRail(stateVal, attrs, get, ids);
     this._updateSessionBlock(attrs);
     this._updateActionsBlock(stateVal, attrs);
@@ -2505,6 +2530,7 @@ const STYLES = `
     margin-bottom: 12px;
   }
   .dc-session-field:last-child { margin-bottom: 0; }
+  .dc-session-inline-controls.no-hp > .dc-session-field:nth-last-child(3) { margin-bottom: 0; }
   .dc-session-field-label {
     align-self: stretch;
     color: var(--dc-dim);
@@ -2825,6 +2851,13 @@ const STYLES = `
     margin-top: 0;
   }
 
+  .dc-sources { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .dc-source { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px 6px 9px; border-radius: 999px;
+    background: var(--dc-surface, rgba(36,40,50,.05)); color: var(--dc-muted); font-size: 13px; line-height: 1; }
+  .dc-source ha-icon { --mdc-icon-size: 17px; }
+  .dc-source b { color: var(--dc-fg); font-weight: 600; }
+  .dc-source.on { background: var(--dc-accent-soft); color: var(--dc-accent); }
+  .dc-source.on b { color: var(--dc-accent); }
   .dc-narrative {
     font-size: 14px; line-height: 1.5;
     color: var(--dc-muted);
@@ -3266,7 +3299,7 @@ const STYLES = `
 const TEMPLATE = `
   <div class="dc-header">
     <div class="head-icon" data-bind="head-icon">
-      <ha-icon icon="mdi:air-conditioner" data-bind="head-icon-ico"></ha-icon>
+      <ha-icon icon="mdi:home-thermometer-outline" data-bind="head-icon-ico"></ha-icon>
     </div>
     <div class="title-block">
       <div class="title" data-bind="title-text"></div>
@@ -3300,6 +3333,7 @@ const TEMPLATE = `
       <span data-bind="metric-clim-sonde" style="display:none"></span>
 
       <div class="dc-narrative" data-bind="narrative"></div>
+      <div class="dc-sources" data-bind="sources"></div>
 
       <!-- ===== Session active : résumé compact, hiérarchie claire ===== -->
       <div class="dc-session-strip" data-bind="session-strip" style="display:none">
@@ -3351,7 +3385,7 @@ const TEMPLATE = `
               <button class="dc-round-btn" data-session-action="end-inc" aria-label="Ajouter une heure">+1h</button>
             </div>
           </div>
-          <div class="dc-session-field">
+          <div class="dc-session-field" data-hp-only>
             <div class="dc-session-field-label">Puissance</div>
             <div class="dc-session-chip-row">
               <button class="dc-chip-btn" data-session-power="doux">Doux</button>
@@ -3359,7 +3393,7 @@ const TEMPLATE = `
               <button class="dc-chip-btn" data-session-power="agressif">Fort</button>
             </div>
           </div>
-          <div class="dc-session-field">
+          <div class="dc-session-field" data-hp-only>
             <div class="dc-session-field-label">Ventilation</div>
             <div class="dc-session-chip-row">
               <button class="dc-chip-btn" data-session-fan="doux">Quiet</button>
@@ -3480,6 +3514,82 @@ class DelormejClimateProfilesCard extends HTMLElement {
   getGridOptions() { return { columns: 12, rows: 0, min_rows: 0 }; }
   set hass(_hass) {}
 }
+/** House operating mode: which equipment heats or cools. Daily use, no settings. */
+class ClimateManagerModeCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._entity = this._config.entity || "select.climate_manager_operating_mode";
+  }
+  static getStubConfig() { return { type: "custom:climate-manager-mode-card" }; }
+  getCardSize() { return 2; }
+  getGridOptions() { return { columns: 12, rows: "auto" }; }
+
+  set hass(hass) {
+    this._hass = hass;
+    const st = hass.states[this._entity];
+    const key = st ? JSON.stringify([st.state, st.attributes.options, st.attributes.equipments]) : "none";
+    if (key === this._key) return;
+    this._key = key;
+    this._render(st);
+  }
+
+  _render(st) {
+    if (!this._card) {
+      this._card = document.createElement("ha-card");
+      this.appendChild(this._card);
+      this._card.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-option]");
+        if (!b || b.classList.contains("on")) return;
+        this._hass.callService("select", "select_option", { entity_id: this._entity, option: b.dataset.option });
+      });
+    }
+    if (!st) { this._card.innerHTML = `<div style="padding:16px">Climate Manager indisponible.</div>`; return; }
+    const a = st.attributes;
+    const off = !a.mode_id;
+    const warm = a.direction === "heat";
+    const running = (a.equipments || []).filter((e) => e.running);
+    const icons = { heat: "mdi:fire", cool: "mdi:snowflake" };
+    const options = a.options || [];
+    const line = off
+      ? "Rien ne démarre seul."
+      : running.length
+        ? `${running.map((e) => e.name).join(" et ")} ${running.length > 1 ? (warm ? "chauffent" : "refroidissent") : (warm ? "chauffe" : "refroidit")} en ce moment.`
+        : "Tout est à température.";
+    this._card.className = `cm-mode ${off ? "off" : warm ? "warm" : "cool"}`;
+    this._card.innerHTML = `<style>${MODE_STYLES}</style>
+      <div class="cm-mode-head">
+        <div class="cm-mode-bubble"><ha-icon icon="${off ? "mdi:power" : icons[a.direction] || "mdi:home-thermometer-outline"}"></ha-icon></div>
+        <div class="cm-mode-text"><div class="cm-mode-label">Mode</div><div class="cm-mode-name">${st.state}</div></div>
+        <div class="cm-mode-line">${line}</div>
+      </div>
+      <div class="cm-mode-pills">${options.map((o) => `<button data-option="${o}" class="${o === st.state ? "on" : ""}">${o}</button>`).join("")}</div>`;
+  }
+}
+
+const MODE_STYLES = `
+  ha-card.cm-mode { --cm-accent: var(--state-climate-heat-color, #ff8a65); --cm-soft: color-mix(in srgb, var(--cm-accent), transparent 86%);
+    padding: 16px; border-radius: var(--ha-card-border-radius, 24px); display: flex; flex-direction: column; gap: 14px; }
+  ha-card.cm-mode.cool { --cm-accent: var(--state-climate-cool-color, #00acc1); }
+  ha-card.cm-mode.off { --cm-accent: var(--secondary-text-color); }
+  .cm-mode-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .cm-mode-bubble { width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center; background: var(--cm-soft); color: var(--cm-accent); flex: none; }
+  .cm-mode-bubble ha-icon { --mdc-icon-size: 22px; }
+  .cm-mode-text { display: flex; flex-direction: column; min-width: 0; }
+  .cm-mode-label { font-size: 12px; color: var(--secondary-text-color); }
+  .cm-mode-name { font-size: 18px; font-weight: 600; color: var(--primary-text-color); }
+  .cm-mode-line { margin-left: auto; font-size: 13px; color: var(--secondary-text-color); }
+  .cm-mode-pills { display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--secondary-background-color, rgba(36,40,50,.05)); overflow-x: auto; }
+  .cm-mode-pills button { flex: 1; border: 0; background: transparent; font: inherit; font-size: 13px; font-weight: 500; color: var(--secondary-text-color);
+    padding: 9px 12px; border-radius: 999px; cursor: pointer; white-space: nowrap; }
+  .cm-mode-pills button.on { background: var(--card-background-color, #fff); color: var(--primary-text-color); font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  @media (max-width: 520px) {
+    .cm-mode-line { margin-left: 0; width: 100%; }
+    .cm-mode-pills { flex-wrap: wrap; border-radius: 20px; }
+    .cm-mode-pills button { flex: 1 1 auto; }
+  }
+`;
+
 class DelormejClimateSessionsCard extends DelormejClimateCard {}
 DelormejClimateSessionsCard.widgetVariant = "sessions";
 
@@ -3489,6 +3599,7 @@ customElements.define("climate-manager-pilotage-card", DelormejClimatePilotageCa
 customElements.define("climate-manager-manual-card", DelormejClimateManualCard);
 customElements.define("climate-manager-profiles-card", DelormejClimateProfilesCard);
 customElements.define("climate-manager-sessions-card", DelormejClimateSessionsCard);
+customElements.define("climate-manager-mode-card", ClimateManagerModeCard);
 
 window.customCards = window.customCards || [];
 [
@@ -3511,6 +3622,11 @@ window.customCards = window.customCards || [];
     type: "climate-manager-profiles-card",
     name: "Climate Manager — Profils",
     description: "Widget Climate Manager séparé : profils.",
+  },
+  {
+    type: "climate-manager-mode-card",
+    name: "Climate Manager — Mode",
+    description: "Mode de fonctionnement de la maison (chaudière, climatisation…).",
   },
   {
     type: "climate-manager-sessions-card",

@@ -1,17 +1,35 @@
 /* Climate Manager — settings panel (sidebar « Climat », admins only).
  *
  * The only place where Climate Manager is configured:
- *   Programme — season in service and comfort profiles (all zones at once)
- *   Zones     — rooms and their equipment
- *   Maison    — presence (who says the house is occupied or empty)
+ *   Installation — equipment (what heats or cools) and zones (rooms), and who serves what
+ *   Modes        — operating modes: which equipment answers, and how they combine
+ *   Programme    — comfort profiles: wanted temperatures per time and presence
+ *   Maison       — presence (who says the house is occupied or empty)
  * The dashboard card is for daily use only. Both share the same look
  * (soft surfaces, pills, cool/warm accent).
  */
 
+/* Profile banks are stored per « season »: winter = heating profiles, summer = cooling profiles. */
 const SEASONS = {
-  winter: { label: "Hiver", icon: "mdi:snowflake", mode: "heat", accent: "warm" },
-  summer: { label: "Été", icon: "mdi:white-balance-sunny", mode: "cool", accent: "cool" },
+  winter: { label: "Chauffage", icon: "mdi:fire", mode: "heat", accent: "warm" },
+  summer: { label: "Rafraîchissement", icon: "mdi:snowflake", mode: "cool", accent: "cool" },
 };
+const SEASON_OF = { heat: "winter", cool: "summer" };
+const RELATIONS = {
+  exclusive: { label: "Exclusif", icon: "mdi:numeric-1-circle-outline", help: "Un seul équipement par zone : le premier de la liste qui répond." },
+  combined: { label: "Combiné", icon: "mdi:set-all", help: "Tous les équipements de la zone tournent ensemble." },
+  additive: { label: "Additif", icon: "mdi:plus-circle-multiple-outline", help: "Le premier tourne ; les suivants s'ajoutent si la zone reste loin de sa température." },
+};
+const KINDS = {
+  central: { label: "Central", icon: "mdi:water-boiler", help: "Marche ou arrêt, pour une ou plusieurs zones : chaudière, gainable, plancher." },
+  heat_pump: { label: "Climatisation", icon: "mdi:air-conditioner", help: "Pilotée finement, pour une seule zone." },
+};
+const NEW_EQUIPMENT = {
+  id: null, name: "", kind: "central", entity: null, zones: [], heat: true, cool: false,
+  on_option: null, off_option: null, setpoint_entity: null, setpoint_offset: 1, running_entity: null,
+};
+const NEW_MODE = { id: null, name: "", direction: "heat", relation: "exclusive", equipments: [], boost_gap: 1, boost_delay_min: 20, icon: null };
+const TABS = [["installation", "mdi:home-lightning-bolt-outline", "Installation"], ["modes", "mdi:tune-variant", "Modes"], ["programme", "mdi:calendar-clock", "Programme"], ["maison", "mdi:home-account", "Maison"]];
 const POWER = [["doux", "Doux"], ["normal", "Normal"], ["agressif", "Fort"]];
 const FAN = [["doux", "Douce"], ["normal", "Normale"], ["fort", "Forte"]];
 const OCCUPANCY = [["any", "Toujours"], ["home", "Maison occupée"], ["away", "Maison vide"]];
@@ -27,7 +45,7 @@ const KNOWN_STATES = {
 };
 const AWAY_HINTS = ["armed_away", "armed_vacation", "not_home", "away"];
 const NEW_ZONE = {
-  name: "", climate_entity: null, temperature_sensors: [], window_sensors: [],
+  name: "", temperature_sensors: [], window_sensors: [],
   consumption_sensor_cool: null, consumption_sensor_heat: null, override_duree_min: 30,
   anomaly_delay_min: 60, anomaly_heat_gain_per_hour: 0.5, anomaly_cool_gain_per_hour: 0.5,
   anomaly_notification_service: null,
@@ -46,13 +64,16 @@ class ClimateManagerPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._tab = "programme";
+    this._tab = "installation";
     this._settings = null;
     this._error = null;
     this._season = null;      // season shown in the Programme tab
     this._edit = null;        // { season, original, values, zoneIds, dirty, diffLines, scheduled }
     this._zoneDrafts = {};    // zone_id | "new" -> draft
     this._houseDraft = null;
+    this._eqEdit = null;      // equipment draft (id null = new)
+    this._modeEdit = null;    // mode draft (id null = new)
+    this._zoneOpen = null;    // zone id or "new" whose editor is open
     this._busy = false;
   }
 
@@ -63,8 +84,10 @@ class ClimateManagerPanel extends HTMLElement {
     this._hass = hass;
     if (first) {
       const params = new URLSearchParams(window.location.search);
-      if (["programme", "zones", "maison"].includes(params.get("tab"))) this._tab = params.get("tab");
+      const tab = params.get("tab") === "zones" ? "installation" : params.get("tab");
+      if (TABS.some(([id]) => id === tab)) this._tab = tab;
       this._focusZone = params.get("zone");
+      if (this._focusZone) this._tab = "installation";
       this._load();
     }
     this.shadowRoot.querySelectorAll("ha-menu-button, ha-selector").forEach((el) => { el.hass = hass; });
@@ -77,13 +100,17 @@ class ClimateManagerPanel extends HTMLElement {
     this._timer = setInterval(() => { if (!this._edit && !this._busy && !this._hasDrafts()) this._load(); }, 60000);
   }
   disconnectedCallback() { clearInterval(this._timer); }
-  _hasDrafts() { return Object.keys(this._zoneDrafts).length > 0 || !!this._houseDraft; }
+  _hasDrafts() { return Object.keys(this._zoneDrafts).length > 0 || !!this._houseDraft || !!this._eqEdit || !!this._modeEdit; }
 
   async _load() {
     try {
       this._settings = await this._hass.callWS({ type: "climate_manager/settings" });
       this._error = null;
-      if (!SEASONS[this._season]) this._season = SEASONS[this._settings.house.season] ? this._settings.house.season : "winter";
+      if (this._focusZone && !this._zoneOpen) {
+        const z = this._settings.zones.find((x) => [x.id, (x.name || "").toLowerCase()].includes(this._focusZone.toLowerCase()));
+        if (z) this._zoneOpen = z.id;
+      }
+      if (!SEASONS[this._season]) this._season = SEASON_OF[this._activeMode()?.direction] || (SEASONS[this._settings.house.season] ? this._settings.house.season : "winter");
     } catch (err) {
       this._error = err?.message || String(err);
     }
@@ -115,6 +142,15 @@ class ClimateManagerPanel extends HTMLElement {
 
   _name(entityId) { return this._hass?.states?.[entityId]?.attributes?.friendly_name || entityId; }
   _zone(id) { return this._settings.zones.find((z) => z.id === id); }
+  _equipment(id) { return this._settings.equipments.find((e) => e.id === id); }
+  _activeMode() { return this._settings.modes.find((m) => m.id === this._settings.active_mode) || null; }
+  /** Central equipment first (they serve the most zones), then by name. */
+  _equipments() {
+    return [...this._settings.equipments].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "central" ? -1 : 1));
+  }
+  _eqIcon(e) { return e.kind === "central" ? (e.cool && !e.heat ? "mdi:snowflake" : "mdi:water-boiler") : "mdi:air-conditioner"; }
+  _eqDoes(e) { return e.heat && e.cool ? "chaud et froid" : e.heat ? "chaud" : "froid"; }
+  _modeIcon(m) { return m.icon || (m.direction === "cool" ? "mdi:snowflake" : "mdi:fire"); }
 
   /** Presence of the house: saved, or inferred from the existing profiles. */
   _presence() {
@@ -196,7 +232,7 @@ class ClimateManagerPanel extends HTMLElement {
       <div class="toolbar">
         <div class="start"><ha-menu-button></ha-menu-button><div class="title">Climat</div></div>
         <div class="pills tabs">
-          ${[["programme", "mdi:calendar-clock", "Programme"], ["zones", "mdi:floor-plan", "Zones"], ["maison", "mdi:home-account", "Maison"]]
+          ${TABS
             .map(([id, icon, label]) => `<button class="${this._tab === id ? "on" : ""}" data-tab="${id}"><ha-icon icon="${icon}"></ha-icon>${label}</button>`).join("")}
         </div>
         <div class="busy" data-busy>${this._busy ? "Enregistrement…" : ""}</div>
@@ -218,7 +254,8 @@ class ClimateManagerPanel extends HTMLElement {
   _renderBody() {
     if (this._error) return `<div class="card"><div class="empty-note danger-text">Climate Manager ne répond pas : ${esc(this._error)}</div></div>`;
     if (!this._settings) return `<div class="card"><div class="empty-note">Chargement…</div></div>`;
-    if (this._tab === "zones") return this._renderZones();
+    if (this._tab === "installation") return this._renderInstallation();
+    if (this._tab === "modes") return this._renderModes();
     if (this._tab === "maison") return this._renderHouse();
     return this._renderProgramme();
   }
@@ -233,18 +270,19 @@ class ClimateManagerPanel extends HTMLElement {
     const s = this._settings;
     if (!s.zones.length) {
       return `<div class="card">${this._cardHead("mdi:calendar-clock", "Programme")}
-        <div class="empty-note">Déclare d'abord une pièce et sa climatisation dans l'onglet Zones.</div>
-        <div class="card-foot"><span class="spacer"></span><button class="btn accent" data-tab="zones">Ajouter une zone</button></div></div>`;
+        <div class="empty-note">Déclare d'abord tes pièces et tes équipements dans l'onglet Installation.</div>
+        <div class="card-foot"><span class="spacer"></span><button class="btn accent" data-tab="installation">Installation</button></div></div>`;
     }
-    const inService = s.house.season;
+    const mode = this._activeMode();
+    const inService = mode ? SEASON_OF[mode.direction] : null;
     const season = this._season;
     const rows = this._rows(season);
     const seasonPills = `<div class="pills small">${Object.entries(SEASONS).map(([k, v]) =>
       `<button data-view-season="${k}" class="${season === k ? "on" : ""}"><ha-icon icon="${v.icon}"></ha-icon>${v.label}${inService === k ? '<span class="dot" title="En service"></span>' : ""}</button>`).join("")}</div>`;
     const banner = inService === season
-      ? `<div class="note"><ha-icon icon="mdi:check-circle-outline"></ha-icon><span>Programme <b>${SEASONS[season].label.toLowerCase()}</b> en service : la maison ${SEASONS[season].mode === "heat" ? "chauffe" : "se rafraîchit"} selon ces profils.</span></div>`
-      : `<div class="note muted"><ha-icon icon="mdi:pause-circle-outline"></ha-icon><span>Le programme ${SEASONS[season].label.toLowerCase()} est en réserve${inService === "mixed" ? " : les zones ne sont pas sur la même saison" : ""}.</span>
-        <button class="btn small" data-set-season="${season}">Le mettre en service</button></div>`;
+      ? `<div class="note"><ha-icon icon="${this._modeIcon(mode)}"></ha-icon><span>Mode <b>${esc(mode.name)}</b> en service : ces profils décident quand ${SEASONS[season].mode === "heat" ? "chauffer" : "refroidir"} chaque zone (${esc(this._modeChain(mode))}).</span></div>`
+      : `<div class="note muted"><ha-icon icon="mdi:pause-circle-outline"></ha-icon><span>${mode ? `Mode <b>${esc(mode.name)}</b> en service : ` : "Aucun mode en service : "}ces profils attendent un mode de ${SEASONS[season].label.toLowerCase()}.</span>
+        <button class="btn small" data-tab="modes">Modes</button></div>`;
     const running = {};
     if (inService === season) for (const z of s.zones) if (z.live?.active_profile_name) (running[z.live.active_profile_name] ||= []).push(zoneName(z));
     const body = rows.map((row, i) => this._renderRow(row, i, season, running[row.name])).join("");
@@ -348,10 +386,10 @@ class ClimateManagerPanel extends HTMLElement {
         <div class="group-title">Températures</div>
         ${this._field(`Démarre ${heat ? "sous" : "au-dessus de"}`, this._stepper("seuil_demarrage", v.seuil_demarrage))}
         ${this._field("Vise", this._stepper("target", v.target))}
-        ${this._field("Coupe à", this._stepper("target_cutoff", v.target_cutoff, { optional: true }), "Facultatif : arrête la climatisation à cette température.")}
+        ${this._field("Coupe à", this._stepper("target_cutoff", v.target_cutoff, { optional: true }), "Facultatif : arrête le chauffage ou le froid à cette température.")}
       </div>
       <div class="group">
-        <div class="group-title">Climatisation</div>
+        <div class="group-title">Climatisations</div>
         ${this._field("Puissance", this._choice("power", POWER, v.power || "normal"))}
         ${this._field("Ventilation", this._choice("fan_intensity", FAN, v.fan_intensity || "normal"))}
         ${this._field("Démarrage renforcé", this._stepper("kickstart_minutes", Number(v.kickstart_minutes) || 0, { step: 5, min: 0, max: 60, unit: "min", digits: 0 }), "Pleine puissance au début de la session. 0 = désactivé.")}
@@ -421,6 +459,256 @@ class ClimateManagerPanel extends HTMLElement {
     if (await this._ws(msg)) { this._edit = e; this._render(); }
   }
 
+  /* --------------------------------------------------------- installation */
+
+  _renderInstallation() {
+    const s = this._settings;
+    const eqs = this._equipments();
+    const zones = s.zones;
+    const head = eqs.map((e) => {
+      const accent = e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
+      return `<th><button class="eq-head ${accent}" data-edit-eq="${e.id}" title="Modifier">
+        <span class="eq-bubble"><ha-icon icon="${this._eqIcon(e)}"></ha-icon>${e.running ? '<span class="live-dot"></span>' : ""}</span>
+        <span class="eq-name">${esc(e.name)}</span><span class="eq-sub">${this._eqDoes(e)}</span></button></th>`;
+    }).join("");
+    const rows = zones.map((z) => `<tr>
+      <th class="zone-head"><button data-open-zone="${z.id}"><span>${esc(zoneName(z))}</span><small>${deg(z.live?.room_temperature)}</small></button></th>
+      ${eqs.map((e) => {
+        const on = e.zones.includes(z.id);
+        const accent = e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
+        return `<td><button class="cell ${on ? `on ${accent}` : ""}" data-toggle-cover="${e.id}|${z.id}" title="${on ? "Dessert" : "Ne dessert pas"} ${esc(zoneName(z))}">
+          ${on ? '<ha-icon icon="mdi:check"></ha-icon>' : ""}</button></td>`;
+      }).join("")}
+    </tr>`).join("");
+    const shared = eqs.filter((e) => e.zones.length > 1).map((e) => e.zones.length === zones.length ? `${esc(e.name)} dessert toute la maison` : `${esc(e.name)} dessert ${e.zones.length} zones`);
+    const matrix = eqs.length && zones.length
+      ? `<div class="matrix-wrap"><table class="matrix"><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="hint">Une case cochée : l'équipement chauffe ou refroidit cette zone.${shared.length ? ` ${shared.join(" · ")}.` : ""}</div>`
+      : `<div class="empty-note">${zones.length ? "Ajoute tes équipements : chaudière, climatisations…" : "Commence par tes zones (pièces ou étages), puis tes équipements."}</div>`;
+    return `<div class="card">
+        ${this._cardHead("mdi:home-lightning-bolt-outline", "Qui dessert quoi")}
+        ${matrix}
+      </div>
+      <div class="card">
+        ${this._cardHead("mdi:water-boiler", "Équipements", `<span class="head-meta">${eqs.length}</span>`)}
+        <div class="rows">${eqs.map((e) => this._renderEqRow(e)).join("")}
+          ${this._eqEdit && !this._eqEdit.id ? `<div class="row open"><div class="row-head static"><span class="row-icon"><ha-icon icon="mdi:plus"></ha-icon></span><span class="row-main"><span class="row-title">Nouvel équipement</span></span></div>${this._renderEqEditor()}</div>`
+            : '<button class="add-row" data-add-eq><ha-icon icon="mdi:plus"></ha-icon>Ajouter un équipement</button>'}
+        </div>
+      </div>
+      <div class="card">
+        ${this._cardHead("mdi:floor-plan", "Zones", `<span class="head-meta">${zones.length}</span>`)}
+        <div class="rows">${zones.map((z) => this._renderZoneRow(z)).join("")}
+          ${this._zoneOpen === "new" ? `<div class="row open"><div class="row-head static"><span class="row-icon"><ha-icon icon="mdi:plus"></ha-icon></span><span class="row-main"><span class="row-title">Nouvelle zone</span></span></div>${this._renderZoneEditor("new")}</div>`
+            : '<button class="add-row" data-add-zone><ha-icon icon="mdi:plus"></ha-icon>Ajouter une zone</button>'}
+        </div>
+      </div>`;
+  }
+
+  _renderEqRow(e) {
+    const open = this._eqEdit && this._eqEdit.id === e.id;
+    const zones = this._settings.zones;
+    const where = e.zones.length === zones.length && zones.length > 1 ? "toute la maison" : e.zones.map((id) => zoneName(this._zone(id))).join(", ") || "aucune zone";
+    const accent = e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
+    return `<div class="row ${open ? "open" : ""}">
+      <button class="row-head" data-edit-eq="${e.id}">
+        <span class="row-icon ${accent}"><ha-icon icon="${this._eqIcon(e)}"></ha-icon></span>
+        <span class="row-main"><span class="row-title">${esc(e.name)}${e.running ? '<span class="badge ok">En marche</span>' : ""}</span>
+          <span class="row-meta"><span>${KINDS[e.kind].label}</span><span>${this._eqDoes(e)}</span><span><ha-icon icon="mdi:floor-plan"></ha-icon>${esc(where)}</span></span></span>
+        <ha-icon class="chev" icon="${open ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>
+      </button>
+      ${open ? this._renderEqEditor() : ""}
+    </div>`;
+  }
+
+  _openEq(id) {
+    if (this._eqEdit && this._eqEdit.id === id) { this._eqEdit = null; this._render(); return; }
+    this._eqEdit = id ? clone(this._equipment(id)) : clone(NEW_EQUIPMENT);
+    if (!id && this._settings.zones.length) this._eqEdit.zones = this._settings.zones.map((z) => z.id);
+    this._render();
+    this.shadowRoot.querySelector(".row.open")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  _renderEqEditor() {
+    const e = this._eqEdit;
+    const central = e.kind === "central";
+    const domain = e.entity ? e.entity.split(".")[0] : null;
+    const options = e.entity && ["select", "input_select"].includes(domain) ? list(this._hass.states[e.entity]?.attributes?.options) : [];
+    const zones = this._settings.zones;
+    return `<div class="editor">
+      <div class="group">
+        ${this._field("Nom", `<input class="text" data-eq-text="name" value="${esc(e.name)}" maxlength="40" placeholder="Chaudière, Clim salon…">`)}
+        ${this._field("Type", this._choice("eq-kind", Object.entries(KINDS).map(([k, v]) => [k, v.label]), e.kind), KINDS[e.kind].help)}
+        ${this._field("Produit", this._choice("eq-does", [["heat", "Chaud"], ["cool", "Froid"]], [e.heat && "heat", e.cool && "cool"].filter(Boolean), { multi: true }))}
+        ${this._field(central ? "Commande" : "Climatisation", `<div class="sel" data-selector="eq|entity"></div>`, central ? "Ce que Climate Manager actionne : mode de la chaudière, interrupteur, thermostat." : "")}
+        ${central && options.length ? `${this._field("Marche", this._choice("eq-on", options.map((o) => [o, o]), e.on_option))}
+          ${this._field("Arrêt", this._choice("eq-off", options.map((o) => [o, o]), e.off_option))}` : ""}
+        ${this._field("Zones", this._choice("eq-zones", zones.map((z) => [z.id, zoneName(z)]), e.zones, { multi: true }), central ? "Il tourne tant qu'une de ces zones le demande." : "Une climatisation dessert une seule zone.")}
+      </div>
+      ${central ? `<details class="group advanced" ${e.setpoint_entity || e.running_entity ? "open" : ""}>
+        <summary>Réglages avancés</summary>
+        ${this._field("Consigne", `<div class="sel" data-selector="eq|setpoint_entity"></div>`, "Facultatif : reçoit la température la plus haute demandée par ses zones.")}
+        ${e.setpoint_entity ? this._field("Écart de consigne", this._stepper("eq:setpoint_offset", Number(e.setpoint_offset ?? 1), { step: 0.5, min: 0, max: 5 }), "Ajouté à la consigne pour qu'il ne coupe pas avant la zone.") : ""}
+        ${this._field("En marche quand", `<div class="sel" data-selector="eq|running_entity"></div>`, "Facultatif : flamme ou état de marche, pour afficher quand il produit vraiment.")}
+      </details>` : ""}
+      <div class="editor-foot">
+        ${e.id ? '<button class="btn plain danger" data-delete-eq><ha-icon icon="mdi:delete-outline"></ha-icon>Supprimer</button>' : ""}
+        <span class="spacer"></span>
+        <button class="btn plain" data-cancel-eq>Annuler</button>
+        <button class="btn accent" data-primary data-save-eq>Enregistrer</button>
+      </div>
+    </div>`;
+  }
+
+  _eqSelector(field) {
+    const e = this._eqEdit;
+    if (field === "entity") {
+      return e.kind === "central"
+        ? { entity: { filter: ["select", "input_select", "switch", "input_boolean", "climate", "water_heater"].map((domain) => ({ domain })) } }
+        : { entity: { filter: { domain: "climate" } } };
+    }
+    if (field === "setpoint_entity") return { entity: { filter: [{ domain: "number" }, { domain: "input_number" }] } };
+    return { entity: { filter: [{ domain: "binary_sensor" }, { domain: "switch" }, { domain: "input_boolean" }] } };
+  }
+
+  async _saveEq() {
+    const e = this._eqEdit;
+    if (!String(e.name || "").trim()) return this._toast("Donne un nom à l'équipement.");
+    if (!e.entity) return this._toast("Choisis ce que Climate Manager actionne.");
+    if (!e.heat && !e.cool) return this._toast("Indique s'il produit du chaud, du froid ou les deux.");
+    const domain = e.entity.split(".")[0];
+    if (e.kind === "central" && ["select", "input_select"].includes(domain) && (!e.on_option || !e.off_option)) return this._toast("Choisis l'option de marche et celle d'arrêt.");
+    if (e.kind === "heat_pump" && e.zones.length > 1) e.zones = e.zones.slice(0, 1);
+    const ok = await this._ws({ type: "climate_manager/equipment/save", equipment: e }, "Équipement enregistré");
+    if (ok) { this._eqEdit = null; this._render(); }
+  }
+
+  async _toggleCover(eqId, zoneId) {
+    const e = clone(this._equipment(eqId));
+    const on = e.zones.includes(zoneId);
+    e.zones = on ? e.zones.filter((z) => z !== zoneId) : e.kind === "heat_pump" ? [zoneId] : [...e.zones, zoneId];
+    await this._ws({ type: "climate_manager/equipment/save", equipment: e });
+  }
+
+  /* ---------------------------------------------------------------- modes */
+
+  _modeChain(m) {
+    const names = m.equipments.map((id) => this._equipment(id)?.name).filter(Boolean);
+    if (!names.length) return "aucun équipement";
+    if (m.relation === "combined") return names.join(" + ");
+    if (m.relation === "additive") return `${names[0]}${names.length > 1 ? `, puis ${names.slice(1).join(" + ")} si besoin` : ""}`;
+    return names.length > 1 ? `${names[0]}, sinon ${names.slice(1).join(", ")}` : names[0];
+  }
+
+  _renderModes() {
+    const s = this._settings;
+    const active = this._activeMode();
+    const rows = s.modes.map((m, i) => this._renderModeRow(m, i)).join("");
+    const off = `<div class="row ${!active ? "running" : ""}"><div class="row-head static">
+        <span class="row-icon"><ha-icon icon="mdi:power"></ha-icon></span>
+        <span class="row-main"><span class="row-title">Arrêt${!active ? '<span class="badge">En service</span>' : ""}</span>
+          <span class="row-meta"><span>Rien ne démarre seul. Le pilotage à la main reste possible.</span></span></span>
+        ${active ? '<button class="btn small" data-set-mode="">Mettre en service</button>' : ""}
+        <span class="icon-btn flat ghost"></span>
+      </div></div>`;
+    return `<div class="card">
+      ${this._cardHead("mdi:tune-variant", "Modes de fonctionnement")}
+      <div class="hint">Un seul mode en service à la fois. Il décide quels équipements répondent quand une zone demande du chaud ou du froid. Change-le ici, depuis le tableau de bord ou par une automatisation (entité « Mode de fonctionnement »).</div>
+      <div class="rows">${rows}${off}
+        ${this._modeEdit && !this._modeEdit.id ? `<div class="row open"><div class="row-head static"><span class="row-icon"><ha-icon icon="mdi:plus"></ha-icon></span><span class="row-main"><span class="row-title">Nouveau mode</span></span></div>${this._renderModeEditor()}</div>`
+          : '<button class="add-row" data-add-mode><ha-icon icon="mdi:plus"></ha-icon>Ajouter un mode</button>'}
+      </div>
+    </div>`;
+  }
+
+  _renderModeRow(m) {
+    const open = this._modeEdit && this._modeEdit.id === m.id;
+    const isActive = this._settings.active_mode === m.id;
+    const accent = m.direction === "cool" ? "cool" : "warm";
+    return `<div class="row ${open ? "open" : ""} ${isActive ? "running" : ""}">
+      <div class="row-head">
+        <button class="row-hit" data-edit-mode="${m.id}">
+          <span class="row-icon ${accent}"><ha-icon icon="${this._modeIcon(m)}"></ha-icon></span>
+          <span class="row-main"><span class="row-title">${esc(m.name)}${isActive ? '<span class="badge">En service</span>' : ""}</span>
+            <span class="row-meta"><span><ha-icon icon="${RELATIONS[m.relation].icon}"></ha-icon>${RELATIONS[m.relation].label}</span><span>${esc(this._modeChain(m))}</span></span></span>
+        </button>
+        ${isActive ? "" : `<button class="btn small" data-set-mode="${m.id}">Mettre en service</button>`}
+        <button class="icon-btn flat" data-edit-mode="${m.id}" aria-label="Modifier"><ha-icon icon="${open ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon></button>
+      </div>
+      ${open ? this._renderModeEditor() : ""}
+    </div>`;
+  }
+
+  _openMode(id) {
+    if (this._modeEdit && this._modeEdit.id === id) { this._modeEdit = null; this._render(); return; }
+    this._modeEdit = id ? clone(this._settings.modes.find((m) => m.id === id)) : clone(NEW_MODE);
+    this._render();
+    this.shadowRoot.querySelector(".row.open")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  _renderModeEditor() {
+    const m = this._modeEdit;
+    const eligible = this._equipments().filter((e) => (m.direction === "cool" ? e.cool : e.heat));
+    const chosen = m.equipments.filter((id) => eligible.some((e) => e.id === id));
+    const others = eligible.filter((e) => !chosen.includes(e.id));
+    const zones = this._settings.zones;
+    const eqLine = (e, rank) => `<div class="eq-line ${rank ? "on" : ""}">
+        <button class="check" data-mode-eq="${e.id}" aria-label="${rank ? "Retirer" : "Ajouter"}">${rank ? `<b>${rank}</b>` : '<ha-icon icon="mdi:plus"></ha-icon>'}</button>
+        <ha-icon class="eq-ico" icon="${this._eqIcon(e)}"></ha-icon>
+        <span class="eq-line-main"><b>${esc(e.name)}</b><small>${e.zones.length === zones.length && zones.length > 1 ? "toute la maison" : esc(e.zones.map((id) => zoneName(this._zone(id))).join(", "))}</small></span>
+        ${rank ? `<button class="icon-btn flat" data-mode-eq-move="${e.id}|-1" aria-label="Monter" ${rank === 1 ? "disabled" : ""}><ha-icon icon="mdi:arrow-up"></ha-icon></button>
+          <button class="icon-btn flat" data-mode-eq-move="${e.id}|1" aria-label="Descendre" ${rank === chosen.length ? "disabled" : ""}><ha-icon icon="mdi:arrow-down"></ha-icon></button>` : ""}
+      </div>`;
+    const preview = zones.map((z) => {
+      const here = chosen.map((id) => this._equipment(id)).filter((e) => e && e.zones.includes(z.id));
+      const text = !here.length ? '<span class="danger-text">rien</span>'
+        : m.relation === "combined" ? here.map((e) => esc(e.name)).join(" + ")
+        : m.relation === "additive" ? `${esc(here[0].name)}${here.length > 1 ? ` <span class="muted">puis</span> ${here.slice(1).map((e) => esc(e.name)).join(" + ")}` : ""}`
+        : `${esc(here[0].name)}${here.length > 1 ? ` <span class="muted">sinon</span> ${here.slice(1).map((e) => esc(e.name)).join(", ")}` : ""}`;
+      return `<div class="preview-line"><span>${esc(zoneName(z))}</span><span>${text}</span></div>`;
+    }).join("");
+    return `<div class="editor">
+      <div class="group">
+        ${this._field("Nom", `<input class="text" data-mode-text="name" value="${esc(m.name)}" maxlength="40" placeholder="Chaudière, Mi-saison, Grand froid…">`)}
+        ${this._field("Produit", this._choice("mode-direction", [["heat", "Chaud"], ["cool", "Froid"]], m.direction))}
+        ${this._field("Équipements", `<div class="eq-lines">${chosen.map((id, i) => eqLine(this._equipment(id), i + 1)).join("")}${others.map((e) => eqLine(e, 0)).join("")}
+          ${eligible.length ? "" : `<div class="f-help">Aucun équipement ne produit de ${m.direction === "cool" ? "froid" : "chaud"}.</div>`}</div>`, "Dans l'ordre : le premier passe avant les autres.")}
+        ${this._field("Ensemble", this._choice("mode-relation", Object.entries(RELATIONS).map(([k, v]) => [k, v.label]), m.relation), RELATIONS[m.relation].help)}
+        ${m.relation === "additive" ? `${this._field("S'ajoutent si", this._stepper("mode:boost_gap", Number(m.boost_gap), { step: 0.5, min: 0.5, max: 5 }), "La zone est encore à cet écart de sa température…")}
+          ${this._field("après", this._stepper("mode:boost_delay_min", Number(m.boost_delay_min), { step: 5, min: 0, max: 240, unit: "min", digits: 0 }), "…ce temps après le démarrage. Ils repartent à mi-écart.")}` : ""}
+      </div>
+      ${zones.length ? `<div class="group"><div class="group-title">Dans chaque zone</div>${preview}</div>` : ""}
+      <div class="editor-foot">
+        ${m.id ? '<button class="btn plain danger" data-delete-mode><ha-icon icon="mdi:delete-outline"></ha-icon>Supprimer</button>' : ""}
+        ${m.id ? `<button class="icon-btn" data-move-mode="-1" title="Monter"><ha-icon icon="mdi:arrow-up"></ha-icon></button>
+          <button class="icon-btn" data-move-mode="1" title="Descendre"><ha-icon icon="mdi:arrow-down"></ha-icon></button>` : ""}
+        <span class="spacer"></span>
+        <button class="btn plain" data-cancel-mode>Annuler</button>
+        <button class="btn accent" data-primary data-save-mode>Enregistrer</button>
+      </div>
+    </div>`;
+  }
+
+  async _saveMode() {
+    const m = this._modeEdit;
+    if (!String(m.name || "").trim()) return this._toast("Donne un nom au mode.");
+    const eligible = this._settings.equipments.filter((e) => (m.direction === "cool" ? e.cool : e.heat)).map((e) => e.id);
+    m.equipments = m.equipments.filter((id) => eligible.includes(id));
+    if (!m.equipments.length) return this._toast("Choisis au moins un équipement.");
+    m.icon = m.icon && m.icon !== (m.direction === "cool" ? "mdi:fire" : "mdi:snowflake") ? m.icon : null;
+    const ok = await this._ws({ type: "climate_manager/mode/save", mode: m }, "Mode enregistré");
+    if (ok) { this._modeEdit = null; this._render(); }
+  }
+
+  async _moveMode(delta) {
+    const ids = this._settings.modes.map((m) => m.id);
+    const i = ids.indexOf(this._modeEdit.id); const j = i + delta;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    const keep = this._modeEdit;
+    if (await this._ws({ type: "climate_manager/mode/reorder", mode_ids: ids })) { this._modeEdit = keep; this._render(); }
+  }
+
   /* ---------------------------------------------------------------- zones */
 
   _zoneDraft(key) {
@@ -436,12 +724,25 @@ class ClimateManagerPanel extends HTMLElement {
     return !!d && ZONE_KEYS.some((k) => JSON.stringify(d[k] ?? null) !== JSON.stringify(zone[k] ?? null));
   }
 
-  _renderZones() {
-    return `${this._settings.zones.map((z) => this._renderZoneCard(z.id)).join("")}
-      ${this._zoneDrafts.new ? this._renderZoneCard("new") : `<button class="add-row big" data-add-zone><ha-icon icon="mdi:plus"></ha-icon>Ajouter une zone</button>`}`;
+  _renderZoneRow(z) {
+    const open = this._zoneOpen === z.id;
+    const live = z.live || {};
+    const serving = this._equipments().filter((e) => e.zones.includes(z.id));
+    return `<div class="row ${open ? "open" : ""}">
+      <button class="row-head" data-open-zone="${z.id}">
+        <span class="row-icon"><ha-icon icon="mdi:floor-plan"></ha-icon></span>
+        <span class="row-main"><span class="row-title">${esc(zoneName(z))}</span>
+          <span class="row-meta"><span><ha-icon icon="mdi:thermometer"></ha-icon>${list(z.temperature_sensors).length} capteur${list(z.temperature_sensors).length > 1 ? "s" : ""}</span>
+          ${list(z.window_sensors).length ? `<span><ha-icon icon="mdi:window-closed-variant"></ha-icon>${list(z.window_sensors).length} fenêtre${list(z.window_sensors).length > 1 ? "s" : ""}</span>` : ""}
+          <span><ha-icon icon="mdi:home-lightning-bolt-outline"></ha-icon>${serving.length ? esc(serving.map((e) => e.name).join(", ")) : "aucun équipement"}</span></span></span>
+        <span class="row-temp">${deg(live.room_temperature)}</span>
+        <ha-icon class="chev" icon="${open ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>
+      </button>
+      ${open ? this._renderZoneEditor(z.id) : ""}
+    </div>`;
   }
 
-  _renderZoneCard(key) {
+  _renderZoneEditor(key) {
     const zone = key === "new" ? null : this._zone(key);
     const d = this._zoneDrafts[key] || zone || NEW_ZONE;
     const dirty = this._zoneDirty(key);
@@ -450,14 +751,12 @@ class ClimateManagerPanel extends HTMLElement {
     const sel = (label, field, help = "") => this._field(label, `<div class="sel" data-selector="${key}|${field}"></div>`, help);
     const stepper = (label, f, step, unit, min, max, digits, help = "") =>
       this._field(label, this._stepper(`zone:${key}:${f}`, Number(d[f] ?? NEW_ZONE[f]), { step, unit, min, max, digits }), help);
-    const right = zone ? `<span class="head-meta"><b>${deg(live.room_temperature)}</b>${live.active_profile_name ? ` · ${esc(live.active_profile_name)}` : ""}</span>` : "";
-    return `<div class="card ${focus ? "focus" : ""}" data-zone-card="${key}">
-      ${this._cardHead("mdi:floor-plan", zone ? esc(zoneName(zone)) : "Nouvelle zone", right)}
+    void live; void focus;
+    return `<div class="editor" data-zone-card="${key}">
       <div class="group">
         ${this._field("Nom", `<input class="text" data-zone-text="${key}|name" value="${esc(d.name)}" maxlength="40" placeholder="Salon, Étage…">`)}
-        ${sel("Climatisation", "climate_entity")}
         ${sel("Température", "temperature_sensors", "La zone prend la moyenne de ces capteurs.")}
-        ${sel("Fenêtres", "window_sensors", "Une fenêtre ouverte arrête la climatisation.")}
+        ${sel("Fenêtres", "window_sensors", "Une fenêtre ouverte arrête le chauffage ou le froid de la zone.")}
       </div>
       <details class="group advanced" ${key === "new" ? "open" : ""}>
         <summary>Réglages avancés</summary>
@@ -469,10 +768,10 @@ class ClimateManagerPanel extends HTMLElement {
         ${stepper("Gain minimum en froid", "anomaly_cool_gain_per_hour", 0.1, "°C/h", 0, 5, 1)}
         ${sel("Alerte envoyée à", "anomaly_notification_service")}
       </details>
-      <div class="card-foot">
-        ${zone ? `<button class="btn plain danger" data-delete-zone="${key}"><ha-icon icon="mdi:delete-outline"></ha-icon>Supprimer la zone</button>` : ""}
+      <div class="editor-foot">
+        ${zone ? `<button class="btn plain danger" data-delete-zone="${key}"><ha-icon icon="mdi:delete-outline"></ha-icon>Supprimer</button>` : ""}
         <span class="spacer"></span>
-        ${dirty ? `<button class="btn plain" data-cancel-zone="${key}">Annuler</button>` : ""}
+        <button class="btn plain" data-cancel-zone="${key}">${dirty && zone ? "Annuler" : "Fermer"}</button>
         <button class="btn accent" data-primary data-save-zone="${key}" data-disabled="${dirty ? 0 : 1}" ${dirty && !this._busy ? "" : "disabled"}>${zone ? "Enregistrer" : "Créer la zone"}</button>
       </div>
     </div>`;
@@ -481,7 +780,6 @@ class ClimateManagerPanel extends HTMLElement {
   _zoneSelector(field) {
     const notify = Object.keys(this._hass.services?.notify || {}).sort().map((s) => ({ value: `notify.${s}`, label: `notify.${s}` }));
     return {
-      climate_entity: { entity: { filter: { domain: "climate" } } },
       temperature_sensors: { entity: { multiple: true, filter: { domain: "sensor", device_class: "temperature" } } },
       window_sensors: { entity: { multiple: true, filter: { domain: "binary_sensor", device_class: ["window", "opening", "door"] } } },
       consumption_sensor_heat: { entity: { filter: { domain: "sensor", device_class: "energy" } } },
@@ -496,10 +794,9 @@ class ClimateManagerPanel extends HTMLElement {
     zone.name = String(zone.name || "").trim();
     zone.temperature_sensors = list(zone.temperature_sensors); zone.window_sensors = list(zone.window_sensors);
     if (!zone.name) return this._toast("Donne un nom à la zone.");
-    if (!zone.climate_entity) return this._toast("Choisis la climatisation de la zone.");
     if (!zone.temperature_sensors.length) return this._toast("Ajoute au moins un capteur de température.");
     const ok = await this._ws({ type: "climate_manager/zone/save", zone_id: key === "new" ? null : key, zone }, key === "new" ? "Zone créée" : "Zone enregistrée");
-    if (ok) { delete this._zoneDrafts[key]; this._render(); }
+    if (ok) { delete this._zoneDrafts[key]; this._zoneOpen = null; this._render(); }
   }
 
   /* ---------------------------------------------------------------- house */
@@ -562,7 +859,10 @@ class ClimateManagerPanel extends HTMLElement {
       const [key, field] = host.dataset.selector.split("|");
       const el = document.createElement("ha-selector");
       el.hass = this._hass;
-      if (key === "house") {
+      if (key === "eq") {
+        el.selector = this._eqSelector(field);
+        el.value = this._eqEdit[field] || "";
+      } else if (key === "house") {
         el.selector = { entity: { filter: ["alarm_control_panel", "person", "group", "binary_sensor", "input_boolean", "device_tracker"].map((domain) => ({ domain })) } };
         el.value = this._houseState().entity || "";
       } else {
@@ -572,7 +872,10 @@ class ClimateManagerPanel extends HTMLElement {
       }
       el.addEventListener("value-changed", (ev) => {
         const value = ev.detail.value;
-        if (key === "house") {
+        if (key === "eq") {
+          this._eqEdit[field] = value || null;
+          if (field === "entity") { this._eqEdit.on_option = null; this._eqEdit.off_option = null; if (!this._eqEdit.name && value) this._eqEdit.name = this._name(value); }
+        } else if (key === "house") {
           const known = KNOWN_STATES[value ? value.split(".")[0] : ""] || [];
           this._houseDraft = { entity: value || null, away: known.filter((s) => AWAY_HINTS.includes(s)), home: known.filter((s) => !AWAY_HINTS.includes(s) && s !== "off") };
         } else {
@@ -590,12 +893,54 @@ class ClimateManagerPanel extends HTMLElement {
 
     on("[data-tab]", (b) => {
       this._tab = b.dataset.tab; this._focusZone = null;
-      if (this._tab === "zones" && !this._settings?.zones.length) this._zoneDraft("new");
+      this._eqEdit = null; this._modeEdit = null;
+      if (this._tab === "installation" && !this._settings?.zones.length) { this._zoneDraft("new"); this._zoneOpen = "new"; }
       const url = new URL(window.location.href); url.searchParams.set("tab", this._tab); url.searchParams.delete("zone");
       history.replaceState(null, "", url); this._render();
     });
     on("[data-view-season]", (b) => { this._season = b.dataset.viewSeason; this._edit = null; this._render(); });
-    on("[data-set-season]", (b) => this._ws({ type: "climate_manager/season/set", season: b.dataset.setSeason }, `Programme ${SEASONS[b.dataset.setSeason].label.toLowerCase()} en service`));
+    on("[data-set-mode]", (b) => {
+      const id = b.dataset.setMode || null;
+      const m = this._settings.modes.find((x) => x.id === id);
+      this._ws({ type: "climate_manager/mode/set", mode_id: id }, m ? `Mode « ${m.name} » en service` : "Arrêt : rien ne démarre seul");
+    });
+    on("[data-edit-eq]", (b) => this._openEq(b.dataset.editEq));
+    on("[data-add-eq]", () => this._openEq(null));
+    on("[data-cancel-eq]", () => { this._eqEdit = null; this._render(); });
+    on("[data-save-eq]", () => this._saveEq());
+    on("[data-delete-eq]", () => {
+      if (!confirm(`Supprimer « ${this._eqEdit.name} » ? Il est aussi retiré des modes.`)) return;
+      this._ws({ type: "climate_manager/equipment/delete", equipment_id: this._eqEdit.id }, "Équipement supprimé").then((ok) => { if (ok) { this._eqEdit = null; this._render(); } });
+    });
+    on("[data-eq-text]", (i) => { this._eqEdit[i.dataset.eqText] = i.value; }, "input");
+    on("[data-toggle-cover]", (b) => { const [eq, zone] = b.dataset.toggleCover.split("|"); this._toggleCover(eq, zone); });
+    on("[data-edit-mode]", (b) => this._openMode(b.dataset.editMode));
+    on("[data-add-mode]", () => this._openMode(null));
+    on("[data-cancel-mode]", () => { this._modeEdit = null; this._render(); });
+    on("[data-save-mode]", () => this._saveMode());
+    on("[data-move-mode]", (b) => this._moveMode(Number(b.dataset.moveMode)));
+    on("[data-delete-mode]", () => {
+      if (!confirm(`Supprimer le mode « ${this._modeEdit.name} » ?`)) return;
+      this._ws({ type: "climate_manager/mode/delete", mode_id: this._modeEdit.id }, "Mode supprimé").then((ok) => { if (ok) { this._modeEdit = null; this._render(); } });
+    });
+    on("[data-mode-text]", (i) => { this._modeEdit[i.dataset.modeText] = i.value; }, "input");
+    on("[data-mode-eq]", (b) => {
+      const m = this._modeEdit; const id = b.dataset.modeEq;
+      m.equipments = m.equipments.includes(id) ? m.equipments.filter((x) => x !== id) : [...m.equipments, id];
+      this._render();
+    });
+    on("[data-mode-eq-move]", (b) => {
+      const [id, d] = b.dataset.modeEqMove.split("|"); const ids = this._modeEdit.equipments;
+      const i = ids.indexOf(id); const j = i + Number(d);
+      if (i < 0 || j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]]; this._render();
+    });
+    on("[data-open-zone]", (b) => {
+      const id = b.dataset.openZone;
+      if (this._tab !== "installation") this._tab = "installation";
+      this._zoneOpen = this._zoneOpen === id ? null : id; delete this._zoneDrafts[id]; this._render();
+      this.shadowRoot.querySelector(".row.open")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
     on("[data-edit-profile]", (b) => this._openEditor(this._season, b.dataset.editProfile));
     on("[data-add-profile]", (b) => this._openEditor(b.dataset.addProfile, null));
     on("[data-cancel-edit]", () => { this._edit = null; this._render(); });
@@ -617,6 +962,17 @@ class ClimateManagerPanel extends HTMLElement {
       } else if (name === "zones") {
         const ids = this._edit.zoneIds;
         this._edit.zoneIds = ids.includes(val) ? ids.filter((x) => x !== val) : [...ids, val];
+      } else if (name.startsWith("eq-")) {
+        const e = this._eqEdit;
+        if (name === "eq-kind") { e.kind = val; if (val === "heat_pump") { e.cool = true; e.heat = true; e.zones = e.zones.slice(0, 1); e.entity = e.entity?.startsWith("climate.") ? e.entity : null; } }
+        else if (name === "eq-does") { if (val === "heat") e.heat = !e.heat; else e.cool = !e.cool; }
+        else if (name === "eq-on") e.on_option = val;
+        else if (name === "eq-off") e.off_option = val;
+        else if (name === "eq-zones") e.zones = e.kind === "heat_pump" ? [val] : e.zones.includes(val) ? e.zones.filter((x) => x !== val) : [...e.zones, val];
+      } else if (name === "mode-direction") {
+        this._modeEdit.direction = val;
+      } else if (name === "mode-relation") {
+        this._modeEdit.relation = val;
       } else if (name === "house-home" || name === "house-away") {
         const d = this._houseDraft || (this._houseDraft = this._houseState());
         const kind = name === "house-home" ? "home" : "away"; const other = kind === "home" ? "away" : "home";
@@ -638,10 +994,10 @@ class ClimateManagerPanel extends HTMLElement {
     on("[data-enable]", (b) => { this._setValue(b.dataset.enable, Number(this._edit.values.target) + (SEASONS[this._edit.season].mode === "heat" ? 0.5 : -0.5)); this._render(); });
     on("[data-clear]", (b) => { this._setValue(b.dataset.clear, null); this._render(); });
 
-    on("[data-add-zone]", () => { this._zoneDraft("new"); this._render(); });
+    on("[data-add-zone]", () => { this._zoneDraft("new"); this._zoneOpen = "new"; this._render(); });
     on("[data-zone-text]", (i) => { const [key, f] = i.dataset.zoneText.split("|"); this._zoneDraft(key)[f] = i.value; this._refreshZoneButtons(key); }, "input");
     on("[data-save-zone]", (b) => this._saveZone(b.dataset.saveZone));
-    on("[data-cancel-zone]", (b) => { delete this._zoneDrafts[b.dataset.cancelZone]; this._render(); });
+    on("[data-cancel-zone]", (b) => { delete this._zoneDrafts[b.dataset.cancelZone]; this._zoneOpen = null; this._render(); });
     on("[data-delete-zone]", (b) => {
       const zone = this._zone(b.dataset.deleteZone);
       if (!confirm(`Supprimer la zone « ${zoneName(zone)} » ? Ses profils et ses entités disparaissent.`)) return;
@@ -653,10 +1009,14 @@ class ClimateManagerPanel extends HTMLElement {
   }
 
   _stepperValue(field) {
+    if (field.startsWith("eq:")) return Number(this._eqEdit[field.slice(3)] ?? 0);
+    if (field.startsWith("mode:")) return Number(this._modeEdit[field.slice(5)] ?? 0);
     if (field.startsWith("zone:")) { const [, key, f] = field.split(":"); return Number(this._zoneDraft(key)[f] ?? NEW_ZONE[f]); }
     return Number(this._edit.values[field] ?? 0);
   }
   _stepperSet(field, value) {
+    if (field.startsWith("eq:")) { this._eqEdit[field.slice(3)] = value; return; }
+    if (field.startsWith("mode:")) { this._modeEdit[field.slice(5)] = value; return; }
     if (field.startsWith("zone:")) { const [, key, f] = field.split(":"); this._zoneDraft(key)[f] = value; this._refreshZoneButtons(key); return; }
     this._setValue(field, value);
   }
@@ -810,6 +1170,67 @@ const STYLES = `
   details.advanced summary::-webkit-details-marker { display: none; }
   details.advanced summary::before { content: "›"; font-size: 18px; line-height: 1; transition: transform .15s; }
   details.advanced[open] summary::before { transform: rotate(90deg); }
+
+  .row-icon { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; flex: none; background: var(--dc-surface-strong); color: var(--dc-muted); }
+  .row-icon ha-icon { --mdc-icon-size: 20px; }
+  .row-icon.warm { background: var(--dc-warm-soft); color: var(--dc-warm); }
+  .row-icon.cool { background: var(--dc-cool-soft); color: var(--dc-cool); }
+  .row-icon.both { background: linear-gradient(135deg, var(--dc-warm-soft) 50%, var(--dc-cool-soft) 50%); color: var(--dc-fg); }
+  .row.running .row-icon:not(.warm):not(.cool) { background: var(--dc-accent); color: #fff; }
+  .row-temp { font-weight: 600; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .row-head .row-hit { flex: 1; min-width: 0; border: 0; background: transparent; font: inherit; color: inherit; text-align: left; cursor: pointer;
+    display: flex; align-items: center; gap: 14px; padding: 0; }
+  .row-head:has(.row-hit) { cursor: default; }
+  .icon-btn.flat { box-shadow: none; background: transparent; }
+  .icon-btn.ghost { visibility: hidden; }
+  .icon-btn:disabled { opacity: .3; cursor: default; }
+  .muted { color: var(--dc-muted); }
+
+  .matrix-wrap { overflow-x: auto; padding: 4px 16px 4px; }
+  .matrix { border-collapse: separate; border-spacing: 0; width: 100%; }
+  .matrix th, .matrix td { padding: 0; text-align: center; vertical-align: middle; }
+  .matrix thead th { padding-bottom: 6px; }
+  .matrix tbody tr + tr th, .matrix tbody tr + tr td { border-top: 1px solid var(--dc-hairline); }
+  .eq-head { border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px;
+    padding: 8px 6px; border-radius: 16px; width: 100%; min-width: 104px; }
+  .eq-head:hover { background: var(--dc-surface); }
+  .eq-bubble { position: relative; width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; background: var(--dc-surface-strong); }
+  .eq-head.warm .eq-bubble { background: var(--dc-warm-soft); color: var(--dc-warm); }
+  .eq-head.cool .eq-bubble { background: var(--dc-cool-soft); color: var(--dc-cool); }
+  .eq-head.both .eq-bubble { background: linear-gradient(135deg, var(--dc-warm-soft) 50%, var(--dc-cool-soft) 50%); }
+  .eq-bubble ha-icon { --mdc-icon-size: 24px; }
+  .live-dot { position: absolute; top: -3px; right: -3px; width: 12px; height: 12px; border-radius: 50%; background: var(--dc-ok); border: 2px solid var(--card-background-color, #fff); }
+  .eq-name { font-weight: 600; font-size: 14px; white-space: nowrap; }
+  .eq-sub { font-size: 12px; color: var(--dc-muted); }
+  .zone-head { text-align: left !important; width: 1%; white-space: nowrap; }
+  .zone-head button { border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; text-align: left; padding: 14px 18px 14px 6px;
+    display: flex; flex-direction: column; gap: 1px; border-radius: 12px; }
+  .zone-head button span { font-weight: 600; font-size: 15px; }
+  .zone-head small { color: var(--dc-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .cell { width: 36px; height: 36px; border-radius: 50%; border: 1.5px dashed rgba(36,40,50,.18); background: transparent; cursor: pointer;
+    display: inline-grid; place-items: center; color: #fff; transition: transform .1s, background .15s; }
+  .cell:hover { border-color: var(--dc-muted); }
+  .cell ha-icon { --mdc-icon-size: 20px; }
+  .cell.on { border: 0; }
+  .cell.on.warm { background: var(--dc-warm); }
+  .cell.on.cool { background: var(--dc-cool); }
+  .cell.on.both { background: linear-gradient(135deg, var(--dc-warm) 50%, var(--dc-cool) 50%); }
+  .cell:active { transform: scale(.92); }
+
+  .eq-lines { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+  .eq-line { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 14px; background: var(--dc-surface); }
+  .eq-line:not(.on) { background: transparent; border: 1px dashed rgba(36,40,50,.14); }
+  .eq-line:not(.on) .eq-line-main, .eq-line:not(.on) .eq-ico { opacity: .6; }
+  .eq-line .check { width: 28px; height: 28px; border-radius: 50%; border: 0; display: grid; place-items: center; cursor: pointer; flex: none;
+    background: var(--dc-surface-strong); color: var(--dc-muted); font: inherit; font-size: 13px; }
+  .eq-line.on .check { background: var(--dc-accent); color: #fff; }
+  .eq-line .check ha-icon { --mdc-icon-size: 16px; }
+  .eq-ico { --mdc-icon-size: 20px; color: var(--dc-muted); }
+  .eq-line-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .eq-line-main small { color: var(--dc-muted); font-size: 12px; }
+  .preview-line { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--dc-hairline); font-size: 14px; }
+  .preview-line:last-child { border-bottom: 0; }
+  .preview-line > span:first-child { font-weight: 600; }
 
   @media (max-width: 700px) {
     .page { padding: 12px 10px 40px; }

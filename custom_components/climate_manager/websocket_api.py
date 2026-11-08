@@ -45,6 +45,7 @@ from .const import (
     MIN_OVERRIDE_DUREE_MIN,
     ClimateSeason,
 )
+from .plant import DIRECTIONS, Equipment, EquipmentKind, OperatingMode, Plant, Relation
 from .zone import Profile, ZoneConfig
 
 _REGISTERED = "_ws_registered"
@@ -88,7 +89,7 @@ def _optional_entity(domain: str):
 ZONE_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_ZONE_NAME): vol.All(str, vol.Strip, vol.Length(min=1, max=40)),
-        vol.Required(CONF_CLIMATE_ENTITY): _entity_id("climate"),
+        vol.Optional(CONF_CLIMATE_ENTITY): _optional_entity("climate"),
         vol.Required(CONF_TEMPERATURE_SENSORS): vol.All(
             [_entity_id("sensor")], vol.Length(min=1)
         ),
@@ -127,6 +128,48 @@ PROFILE_SCHEMA = vol.Schema(
         vol.Optional("kickstart_minutes"): vol.Coerce(int),
         vol.Optional("kickstart_power"): vol.Any(None, str),
         vol.Optional("kickstart_fan_intensity"): vol.Any(None, str),
+    },
+    extra=vol.REMOVE_EXTRA,
+)
+
+
+def _any_entity(value: Any) -> str | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    if "." not in value:
+        raise vol.Invalid("expected an entity id")
+    return value
+
+
+EQUIPMENT_SCHEMA = vol.Schema(
+    {
+        vol.Optional("id"): vol.Any(None, str),
+        vol.Required("name"): vol.All(str, vol.Strip, vol.Length(min=1, max=40)),
+        vol.Required("kind"): vol.In(EquipmentKind.ALL),
+        vol.Required("entity"): _any_entity,
+        vol.Optional("zones", default=list): [str],
+        vol.Optional("heat", default=True): bool,
+        vol.Optional("cool", default=False): bool,
+        vol.Optional("on_option"): vol.Any(None, str),
+        vol.Optional("off_option"): vol.Any(None, str),
+        vol.Optional("setpoint_entity"): vol.Any(None, _any_entity),
+        vol.Optional("setpoint_offset", default=1.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=5)),
+        vol.Optional("running_entity"): vol.Any(None, _any_entity),
+    },
+    extra=vol.REMOVE_EXTRA,
+)
+
+MODE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("id"): vol.Any(None, str),
+        vol.Required("name"): vol.All(str, vol.Strip, vol.Length(min=1, max=40)),
+        vol.Required("direction"): vol.In(list(DIRECTIONS)),
+        vol.Required("relation"): vol.In(Relation.ALL),
+        vol.Optional("equipments", default=list): [str],
+        vol.Optional("boost_gap", default=1.0): vol.All(vol.Coerce(float), vol.Range(min=0.2, max=5)),
+        vol.Optional("boost_delay_min", default=20): vol.All(vol.Coerce(int), vol.Range(min=0, max=240)),
+        vol.Optional("icon"): vol.Any(None, str),
     },
     extra=vol.REMOVE_EXTRA,
 )
@@ -175,7 +218,15 @@ def _settings_payload(hass: HomeAssistant, entry: ConfigEntry, coordinator) -> d
             "active_profile_name": live.get("active_profile_name"),
         }
     seasons = {z[CONF_SEASON] for z in zones}
+    plant: Plant = coordinator.plant
+    live_plant = (coordinator.data or {}).get("plant") or {}
+    live_eq = {e["id"]: e for e in live_plant.get("equipments", [])}
+    for zone in zones:
+        zone["sources"] = (runtime.get(zone["id"], {}) or {}).get("sources", [])
     return {
+        "equipments": [{**e.to_dict(), "running": live_eq.get(e.id, {}).get("running", False)} for e in plant.equipments],
+        "modes": [m.to_dict() for m in plant.modes],
+        "active_mode": plant.active_mode,
         "entry_id": entry.entry_id,
         "house": {
             CONF_PRESENCE_ENTITY: entry.data.get(CONF_PRESENCE_ENTITY),
@@ -199,6 +250,12 @@ def async_register(hass: HomeAssistant) -> None:
         ws_save_profiles,
         ws_set_season,
         ws_save_house,
+        ws_save_equipment,
+        ws_delete_equipment,
+        ws_save_mode,
+        ws_delete_mode,
+        ws_set_mode,
+        ws_reorder_modes,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -318,7 +375,12 @@ async def ws_set_season(hass: HomeAssistant, connection, msg) -> None:
     if entry is None:
         _not_loaded(connection, msg)
         return
-    coordinator.set_house_season(msg["season"])
+    direction = "heat" if msg["season"] == ClimateSeason.WINTER else "cool"
+    mode = next((m for m in coordinator.plant.modes if m.direction == direction), None)
+    if mode is not None:
+        coordinator.set_active_mode(mode.id)
+    else:
+        coordinator.set_house_season(msg["season"])
     await coordinator.async_tick_now()
     connection.send_result(msg["id"], {})
 
@@ -347,4 +409,152 @@ async def ws_save_house(hass: HomeAssistant, connection, msg) -> None:
             else:
                 data[key] = value
     hass.config_entries.async_update_entry(entry, data=data)
+    connection.send_result(msg["id"], {})
+
+
+# === Plant: equipment and operating modes ===
+
+
+def _plant_copy(coordinator) -> Plant:
+    return Plant.from_options(coordinator.plant.to_options())
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/equipment/save", vol.Required("equipment"): dict}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_save_equipment(hass: HomeAssistant, connection, msg) -> None:
+    entry, coordinator = _entry_and_coordinator(hass)
+    if entry is None:
+        _not_loaded(connection, msg)
+        return
+    try:
+        data = EQUIPMENT_SCHEMA(msg["equipment"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_format", str(err))
+        return
+    if not data["heat"] and not data["cool"]:
+        connection.send_error(msg["id"], "invalid_format", "heat or cool required")
+        return
+    plant = _plant_copy(coordinator)
+    known_zones = set(coordinator.zones)
+    data["zones"] = [z for z in data["zones"] if z in known_zones]
+    eq = Equipment.from_dict(data)
+    if eq.kind == EquipmentKind.HEAT_PUMP:
+        # A zone has one heat pump at most: the new one replaces it there.
+        for other in plant.equipments:
+            if other.id != eq.id and other.kind == EquipmentKind.HEAT_PUMP:
+                other.zones = [z for z in other.zones if z not in eq.zones]
+    index = next((i for i, e in enumerate(plant.equipments) if e.id == eq.id), None)
+    if index is None:
+        plant.equipments.append(eq)
+    else:
+        plant.equipments[index] = eq
+    coordinator.save_plant(plant)
+    await coordinator.async_tick_now()
+    connection.send_result(msg["id"], {"equipment_id": eq.id})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/equipment/delete", vol.Required("equipment_id"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_delete_equipment(hass: HomeAssistant, connection, msg) -> None:
+    entry, coordinator = _entry_and_coordinator(hass)
+    if entry is None:
+        _not_loaded(connection, msg)
+        return
+    plant = _plant_copy(coordinator)
+    plant.equipments = [e for e in plant.equipments if e.id != msg["equipment_id"]]
+    for mode in plant.modes:
+        mode.equipments = [e for e in mode.equipments if e != msg["equipment_id"]]
+    coordinator.save_plant(plant)
+    await coordinator.async_tick_now()
+    connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/mode/save", vol.Required("mode"): dict}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_save_mode(hass: HomeAssistant, connection, msg) -> None:
+    entry, coordinator = _entry_and_coordinator(hass)
+    if entry is None:
+        _not_loaded(connection, msg)
+        return
+    try:
+        data = MODE_SCHEMA(msg["mode"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_format", str(err))
+        return
+    plant = _plant_copy(coordinator)
+    known = {e.id for e in plant.equipments}
+    data["equipments"] = [e for e in dict.fromkeys(data["equipments"]) if e in known]
+    mode = OperatingMode.from_dict(data)
+    if any(m.name.lower() == mode.name.lower() and m.id != mode.id for m in plant.modes):
+        connection.send_error(msg["id"], "invalid_format", "name already used")
+        return
+    index = next((i for i, m in enumerate(plant.modes) if m.id == mode.id), None)
+    if index is None:
+        plant.modes.append(mode)
+    else:
+        plant.modes[index] = mode
+    coordinator.save_plant(plant)
+    await coordinator.async_tick_now()
+    connection.send_result(msg["id"], {"mode_id": mode.id})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/mode/delete", vol.Required("mode_id"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_delete_mode(hass: HomeAssistant, connection, msg) -> None:
+    entry, coordinator = _entry_and_coordinator(hass)
+    if entry is None:
+        _not_loaded(connection, msg)
+        return
+    plant = _plant_copy(coordinator)
+    plant.modes = [m for m in plant.modes if m.id != msg["mode_id"]]
+    if plant.active_mode == msg["mode_id"]:
+        plant.active_mode = None
+    coordinator.save_plant(plant)
+    await coordinator.async_tick_now()
+    connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/mode/reorder", vol.Required("mode_ids"): [str]}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_reorder_modes(hass: HomeAssistant, connection, msg) -> None:
+    entry, coordinator = _entry_and_coordinator(hass)
+    if entry is None:
+        _not_loaded(connection, msg)
+        return
+    plant = _plant_copy(coordinator)
+    order = {mid: i for i, mid in enumerate(msg["mode_ids"])}
+    plant.modes.sort(key=lambda m: order.get(m.id, len(order)))
+    coordinator.save_plant(plant)
+    connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/mode/set", vol.Optional("mode_id"): vol.Any(None, str)}
+)
+@websocket_api.async_response
+async def ws_set_mode(hass: HomeAssistant, connection, msg) -> None:
+    """Put a mode in service (or none). Allowed to every user: it is daily use."""
+    entry, coordinator = _entry_and_coordinator(hass)
+    if entry is None:
+        _not_loaded(connection, msg)
+        return
+    if not coordinator.set_active_mode(msg.get("mode_id")):
+        connection.send_error(msg["id"], "not_found", "Unknown mode")
+        return
+    await coordinator.async_tick_now()
     connection.send_result(msg["id"], {})

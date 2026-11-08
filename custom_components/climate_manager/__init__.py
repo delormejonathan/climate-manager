@@ -361,7 +361,7 @@ def _register_services(hass: HomeAssistant) -> None:
         coord, zone = _find_zone(hass, call.data["zone_id"])
         if zone is None:
             return
-        clim_state = hass.states.get(zone.config.climate_entity)
+        clim_state = hass.states.get(zone.config.climate_entity) if zone.config.climate_entity else None
         clim_mode = clim_state.state if clim_state else "off"
         clim_last_changed = (
             clim_state.last_changed.timestamp()

@@ -433,7 +433,7 @@ class ZoneConfig:
 
     zone_id: str
     name: str
-    climate_entity: str
+    climate_entity: str | None
     temperature_sensors: list[str]
     window_sensors: list[str] = field(default_factory=list)
     # Optional energy accumulators (kWh total_increasing). Used to compute
@@ -474,7 +474,7 @@ class ZoneConfig:
         return cls(
             zone_id=d.get("id") or str(uuid.uuid4())[:8],
             name=d["name"],
-            climate_entity=d["climate_entity"],
+            climate_entity=d.get("climate_entity") or None,
             temperature_sensors=list(d.get("temperature_sensors", [])),
             window_sensors=list(d.get("window_sensors", [])),
             consumption_sensor_cool=d.get("consumption_sensor_cool") or None,
