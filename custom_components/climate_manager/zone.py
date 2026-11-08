@@ -300,6 +300,8 @@ class ZoneRuntimeState:
     anomaly_detection_done: bool = False
     # Historique des sessions terminées (max 20, sliding window).
     completed_sessions: list[dict[str, Any]] = field(default_factory=list)
+    # kWh of the running session, per equipment id (filled by the coordinator).
+    session_energy: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -333,6 +335,7 @@ class ZoneRuntimeState:
             "notified_sensors": list(self.notified_sensors),
             "anomaly_detection_done": self.anomaly_detection_done,
             "completed_sessions": list(self.completed_sessions),
+            "session_energy": dict(self.session_energy),
         }
 
     @classmethod
@@ -386,6 +389,10 @@ class ZoneRuntimeState:
             notified_sensors=list(data.get("notified_sensors") or []),
             anomaly_detection_done=bool(data.get("anomaly_detection_done", False)),
             completed_sessions=list(data.get("completed_sessions") or []),
+            session_energy={
+                k: float(v) for k, v in (data.get("session_energy") or {}).items()
+                if _as_optional_float(v) is not None
+            },
         )
 
 
@@ -1298,8 +1305,7 @@ class Zone:
             "delta_temperature": delta_temperature,
             "sensor_start_temperatures": dict(self.state.cycle_baseline_temps),
             "end_reason": end_reason,
-            "kwh_start": self.state.cycle_start_kwh,
-            "kwh_end": None,
+            "energy": dict(self.state.session_energy),
             "kwh_consumed": None,
         }
         self.state.completed_sessions.append(record)
@@ -1324,6 +1330,7 @@ class Zone:
         self.state.session_manual = False
         self.state.cycle_baseline_temps = {}
         self.state.anomaly_detection_done = False
+        self.state.session_energy = {}
 
     # --- helpers ---
 

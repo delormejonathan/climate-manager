@@ -113,3 +113,21 @@ def test_out_of_service_is_kept_skipped_and_left_alone():
     assert ids(plant.engaged_equipment(p, demand(), 0, available, plant.BoostMemory())) == ["hp_rdc"]
     # no order at all, not even « off »: Climate Manager leaves it alone
     assert "boiler" not in plant.central_orders(p, {"rdc": [boiler]}, {"rdc": demand()})
+
+
+
+def test_zone_counters_move_to_the_heat_pump():
+    opts = {
+        "zones": [{"id": "rdc", "climate_entity": "climate.salon",
+                   "consumption_sensor_heat": "sensor.h", "consumption_sensor_cool": "sensor.c"}],
+        "equipments": [{"id": "hp_rdc", "name": "Clim", "kind": "heat_pump", "entity": "climate.salon", "zones": ["rdc"]},
+                       {"id": "boiler", "name": "Chaudière", "kind": "central", "entity": "select.b", "zones": ["rdc"]}],
+    }
+    p = plant.Plant.from_options(opts)
+    assert p.equipment("hp_rdc").energy_sensors == ["sensor.h", "sensor.c"]
+    assert p.equipment("hp_rdc").energy == "electricity" and p.equipment("hp_rdc").energy_price == 0.20
+    assert p.equipment("boiler").energy_sensors == [] and p.equipment("boiler").energy == "gas"
+    # once saved on the equipment (even emptied), the zone no longer decides
+    opts["equipments"][0]["energy_sensors"] = []
+    assert plant.Plant.from_options(opts).equipment("hp_rdc").energy_sensors == []
+    assert plant.Plant.migrate({"zones": opts["zones"]}).equipment("hp_rdc").energy_sensors == ["sensor.h", "sensor.c"]

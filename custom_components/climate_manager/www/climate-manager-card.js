@@ -1510,6 +1510,7 @@ class DelormejClimateCard extends HTMLElement {
       ["Temp. zone", this._fmtCycleTempLine(c)],
       ["Delta zone", this._fmtCycleDelta(c)],
       ["Conso", energy.kwh || "—"],
+      ...energy.detail.map((d) => [d.label, d.value]),
       ["Coût", energy.cost || "—"],
       ["Fin", reason.label],
     ];
@@ -1625,7 +1626,8 @@ class DelormejClimateCard extends HTMLElement {
 
   _sessionEnergyMeta(c) {
     const kwhNum = this._num(c.kwh_consumed);
-    const kwh = Number.isFinite(kwhNum) ? `${kwhNum.toFixed(2)} kWh` : null;
+    const fmt = (n) => `${Number(n).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kWh`;
+    const kwh = Number.isFinite(kwhNum) ? fmt(kwhNum) : null;
     const storedCost = this._num(c.cost_eur ?? c.eur_cost ?? c.cost);
     const price = this._num(c.price_eur_per_kwh) ?? this._electricityPrice;
     const costNum = Number.isFinite(storedCost)
@@ -1634,10 +1636,18 @@ class DelormejClimateCard extends HTMLElement {
     const cost = Number.isFinite(costNum)
       ? `${costNum.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
       : null;
+    // Per equipment (0.28+): « Gaz · Chaudière », « Électricité · Clim RDC ».
+    const detail = (c.energy_detail || []).length > 1 ? c.energy_detail.map((d) => ({
+      label: `${d.energy === "gas" ? "Gaz" : "Électricité"} · ${this._escapeHTML(d.name)}`,
+      value: fmt(d.kwh),
+    })) : [];
+    const kinds = new Set((c.energy_detail || []).filter((d) => d.kwh > 0).map((d) => d.energy));
+    const tag = kinds.size === 1 ? (kinds.has("gas") ? " gaz" : "") : "";
     return {
-      kwh,
+      kwh: kwh && tag ? `${kwh}${tag}` : kwh,
       cost,
-      label: [kwh, cost].filter(Boolean).join(" · ") || "Conso —",
+      detail,
+      label: [kwh && tag ? `${kwh}${tag}` : kwh, cost].filter(Boolean).join(" · ") || "Conso —",
     };
   }
 
@@ -1657,7 +1667,8 @@ class DelormejClimateCard extends HTMLElement {
   }
 
   _cycleDataQualityNote(c, energy) {
-    if (!energy.kwh) return "Conso indisponible : le compteur kWh de début ou de fin manque pour cette ancienne session.";
+    if (!energy.kwh) return "Conso indisponible : aucun compteur d'énergie n'a remonté de valeur pour cette session.";
+    if (c.energy_detail) return "Coût estimé avec le tarif de chaque appareil (Climat > Installation).";
     if (!energy.cost) return "Coût indisponible : tarif €/kWh non configuré.";
     return `Coût estimé avec ${((this._num(c.price_eur_per_kwh) ?? this._electricityPrice) || 0).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €/kWh.`;
   }

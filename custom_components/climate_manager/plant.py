@@ -56,6 +56,16 @@ DEFAULT_BOOST_DELAY_MIN = 20
 DEFAULT_SETPOINT_OFFSET = 1.0
 
 
+class Energy:
+    ELECTRICITY = "electricity"
+    GAS = "gas"
+    ALL = (ELECTRICITY, GAS)
+
+
+# €/kWh, shown pre-filled in the editor: the user sets his own.
+DEFAULT_ENERGY_PRICE = {Energy.ELECTRICITY: 0.20, Energy.GAS: 0.11}
+
+
 def new_id() -> str:
     return uuid.uuid4().hex[:8]
 
@@ -78,6 +88,11 @@ class Equipment:
     # « En service »: off means Climate Manager never starts it (the mode falls
     # back on the next equipment) and leaves it alone otherwise.
     enabled: bool = True
+    # Consumption: kWh counters (total_increasing, summed: a clim often has one
+    # for heating and one for cooling), what it burns and its price.
+    energy_sensors: list[str] = field(default_factory=list)
+    energy: str = Energy.ELECTRICITY
+    energy_price: float = DEFAULT_ENERGY_PRICE[Energy.ELECTRICITY]
 
     def supports(self, direction: str) -> bool:
         return self.heat if direction == HEAT else self.cool
@@ -102,6 +117,10 @@ class Equipment:
             setpoint_offset=float(d.get("setpoint_offset", DEFAULT_SETPOINT_OFFSET)),
             running_entity=d.get("running_entity") or None,
             enabled=bool(d.get("enabled", True)),
+            energy_sensors=[s for s in d.get("energy_sensors") or [] if s],
+            energy=(energy := d.get("energy") if d.get("energy") in Energy.ALL
+                    else Energy.GAS if kind == EquipmentKind.CENTRAL else Energy.ELECTRICITY),
+            energy_price=float(d["energy_price"]) if d.get("energy_price") is not None else DEFAULT_ENERGY_PRICE[energy],
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -119,6 +138,9 @@ class Equipment:
             "setpoint_offset": self.setpoint_offset,
             "running_entity": self.running_entity,
             "enabled": self.enabled,
+            "energy_sensors": list(self.energy_sensors),
+            "energy": self.energy,
+            "energy_price": self.energy_price,
         }
 
 
@@ -206,6 +228,10 @@ class Plant:
         )
         if plant.active_mode and plant.mode(plant.active_mode) is None:
             plant.active_mode = None
+        raw = {e.get("id"): e for e in options.get("equipments") or []}
+        for eq in plant.equipments:
+            if "energy_sensors" not in raw.get(eq.id, {}):
+                eq.energy_sensors = zone_counters(options, eq)
         return plant
 
     def to_options(self) -> dict[str, Any]:
@@ -228,6 +254,7 @@ class Plant:
                 zones=[z["id"]],
                 heat=True,
                 cool=True,
+                energy_sensors=zone_counters(options, None, z),
             )
             for z in zones
             if z.get("id") and z.get("climate_entity")
@@ -340,3 +367,15 @@ def central_orders(
             )
         orders[eq.id] = CentralOrder(on=True, direction=direction, setpoint=setpoint, zones=zones)
     return orders
+
+
+def zone_counters(options: dict[str, Any], eq: Equipment | None, zone: dict[str, Any] | None = None) -> list[str]:
+    """Counters set on the zone before they moved to the equipment (heat pumps only)."""
+    if zone is None:
+        if eq is None or eq.kind != EquipmentKind.HEAT_PUMP or not eq.zones:
+            return []
+        zone = next((z for z in options.get("zones") or [] if z.get("id") == eq.zones[0]), None)
+        if zone is None:
+            return []
+    out = [zone.get("consumption_sensor_heat"), zone.get("consumption_sensor_cool")]
+    return [s for i, s in enumerate(out) if s and s not in out[:i]]

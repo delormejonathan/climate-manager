@@ -111,36 +111,63 @@ async def test_sensor_returning_late_without_history_is_not_seeded(monkeypatch) 
     assert zone.state.cycle_baseline_temps == {}
 
 
-def test_session_kwh_closed_when_history_is_full() -> None:
-    """History full: append drops the oldest, the count stays 20, the end reading must still be taken."""
-    old = [{"session_mode": "heat", "kwh_start": float(i), "kwh_end": float(i)} for i in range(20)]
-    new = {"session_mode": "heat", "kwh_start": 58.2, "kwh_end": None, "kwh_consumed": None}
-    zone = SimpleNamespace(
-        config=SimpleNamespace(consumption_sensor_heat="sensor.heat", consumption_sensor_cool=None, profiles=[]),
-        state=SimpleNamespace(completed_sessions=[*old[1:], new]),
-    )
-    coordinator = object.__new__(DelormejClimateCoordinator)
-    coordinator.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: SimpleNamespace(state="59.0")))
-    new["end_ts"] = 1000.0
-    DelormejClimateCoordinator._maybe_close_last_session_kwh(coordinator, zone, old[-1])
-    assert new["kwh_end"] == 59.0
-    assert new["kwh_consumed"] == pytest.approx(0.8)
-    # nothing new this tick: untouched
-    new["kwh_end"] = None
-    DelormejClimateCoordinator._maybe_close_last_session_kwh(coordinator, zone, new)
-    assert new["kwh_end"] is None
+
+def _plant(*eqs):
+    from custom_components.climate_manager import plant
+    return plant.Plant(equipments=[plant.Equipment.from_dict(e) for e in eqs], modes=[], active_mode=None)
 
 
-def test_session_kwh_settles_after_the_counter_reported() -> None:
-    """Hourly counters: the end reading is taken again an hour later (or at the next session)."""
-    s1 = {"session_mode": "heat", "end_ts": 1000.0, "kwh_start": 10.0, "kwh_end": 10.0, "kwh_consumed": 0.0, "kwh_settle_ts": 1000.0 + 3900}
-    zone = SimpleNamespace(
-        config=SimpleNamespace(consumption_sensor_heat="sensor.heat", consumption_sensor_cool=None),
-        state=SimpleNamespace(completed_sessions=[s1], state="idle", session_target=None, cycle_start_kwh=None),
-    )
+def test_session_energy_closed_even_when_history_is_full() -> None:
+    """History full (count stays 20) or cancelled outside a tick: the session still gets its totals."""
+    old = [{"session_mode": "heat", "kwh_consumed": 0.1} for _ in range(20)]
+    new = {"session_mode": "heat", "end_ts": 1000.0, "energy": {"boiler": 2.0, "hp": 0.5}, "kwh_consumed": None}
+    zone = SimpleNamespace(state=SimpleNamespace(completed_sessions=[*old[1:], new]))
     coordinator = object.__new__(DelormejClimateCoordinator)
-    coordinator.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: SimpleNamespace(state="10.7")))
-    DelormejClimateCoordinator._settle_session_kwh(coordinator, zone, 2000.0)
-    assert s1["kwh_consumed"] == 0.0 and "kwh_settle_ts" in s1  # too early
-    DelormejClimateCoordinator._settle_session_kwh(coordinator, zone, 5000.0)
-    assert s1["kwh_consumed"] == pytest.approx(0.7) and "kwh_settle_ts" not in s1 and s1["kwh_settled"]
+    coordinator.plant = _plant(
+        {"id": "boiler", "name": "Chaudière", "kind": "central", "entity": "select.b", "energy_price": 0.1},
+        {"id": "hp", "name": "Clim", "kind": "heat_pump", "entity": "climate.c"},
+    )
+    coordinator._zones = {"z": zone}
+    coordinator._energy_last = {}
+    DelormejClimateCoordinator._account_energy(coordinator, 1100.0)
+    assert new["kwh_consumed"] == pytest.approx(2.5)
+    assert new["cost_eur"] == pytest.approx(2.0 * 0.1 + 0.5 * 0.2)
+    assert [d["energy"] for d in new["energy_detail"]] == ["gas", "electricity"]
+    assert new["energy_until_ts"] > 1000.0
+
+
+def test_energy_shared_between_sessions_then_late_hour_goes_to_the_ended_one() -> None:
+    """The boiler serves two zones: shared. Its hourly counter reporting after the end still counts."""
+    from custom_components.climate_manager.const import ZoneState
+    coordinator = object.__new__(DelormejClimateCoordinator)
+    coordinator.plant = _plant({"id": "boiler", "name": "Chaudière", "kind": "central", "entity": "select.b",
+                                "zones": ["a", "b"], "energy_sensors": ["sensor.gas"]})
+    boiler = coordinator.plant.equipment("boiler")
+    reading = {"v": "100.0"}
+    coordinator.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: SimpleNamespace(state=reading["v"])))
+    coordinator._energy_last = {}
+
+    def zone(zid):
+        return SimpleNamespace(config=SimpleNamespace(zone_id=zid), state=SimpleNamespace(
+            state=ZoneState.RUNNING, session_target=20.0, session_energy={}, completed_sessions=[]))
+    a, b = zone("a"), zone("b")
+    coordinator._zones = {"a": a, "b": b}
+    coordinator._engaged = {"a": [boiler], "b": [boiler]}
+    DelormejClimateCoordinator._account_energy(coordinator, 0.0)  # first reading: baseline
+    reading["v"] = "103.0"
+    DelormejClimateCoordinator._account_energy(coordinator, 30.0)
+    assert a.state.session_energy == {"boiler": 1.5} and b.state.session_energy == {"boiler": 1.5}
+    # a ends; b too: nobody served, the counter reports its last hour 20 min later
+    for z in (a, b):
+        z.state.state = ZoneState.IDLE
+        z.state.completed_sessions.append({"energy": {**z.state.session_energy, "hp": 0.0}, "end_ts": 60.0})
+    coordinator._engaged = {}
+    reading["v"] = "104.0"
+    DelormejClimateCoordinator._account_energy(coordinator, 1260.0)
+    assert a.state.completed_sessions[-1]["kwh_consumed"] == pytest.approx(2.0)
+    # a clim served but never ran: it does not get the late hour
+    assert "hp" not in a.state.completed_sessions[-1]["energy"]
+    # too late: no longer counted
+    reading["v"] = "110.0"
+    DelormejClimateCoordinator._account_energy(coordinator, 9999.0)
+    assert a.state.completed_sessions[-1]["kwh_consumed"] == pytest.approx(2.0)

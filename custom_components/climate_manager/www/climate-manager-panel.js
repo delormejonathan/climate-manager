@@ -27,7 +27,10 @@ const KINDS = {
 const NEW_EQUIPMENT = {
   id: null, name: "", kind: "central", entity: null, zones: [], heat: true, cool: false,
   on_option: null, off_option: null, setpoint_entity: null, setpoint_offset: 1, running_entity: null,
+  energy_sensors: [], energy: "gas", energy_price: 0.11,
 };
+const ENERGIES = [["electricity", "Électricité"], ["gas", "Gaz"]];
+const DEFAULT_PRICE = { electricity: 0.2, gas: 0.11 };
 const NEW_MODE = { id: null, name: "", direction: "heat", relation: "exclusive", equipments: [], boost_gap: 1, boost_delay_min: 20, icon: null };
 const TABS = [["installation", "mdi:home-lightning-bolt-outline", "Installation"], ["modes", "mdi:tune-variant", "Modes"], ["programme", "mdi:calendar-clock", "Programme"], ["maison", "mdi:home-account", "Maison"]];
 const POWER = [["doux", "Doux"], ["normal", "Normal"], ["agressif", "Fort"]];
@@ -549,6 +552,12 @@ class ClimateManagerPanel extends HTMLElement {
           ${this._field("Arrêt", this._choice("eq-off", options.map((o) => [o, o]), e.off_option))}` : ""}
         ${this._field("Zones", this._choice("eq-zones", zones.map((z) => [z.id, zoneName(z)]), e.zones, { multi: true }), central ? "Il tourne tant qu'une de ces zones le demande." : "Une climatisation dessert une seule zone.")}
       </div>
+      <div class="group">
+        <div class="group-title">Consommation</div>
+        ${this._field("Compteurs", `<div class="sel" data-selector="eq|energy_sensors"></div>`, central ? "Compteur d'énergie de la chaudière (kWh), par exemple celui que donne l'eBUS." : "Compteurs d'énergie de la climatisation (kWh) ; s'il y en a un pour le chaud et un pour le froid, mets les deux.")}
+        ${this._field("Énergie", this._choice("eq-energy", ENERGIES, e.energy || (central ? "gas" : "electricity")))}
+        ${this._field("Tarif", this._stepper("eq:energy_price", Number(e.energy_price ?? DEFAULT_PRICE[e.energy] ?? 0.2), { step: 0.005, min: 0, max: 2, unit: "€/kWh", digits: 3 }), "Sert à estimer le coût de chaque session.")}
+      </div>
       ${central ? `<details class="group advanced" ${e.setpoint_entity || e.running_entity ? "open" : ""}>
         <summary>Réglages avancés</summary>
         ${this._field("Consigne", `<div class="sel" data-selector="eq|setpoint_entity"></div>`, "Facultatif : reçoit la température la plus haute demandée par ses zones.")}
@@ -571,6 +580,7 @@ class ClimateManagerPanel extends HTMLElement {
         ? { entity: { filter: ["select", "input_select", "switch", "input_boolean", "climate", "water_heater"].map((domain) => ({ domain })) } }
         : { entity: { filter: { domain: "climate" } } };
     }
+    if (field === "energy_sensors") return { entity: { multiple: true, filter: { domain: "sensor", device_class: "energy" } } };
     if (field === "setpoint_entity") return { entity: { filter: [{ domain: "number" }, { domain: "input_number" }] } };
     return { entity: { filter: [{ domain: "binary_sensor" }, { domain: "switch" }, { domain: "input_boolean" }] } };
   }
@@ -768,8 +778,6 @@ class ClimateManagerPanel extends HTMLElement {
       </div>
       <details class="group advanced" ${key === "new" ? "open" : ""}>
         <summary>Réglages avancés</summary>
-        ${sel("Compteur chauffage", "consumption_sensor_heat", "Sert à calculer la consommation de chaque session.")}
-        ${sel("Compteur froid", "consumption_sensor_cool")}
         ${stepper("Reprise auto après", "override_duree_min", 5, "min", 5, 240, 0, "Quand quelqu'un a réglé la climatisation à la main.")}
         ${stepper("Contrôle d'efficacité après", "anomaly_delay_min", 5, "min", 15, 180, 0, "Vérifie ensuite que la pièce gagne bien en température.")}
         ${stepper("Gain minimum en chauffage", "anomaly_heat_gain_per_hour", 0.1, "°C/h", 0, 5, 1)}
@@ -869,7 +877,7 @@ class ClimateManagerPanel extends HTMLElement {
       el.hass = this._hass;
       if (key === "eq") {
         el.selector = this._eqSelector(field);
-        el.value = this._eqEdit[field] || "";
+        el.value = this._eqEdit[field] || (field === "energy_sensors" ? [] : "");
       } else if (key === "house") {
         el.selector = { entity: { filter: ["alarm_control_panel", "person", "group", "binary_sensor", "input_boolean", "device_tracker"].map((domain) => ({ domain })) } };
         el.value = this._houseState().entity || "";
@@ -881,7 +889,7 @@ class ClimateManagerPanel extends HTMLElement {
       el.addEventListener("value-changed", (ev) => {
         const value = ev.detail.value;
         if (key === "eq") {
-          this._eqEdit[field] = value || null;
+          this._eqEdit[field] = field === "energy_sensors" ? list(value) : value || null;
           if (field === "entity") { this._eqEdit.on_option = null; this._eqEdit.off_option = null; if (!this._eqEdit.name && value) this._eqEdit.name = this._name(value); }
         } else if (key === "house") {
           const known = KNOWN_STATES[value ? value.split(".")[0] : ""] || [];
@@ -978,9 +986,17 @@ class ClimateManagerPanel extends HTMLElement {
         this._edit.zoneIds = ids.includes(val) ? ids.filter((x) => x !== val) : [...ids, val];
       } else if (name.startsWith("eq-")) {
         const e = this._eqEdit;
-        if (name === "eq-kind") { e.kind = val; if (val === "heat_pump") { e.cool = true; e.heat = true; e.zones = e.zones.slice(0, 1); e.entity = e.entity?.startsWith("climate.") ? e.entity : null; } }
+        if (name === "eq-kind") {
+          e.kind = val;
+          if (val === "heat_pump") { e.cool = true; e.heat = true; e.zones = e.zones.slice(0, 1); e.entity = e.entity?.startsWith("climate.") ? e.entity : null; }
+          if (!e.id && !(e.energy_sensors || []).length) { e.energy = val === "heat_pump" ? "electricity" : "gas"; e.energy_price = DEFAULT_PRICE[e.energy]; }
+        }
         else if (name === "eq-does") { if (val === "heat") e.heat = !e.heat; else e.cool = !e.cool; }
         else if (name === "eq-on") e.on_option = val;
+        else if (name === "eq-energy") {
+          if (Number(e.energy_price) === DEFAULT_PRICE[e.energy] || e.energy_price == null) e.energy_price = DEFAULT_PRICE[val];
+          e.energy = val;
+        }
         else if (name === "eq-off") e.off_option = val;
         else if (name === "eq-zones") e.zones = e.kind === "heat_pump" ? [val] : e.zones.includes(val) ? e.zones.filter((x) => x !== val) : [...e.zones, val];
       } else if (name === "mode-direction") {

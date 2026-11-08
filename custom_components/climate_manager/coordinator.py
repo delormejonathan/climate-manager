@@ -96,6 +96,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self.equipment_ids = {e.id for e in self.plant.equipments}
         self._boost: dict[str, BoostMemory] = {}
         self._engaged: dict[str, list[Equipment]] = {}
+        self._energy_last: dict[str, float] = {}  # last counter total per equipment
         self._central: dict[str, CentralOrder] = {}
         self._central_sent: dict[tuple[str, str], tuple[Any, float]] = {}
         self._rebuild_zones()
@@ -300,13 +301,10 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         for zone in self._zones.values():
             sensor_temps = self._read_sensor_temps(zone)
             inputs = self._gather_inputs(zone, sensor_temps)
-            self._maybe_seed_cycle_start_kwh(zone, inputs)
             prev_state = zone.state.state
             prev_last = zone.state.completed_sessions[-1] if zone.state.completed_sessions else None
             commands = zone.tick(inputs)
-            self._maybe_seed_entered_session_kwh(zone, prev_state)
             self._maybe_close_last_session_kwh(zone, prev_last, sensor_temps)
-            self._settle_session_kwh(zone, inputs.now_ts)
             await self._maybe_seed_sensor_baselines(zone, prev_state, inputs, sensor_temps)
             await self._maybe_detect_temperature_anomalies(zone, inputs, sensor_temps)
             self._maybe_clear_sensor_baselines(zone, prev_state)
@@ -315,6 +313,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             commands = self._dispatch_heat_pump(zone, demand, inputs, commands)
             for cmd in commands:
                 await self._apply_command(cmd)
+        self._account_energy(utc_now_ts())
         self._central = central_orders(self.plant, self._engaged, demands)
         for eq_id, order in self._central.items():
             await self._drive_central(self.plant.equipment(eq_id), order)
@@ -1083,17 +1082,20 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             blocking=False,
         )
 
-    # === Session kWh tracking ===
-    # The clims' energy counters report about once an hour: a reading taken when
-    # a session ends misses its last hour. The end reading is therefore taken
-    # again KWH_SETTLE_S after the end (or at the next session's start if sooner).
+    # === Session energy ===
+    # Each equipment has its own kWh counters (clim: electricity, boiler: gas).
+    # Every tick, what its counters gained is shared between the sessions it is
+    # serving. Counters often report once an hour: what comes in up to
+    # KWH_SETTLE_S after a session ended, while the equipment serves nobody,
+    # still belongs to that session.
 
-    def _consumption_sensor_for(self, zone: Zone, active_profile: Profile | None) -> str | None:
-        if active_profile is None:
-            return None
-        if active_profile.mode == ProfileMode.COOL:
+    def _session_consumption_sensor(self, zone: Zone, mode: str | None) -> str | None:
+        """Pre-0.28 zone counters, only used to recover old sessions."""
+        if mode == ProfileMode.COOL:
             return zone.config.consumption_sensor_cool
-        return zone.config.consumption_sensor_heat
+        if mode == ProfileMode.HEAT:
+            return zone.config.consumption_sensor_heat
+        return None
 
     def _read_kwh(self, entity_id: str | None) -> float | None:
         if not entity_id:
@@ -1103,32 +1105,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             return None
         return _as_float(st.state)
 
-    def _maybe_seed_cycle_start_kwh(self, zone: Zone, inputs: ZoneInputs) -> None:
-        """Snapshot le compteur kWh juste avant qu'on entre en RUNNING."""
-        if zone.state.state != ZoneState.IDLE:
-            return
-        if inputs.active_profile is None or inputs.room_temperature is None:
-            return
-        # On ne snapshot que si le tick va probablement transitionner.
-        p = inputs.active_profile
-        will_start = (
-            (p.mode == ProfileMode.COOL and inputs.room_temperature >= p.seuil_demarrage)
-            or (p.mode == ProfileMode.HEAT and inputs.room_temperature <= p.seuil_demarrage)
-        )
-        if not will_start:
-            return
-        sensor = self._consumption_sensor_for(zone, p)
-        kwh = self._read_kwh(sensor)
-        # On l'écrit ; sera utilisé par Zone._finalize_session.
-        zone.state.cycle_start_kwh = kwh
-
-    def _session_consumption_sensor(self, zone: Zone, mode: str | None) -> str | None:
-        if mode == ProfileMode.COOL:
-            return zone.config.consumption_sensor_cool
-        if mode == ProfileMode.HEAT:
-            return zone.config.consumption_sensor_heat
-        return None
-
     def _has_session_runtime(self, zone: Zone) -> bool:
         return zone.state.state in (
             ZoneState.RUNNING,
@@ -1136,24 +1112,75 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             ZoneState.MANUAL_OVERRIDE_FREE,
         ) and zone.state.session_target is not None
 
-    def _maybe_seed_entered_session_kwh(self, zone: Zone, prev_state: str) -> None:
-        """Snapshot kWh when Zone.tick actually creates/adopts a session.
+    def _energy_total(self, eq: Equipment) -> float | None:
+        values = [self._read_kwh(s) for s in eq.energy_sensors]
+        if not values or any(v is None for v in values):
+            return None  # a counter missing this tick: wait, never invent
+        return sum(values)
 
-        The older pre-tick prediction only covered automatic IDLE -> RUNNING starts.
-        Manual/adopted sessions and some edge transitions could therefore finish with
-        kwh_start missing, so the Sessions card had nothing to display.
-        """
-        was_in_session = prev_state in (
-            ZoneState.RUNNING,
-            ZoneState.MANUAL_OVERRIDE_TIMED,
-            ZoneState.MANUAL_OVERRIDE_FREE,
-        )
-        if was_in_session or not self._has_session_runtime(zone):
-            return
-        if zone.state.cycle_start_kwh is not None:
-            return
-        sensor = self._session_consumption_sensor(zone, zone.state.session_mode)
-        zone.state.cycle_start_kwh = self._read_kwh(sensor)
+    def _serves(self, eq: Equipment, zone: Zone) -> bool:
+        if not self._has_session_runtime(zone):
+            return False
+        zid = zone.config.zone_id
+        engaged = any(e.id == eq.id for e in self._engaged.get(zid, []))
+        # A clim in a session works for its zone, even under a manual override.
+        return engaged or (eq.kind == EquipmentKind.HEAT_PUMP and zid in eq.zones)
+
+    def _account_energy(self, now_ts: float) -> None:
+        # Sessions closed since the last tick (by the zone or by a cancel from
+        # the card): open their late window and compute their totals.
+        for zone in self._zones.values():
+            for rec in zone.state.completed_sessions[-3:]:
+                if "energy" in rec and "energy_until_ts" not in rec:
+                    # Only what really ran gets the late hour (not a clim on standby).
+                    rec["energy"] = {k: v for k, v in rec["energy"].items() if v > 0}
+                    rec["energy_until_ts"] = (rec.get("end_ts") or now_ts) + KWH_SETTLE_S
+                    self._energy_totals(rec)
+        for eq in self.plant.equipments:
+            if not eq.energy_sensors:
+                continue
+            serving = [z for z in self._zones.values() if self._serves(eq, z)]
+            for z in serving:
+                z.state.session_energy.setdefault(eq.id, 0.0)
+            total = self._energy_total(eq)
+            if total is None:
+                continue
+            last = self._energy_last.get(eq.id)
+            self._energy_last[eq.id] = total
+            if last is None or total <= last:
+                continue  # first reading, nothing new, or counter reset
+            delta = total - last
+            if serving:
+                for z in serving:
+                    z.state.session_energy[eq.id] += delta / len(serving)
+                continue
+            tails = [
+                rec for z in self._zones.values() for rec in z.state.completed_sessions[-3:]
+                if eq.id in (rec.get("energy") or {}) and now_ts <= (rec.get("energy_until_ts") or 0)
+            ]
+            for rec in tails:
+                rec["energy"][eq.id] = rec["energy"][eq.id] + delta / len(tails)
+                self._energy_totals(rec)
+
+    def _energy_totals(self, rec: dict[str, Any]) -> None:
+        """kWh, cost and the detail per equipment of a finished session."""
+        detail, kwh, cost = [], 0.0, 0.0
+        for eq_id, value in (rec.get("energy") or {}).items():
+            if value <= 0:
+                continue  # served but did not run (a clim while the boiler heats)
+            eq = self.plant.equipment(eq_id)
+            price = eq.energy_price if eq else None
+            detail.append({
+                "name": eq.name if eq else eq_id,
+                "energy": eq.energy if eq else None,
+                "kwh": round(value, 3),
+                "cost": round(value * price, 4) if price is not None else None,
+            })
+            kwh += value
+            cost += value * (price or 0)
+        rec["energy_detail"] = detail
+        rec["kwh_consumed"] = round(kwh, 3)
+        rec["cost_eur"] = round(cost, 4)
 
     def _maybe_close_last_session_kwh(
         self,
@@ -1172,52 +1199,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         last = completed[-1]
         if sensor_temps:
             last["sensor_end_temperatures"] = dict(sensor_temps)
-        if last.get("kwh_end") is not None:
-            return  # déjà patché
-        mode = last.get("session_mode")
-        if mode is None:
-            profile_name = last.get("profile_name")
-            for p in zone.config.profiles:
-                if p.name == profile_name:
-                    mode = p.mode
-                    break
-        sensor = self._session_consumption_sensor(zone, mode)
-        kwh_end = self._read_kwh(sensor)
-        if kwh_end is None:
-            return
-        last["kwh_end"] = kwh_end
-        last["kwh_settle_ts"] = (last.get("end_ts") or utc_now_ts()) + KWH_SETTLE_S
-        start_kwh = last.get("kwh_start")
-        if start_kwh is not None and isinstance(start_kwh, (int, float)):
-            delta = kwh_end - start_kwh
-            if delta < 0:
-                # Compteur a reset (changement d'année) — on n'invente rien.
-                delta = None
-            last["kwh_consumed"] = delta
-
-    def _settle_session_kwh(self, zone: Zone, now_ts: float) -> None:
-        """Final end reading, once the counter has reported the session's last hour."""
-        sessions = zone.state.completed_sessions
-        for i, s in enumerate(sessions):
-            settle = s.get("kwh_settle_ts")
-            if settle is None:
-                continue
-            nxt = sessions[i + 1].get("kwh_start") if i + 1 < len(sessions) else None
-            if isinstance(nxt, (int, float)):
-                end = nxt  # a new session started: its first reading closes this one
-            elif self._has_session_runtime(zone) and isinstance(zone.state.cycle_start_kwh, (int, float)):
-                end = zone.state.cycle_start_kwh
-            elif now_ts >= settle:
-                end = self._read_kwh(self._session_consumption_sensor(zone, s.get("session_mode")))
-                if end is None:
-                    continue
-            else:
-                continue
-            s.pop("kwh_settle_ts", None)
-            s["kwh_settled"] = True
-            start = s.get("kwh_start")
-            if isinstance(start, (int, float)) and end >= start:
-                s["kwh_end"], s["kwh_consumed"] = end, round(end - start, 3)
 
     async def _async_backfill_session_kwh(self) -> None:
         """Fill missing session kWh from the recorder (counter value at start/end).
@@ -1235,9 +1216,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         for zone in self._zones.values():
             for s in zone.state.completed_sessions:
                 sensor = self._session_consumption_sensor(zone, s.get("session_mode"))
-                if sensor and s.get("start_ts") and s.get("end_ts") and (
+                if sensor and s.get("start_ts") and s.get("end_ts") and "energy" not in s and (
                     s.get("kwh_consumed") is None or not s.get("kwh_settled")
-                ) and "kwh_settle_ts" not in s:
+                ):
                     todo.append((sensor, s, zone))
         _LOGGER.debug("Session kWh backfill: %d session(s) without consumption", len(todo))
         if not todo:

@@ -157,6 +157,9 @@ EQUIPMENT_SCHEMA = vol.Schema(
         vol.Optional("setpoint_offset", default=1.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=5)),
         vol.Optional("running_entity"): vol.Any(None, _any_entity),
         vol.Optional("enabled"): bool,
+        vol.Optional("energy_sensors", default=list): [_any_entity],
+        vol.Optional("energy"): vol.In(("electricity", "gas")),
+        vol.Optional("energy_price"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0, max=10))),
     },
     extra=vol.REMOVE_EXTRA,
 )
