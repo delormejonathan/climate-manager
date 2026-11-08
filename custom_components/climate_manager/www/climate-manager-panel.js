@@ -16,9 +16,9 @@ const SEASONS = {
 };
 const SEASON_OF = { heat: "winter", cool: "summer" };
 const RELATIONS = {
-  exclusive: { label: "Exclusif", icon: "mdi:numeric-1-circle-outline", help: "Un seul équipement par zone : le premier de la liste qui répond." },
-  combined: { label: "Combiné", icon: "mdi:set-all", help: "Tous les équipements de la zone tournent ensemble." },
-  additive: { label: "Additif", icon: "mdi:plus-circle-multiple-outline", help: "Le premier tourne ; les suivants s'ajoutent si la zone reste loin de sa température." },
+  exclusive: { label: "Un seul appareil", icon: "mdi:numeric-1-circle-outline", help: "Dans chaque zone, seul le premier appareil de la liste tourne (le suivant prend le relais s'il est en panne)." },
+  combined: { label: "Tous ensemble", icon: "mdi:set-all", help: "Dans chaque zone, tous les appareils de la liste tournent en même temps." },
+  additive: { label: "En appoint si besoin", icon: "mdi:plus-circle-multiple-outline", help: "Le premier appareil tourne ; les suivants viennent en plus si la zone n'arrive pas à sa température." },
 };
 const KINDS = {
   central: { label: "Central", icon: "mdi:water-boiler", help: "Marche ou arrêt, pour une ou plusieurs zones : chaudière, gainable, plancher." },
@@ -595,9 +595,13 @@ class ClimateManagerPanel extends HTMLElement {
   _modeChain(m) {
     const names = m.equipments.map((id) => this._equipment(id)?.name).filter(Boolean);
     if (!names.length) return "aucun équipement";
+    const and = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} et ${xs[xs.length - 1]}` : xs[0]);
     if (m.relation === "combined") return names.join(" + ");
-    if (m.relation === "additive") return `${names[0]}${names.length > 1 ? `, puis ${names.slice(1).join(" + ")} si besoin` : ""}`;
-    return names.length > 1 ? `${names[0]}, sinon ${names.slice(1).join(", ")}` : names[0];
+    if (m.relation === "additive") return `${names[0]}${names.length > 1 ? `, avec ${and(names.slice(1))} en appoint` : ""}`;
+    // Exclusive: a fallback only exists where two equipments serve the same zone.
+    const eqs = m.equipments.map((id) => this._equipment(id)).filter(Boolean);
+    const shared = eqs.some((e, i) => eqs.slice(i + 1).some((o) => o.zones.some((z) => e.zones.includes(z))));
+    return shared ? `${names[0]}, sinon ${names.slice(1).join(", ")}` : and(names);
   }
 
   _renderModes() {
@@ -613,7 +617,7 @@ class ClimateManagerPanel extends HTMLElement {
       </div></div>`;
     return `<div class="card">
       ${this._cardHead("mdi:tune-variant", "Modes de fonctionnement")}
-      <div class="hint">Un seul mode en service à la fois. Il décide quels équipements répondent quand une zone demande du chaud ou du froid. Change-le ici, depuis le tableau de bord ou par une automatisation (entité « Mode de fonctionnement »).</div>
+      <div class="hint">Un mode dit quels appareils ont le droit de tourner, pour chauffer ou pour refroidir (jamais les deux). Un seul est en service à la fois ; le programme, lui, dit quelle température tu veux. Change de mode ici, depuis le tableau de bord ou par une automatisation.</div>
       <div class="rows">${rows}${off}
         ${this._modeEdit && !this._modeEdit.id ? `<div class="row open"><div class="row-head static"><span class="row-icon"><ha-icon icon="mdi:plus"></ha-icon></span><span class="row-main"><span class="row-title">Nouveau mode</span></span></div>${this._renderModeEditor()}</div>`
           : '<button class="add-row" data-add-mode><ha-icon icon="mdi:plus"></ha-icon>Ajouter un mode</button>'}
@@ -630,7 +634,7 @@ class ClimateManagerPanel extends HTMLElement {
         <button class="row-hit" data-edit-mode="${m.id}">
           <span class="row-icon ${accent}"><ha-icon icon="${this._modeIcon(m)}"></ha-icon></span>
           <span class="row-main"><span class="row-title">${esc(m.name)}${isActive ? '<span class="badge">En service</span>' : ""}</span>
-            <span class="row-meta"><span><ha-icon icon="${RELATIONS[m.relation].icon}"></ha-icon>${RELATIONS[m.relation].label}</span><span>${esc(this._modeChain(m))}</span></span></span>
+            <span class="row-meta"><span><ha-icon icon="${m.direction === "cool" ? "mdi:snowflake" : "mdi:fire"}"></ha-icon>${m.direction === "cool" ? "Refroidit" : "Chauffe"}</span><span>${esc(this._modeChain(m))}</span></span></span>
         </button>
         ${isActive ? "" : `<button class="btn small" data-set-mode="${m.id}">Mettre en service</button>`}
         <button class="icon-btn flat" data-edit-mode="${m.id}" aria-label="Modifier"><ha-icon icon="${open ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon></button>
@@ -670,12 +674,12 @@ class ClimateManagerPanel extends HTMLElement {
     return `<div class="editor">
       <div class="group">
         ${this._field("Nom", `<input class="text" data-mode-text="name" value="${esc(m.name)}" maxlength="40" placeholder="Chaudière, Mi-saison, Grand froid…">`)}
-        ${this._field("Produit", this._choice("mode-direction", [["heat", "Chaud"], ["cool", "Froid"]], m.direction))}
+        ${this._field("Ce mode", this._choice("mode-direction", [["heat", "Chauffe"], ["cool", "Refroidit"]], m.direction), m.direction === "cool" ? "Il ne fait que du froid : une zone trop fraîche n'est pas chauffée." : "Il ne fait que du chaud : une zone trop chaude n'est pas refroidie.")}
         ${this._field("Équipements", `<div class="eq-lines">${chosen.map((id, i) => eqLine(this._equipment(id), i + 1)).join("")}${others.map((e) => eqLine(e, 0)).join("")}
           ${eligible.length ? "" : `<div class="f-help">Aucun équipement ne produit de ${m.direction === "cool" ? "froid" : "chaud"}.</div>`}</div>`, "Dans l'ordre : le premier passe avant les autres.")}
-        ${this._field("Ensemble", this._choice("mode-relation", Object.entries(RELATIONS).map(([k, v]) => [k, v.label]), m.relation), RELATIONS[m.relation].help)}
-        ${m.relation === "additive" ? `${this._field("S'ajoutent si", this._stepper("mode:boost_gap", Number(m.boost_gap), { step: 0.5, min: 0.5, max: 5 }), "La zone est encore à cet écart de sa température…")}
-          ${this._field("après", this._stepper("mode:boost_delay_min", Number(m.boost_delay_min), { step: 5, min: 0, max: 240, unit: "min", digits: 0 }), "…ce temps après le démarrage. Ils repartent à mi-écart.")}` : ""}
+        ${this._field("Les appareils", this._choice("mode-relation", Object.entries(RELATIONS).map(([k, v]) => [k, v.label]), m.relation), RELATIONS[m.relation].help)}
+        ${m.relation === "additive" ? `${this._field("Appoint si l'écart", this._stepper("mode:boost_gap", Number(m.boost_gap), { step: 0.5, min: 0.5, max: 5 }), "La zone est encore à cet écart de sa température…")}
+          ${this._field("au bout de", this._stepper("mode:boost_delay_min", Number(m.boost_delay_min), { step: 5, min: 0, max: 240, unit: "min", digits: 0 }), "…ce temps. L'appoint s'arrête quand l'écart est divisé par deux.")}` : ""}
       </div>
       ${zones.length ? `<div class="group"><div class="group-title">Dans chaque zone</div>${preview}</div>` : ""}
       <div class="editor-foot">
