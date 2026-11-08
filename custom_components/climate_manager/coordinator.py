@@ -461,11 +461,21 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             zone.state = ZoneRuntimeState.from_dict(zones_data.get(zid))
             # No per-zone switch any more: the house mode is the main switch.
             zone.state.mode = ZoneMode.AUTO
+        # Last counter readings survive a restart: an hourly counter that moved
+        # while HA was down still lands in its session or its late hour.
+        # Keyed by equipment and its counters: a counter added or removed in
+        # the meantime starts from a fresh reading, never a false jump.
+        energy_last = data.get("energy_last", {}) if isinstance(data, dict) else {}
+        self._energy_last = {
+            k: float(v) for k, v in (energy_last or {}).items()
+            if isinstance(v, (int, float))
+        }
         self._last_runtime_payload = self._runtime_payload()
 
     def _runtime_payload(self) -> dict[str, Any]:
         return {
-            "zones": {zid: zone.state.to_dict() for zid, zone in self._zones.items()}
+            "zones": {zid: zone.state.to_dict() for zid, zone in self._zones.items()},
+            "energy_last": dict(self._energy_last),
         }
 
     async def _save_runtime_state_if_changed(self) -> None:
@@ -1145,8 +1155,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             total = self._energy_total(eq)
             if total is None:
                 continue
-            last = self._energy_last.get(eq.id)
-            self._energy_last[eq.id] = total
+            key = eq.id + "|" + ",".join(sorted(eq.energy_sensors))
+            last = self._energy_last.get(key)
+            for stale in [k for k in self._energy_last if k.split("|", 1)[0] == eq.id and k != key]:
+                del self._energy_last[stale]
+            self._energy_last[key] = total
             if last is None or total <= last:
                 continue  # first reading, nothing new, or counter reset
             delta = total - last
