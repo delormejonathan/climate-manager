@@ -188,8 +188,6 @@ class DelormejClimateCard extends HTMLElement {
 
     // Profiles — single delegate on the list, plus "add" button
     // Profiles are read-only here: settings live in the « Climat » panel.
-    $("profiles-list").addEventListener("click", () => this._openSettings("comfort"));
-    $("profile-add").addEventListener("click", () => this._openSettings("comfort"));
 
     // Session actions
     const sessionModifyBtn = $("session-modify-btn");
@@ -909,8 +907,6 @@ class DelormejClimateCard extends HTMLElement {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  /* =================================================================== profile modal */
-
   /* =================================================================== update */
 
   _update() {
@@ -1045,9 +1041,6 @@ class DelormejClimateCard extends HTMLElement {
     } else {
       overrideRow.style.display = "none";
     }
-
-    // ─────────────────── SECTION 2: PROFILS (rendu cascade)
-    this._renderProfiles(attrs);
 
     // ─────────────────── SECTION 3: PILOTAGE
     const currentMode = get(ids.modeSelect)?.state;
@@ -1202,299 +1195,6 @@ class DelormejClimateCard extends HTMLElement {
     return { html: "", warn: false };
   }
 
-  /* =================================================================== profiles */
-
-  _renderProfiles(attrs) {
-    const list = this.querySelector('[data-bind="profiles-list"]');
-    const empty = this.querySelector('[data-bind="profiles-empty"]');
-    const profiles = Array.isArray(attrs.profiles) ? attrs.profiles : [];
-    const activeName = attrs.active_profile_name;
-    const season = attrs.season || "summer";
-    const count = attrs.profile_bank_counts?.[season] ?? profiles.length;
-    const seasonHint = this.querySelector('[data-bind="season-hint"]');
-    if (seasonHint) {
-      seasonHint.textContent = `Programme ${season === "winter" ? "hiver" : "été"} · le premier profil qui correspond s'applique`;
-    }
-
-    if (profiles.length === 0) {
-      list.innerHTML = "";
-      empty.style.display = "";
-      return;
-    }
-    empty.style.display = "none";
-
-    // Re-render only when the underlying data signature changes (avoids
-    // wiping a half-typed input on every coordinator tick).
-    const sig = JSON.stringify({ profiles, activeName, season });
-    if (list.dataset.sig === sig) return;
-    list.dataset.sig = sig;
-    list.innerHTML = "";
-
-    profiles.forEach((p, idx) => {
-      list.appendChild(this._buildProfileCard(p, idx, p.name === activeName));
-    });
-  }
-
-  _buildProfileCard(profile, idx, isActive) {
-    const card = document.createElement("div");
-    card.className = "dc-profile" + (isActive ? " dc-profile--active" : "");
-    card.dataset.idx = String(idx);
-
-    const head = document.createElement("div");
-    head.className = "dc-profile-head";
-    head.innerHTML = `
-      ${isActive ? '<span class="dc-profile-badge">ACTIF</span>' : '<span class="dc-profile-badge ghost"></span>'}
-      <span class="dc-profile-name">${this._escapeHTML(profile.name || "Sans nom")}</span>
-`;
-    card.appendChild(head);
-
-    const meta = document.createElement("div");
-    meta.className = "dc-profile-meta";
-    meta.innerHTML = `
-      <span class="primary"><ha-icon icon="${this._profileGateIcon(profile)}"></ha-icon>${this._escapeHTML(this._profileGateLabel(profile))}</span>
-      <span><ha-icon icon="mdi:snowflake"></ha-icon>${this._escapeHTML(this._profileCoolLabel(profile))}</span>
-      <span><ha-icon icon="mdi:tune-variant"></ha-icon>${this._escapeHTML(this._profileDriverLabel(profile))}</span>`;
-    card.appendChild(meta);
-    const detail = this._profileDetailLabel(profile);
-    if (detail) {
-      const more = document.createElement("div");
-      more.className = "dc-profile-detail";
-      more.textContent = detail;
-      card.appendChild(more);
-    }
-    return card;
-  }
-
-  _profileGateIcon(profile) {
-    if (profile.presence_entity) return "mdi:shield-account";
-    if (profile.active_from || profile.active_to) return "mdi:clock-outline";
-    return "mdi:infinity";
-  }
-
-  _profileGateLabel(profile) {
-    if (profile.presence_entity) {
-      const state = profile.presence_required_state;
-      const stateLabel = this._presenceStateLabel(state);
-      const entity = this._friendlyEntityName(profile.presence_entity);
-      return stateLabel ? stateLabel : entity;
-    }
-    if (profile.active_from && profile.active_to) {
-      return `${profile.active_from} → ${profile.active_to}`;
-    }
-    return "Toujours actif";
-  }
-
-  _profileCoolLabel(profile) {
-    const start = this._fmtTemp(profile.seuil_demarrage);
-    const end = this._fmtTemp(profile.target);
-    if (start === "—" && end === "—") return profile.mode === "heat" ? "Chaud —" : "Froid —";
-    if (start === "—") return `Cible ${end}°`;
-    return `${start}→${end}°`;
-  }
-
-  _profileDriverLabel(profile) {
-    const power = this._profilePowerLabel(profile.power || "normal");
-    const fan = this._profileFanLabel(profile.fan_intensity || "normal");
-    return power === fan ? power : `${power} · ${fan}`;
-  }
-
-  _profileDetailLabel(profile) {
-    const parts = [];
-    // Surface mode + time window combined with presence as secondary info.
-    parts.push(profile.mode === "heat" ? "Chauffage" : "Refroidissement");
-    if (profile.presence_entity && profile.active_from && profile.active_to) {
-      parts.push(`${profile.active_from} → ${profile.active_to}`);
-    } else if (profile.presence_entity && !(profile.active_from && profile.active_to)) {
-      parts.push(this._friendlyEntityName(profile.presence_entity));
-    }
-    return parts.join(" · ");
-  }
-
-  _friendlyEntityName(entityId) {
-    const st = this._hass?.states?.[entityId];
-    return st?.attributes?.friendly_name || entityId;
-  }
-
-  _friendlyScheduleName(entityId) {
-    const name = this._friendlyEntityName(entityId)
-      .replace(/^Delormej Climate\s*/i, "")
-      .replace(/^Climate Manager\s*[·-]?\s*/i, "");
-    return name || "Planning";
-  }
-
-  _presenceStateLabel(state) {
-    if (Array.isArray(state)) {
-      const set = [...state].map((x) => String(x).toLowerCase()).sort().join(",");
-      if (set === "armed_home,disarmed") return "Maison occupée";
-      return state.map((s) => this._presenceStateLabel(s)).join(" ou ");
-    }
-    const s = String(state || "").toLowerCase();
-    const labels = {
-      armed_away: "Maison vide",
-      armed_vacation: "Vacances",
-      armed_night: "Nuit",
-      armed_home: "Maison occupée",
-      disarmed: "Maison occupée",
-      not_home: "Absent",
-      away: "Absent",
-      home: "Présent",
-      on: "Actif",
-      off: "Inactif",
-    };
-    return labels[s] || (state ? String(state) : "Condition présence");
-  }
-
-  _profilePowerLabel(power) {
-    return ({ doux: "Doux", normal: "Normal", agressif: "Agressif" })[power] || this._capitalize(power);
-  }
-
-  _profileFanLabel(fan) {
-    return ({ doux: "Ventil. douce", normal: "Ventil. normale", fort: "Ventil. forte" })[fan] || this._capitalize(fan);
-  }
-
-  /* =================================================================== timeline */
-
-  _updateTimeline(state, attrs, get, ids) {
-    const $ = (sel) => this.querySelector(`[data-bind="${sel}"]`);
-    const block = $("timeline");
-    if (!block) return;
-
-    const active = state === "starting" || state === "running" || state === "stabilizing";
-    const startedAt = attrs.cycle_started_at;
-    if (!active || !startedAt) {
-      block.style.display = "none";
-      return;
-    }
-    block.style.display = "";
-
-    const startMs = Date.parse(startedAt);
-    const elapsedMin = Math.max(0, Math.round((Date.now() - startMs) / 60000));
-    const target = attrs.target_temperature;
-
-    // Fetch (or reuse cached) history of the room temp sensor since cycle start.
-    this._ensureHistoryData(ids.roomTemp, startMs, Date.now()).then((points) => {
-      this._renderSpark($("spark"), points, target, attrs.direction);
-      // timeline-text supprimé : doublonne le strip session « Démarrée il y a X min »
-      const txtEl = $("timeline-text");
-      if (txtEl) txtEl.textContent = "";
-    });
-  }
-
-  _deltaText(points, currentT) {
-    if (!points || points.length === 0 || Number.isNaN(currentT)) return null;
-    const startT = points[0].t;
-    const d = currentT - startT;
-    if (Math.abs(d) < 0.1) return "stable";
-    const sign = d > 0 ? "+" : "−";
-    return `${sign}${Math.abs(d).toFixed(1)}°C`;
-  }
-
-  async _ensureHistoryData(entityId, startMs, endMs = Date.now()) {
-    const now = Date.now();
-    if (!this._historyCache) this._historyCache = new Map();
-    const endBucket = Math.round(endMs / 30_000); // avoids refetching every HA tick
-    const cacheKey = `${entityId}|${startMs}|${endBucket}`;
-    const cache = this._historyCache.get(cacheKey);
-    if (cache && now - cache.fetchedAt < 30_000) {
-      return cache.points;
-    }
-    const startIso = new Date(startMs).toISOString();
-    const endIso = new Date(endMs).toISOString();
-    let raw;
-    try {
-      raw = await this._hass.callWS({
-        type: "history/history_during_period",
-        start_time: startIso,
-        end_time: endIso,
-        entity_ids: [entityId],
-        minimal_response: true,
-        no_attributes: true,
-        significant_changes_only: false,
-      });
-    } catch {
-      return cache?.points || [];
-    }
-    const series = (raw && raw[entityId]) || [];
-    const points = [];
-    for (const s of series) {
-      const v = parseFloat(s.s ?? s.state);
-      // Each row's timestamp is either `lu` (minimal) or `last_updated`.
-      const ts = (s.lu ?? s.last_updated);
-      if (!Number.isNaN(v) && ts != null) {
-        const ms = typeof ts === "number" ? ts * 1000 : Date.parse(ts);
-        points.push({ ms, t: v });
-      }
-    }
-    this._historyCache.set(cacheKey, { fetchedAt: now, points });
-    // Keep the cache bounded. A dashboard can stay open for days.
-    if (this._historyCache.size > 24) {
-      const oldestKey = this._historyCache.keys().next().value;
-      this._historyCache.delete(oldestKey);
-    }
-    return points;
-  }
-
-  // Backward-compatible name for older call sites / browser cache edge cases.
-  async _ensureSparkData(entityId, cycleStartMs) {
-    return this._ensureHistoryData(entityId, cycleStartMs, Date.now());
-  }
-
-  _renderSpark(el, points, target, direction) {
-    if (!el) return;
-    if (!points || points.length < 2) {
-      el.innerHTML = "";
-      return;
-    }
-    const W = 280, H = 56, padX = 4, padY = 6;
-    const xs = points.map(p => p.ms);
-    const ys = points.map(p => p.t);
-    const xMin = xs[0], xMax = Math.max(xs[xs.length - 1], xs[0] + 60_000);
-    const tValues = [...ys];
-    const targetNum = parseFloat(target);
-    if (!Number.isNaN(targetNum)) tValues.push(targetNum);
-    let yMin = Math.min(...tValues) - 0.3;
-    let yMax = Math.max(...tValues) + 0.3;
-    if (yMax - yMin < 1) { yMax = yMin + 1; }
-    const sx = (x) => padX + ((x - xMin) / (xMax - xMin)) * (W - 2 * padX);
-    const sy = (y) => padY + (1 - (y - yMin) / (yMax - yMin)) * (H - 2 * padY);
-
-    const stroke = direction === "heat" ? "#ff6b35" : "#4d8bff";
-    const path = points.map((p, i) =>
-      `${i === 0 ? "M" : "L"}${sx(p.ms).toFixed(1)},${sy(p.t).toFixed(1)}`
-    ).join(" ");
-
-    let targetLine = "";
-    if (!Number.isNaN(targetNum)) {
-      const ty = sy(targetNum).toFixed(1);
-      targetLine =
-        `<line x1="${padX}" y1="${ty}" x2="${W - padX}" y2="${ty}" `
-        + `stroke="#fd9853" stroke-width="1" stroke-dasharray="3 3" opacity="0.7"/>`;
-    }
-
-    const last = points[points.length - 1];
-    const lastDot =
-      `<circle cx="${sx(last.ms).toFixed(1)}" cy="${sy(last.t).toFixed(1)}" `
-      + `r="2.5" fill="${stroke}"/>`;
-
-    el.innerHTML =
-      `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" `
-      + `style="width:100%;height:${H}px;display:block">`
-      + targetLine
-      + `<path d="${path}" fill="none" stroke="${stroke}" stroke-width="1.6" `
-      + `stroke-linejoin="round" stroke-linecap="round"/>`
-      + lastDot
-      + `</svg>`;
-  }
-
-  /* =================================================================== thermal rail */
-
-  /**
-   * Render the thermal rail in the hero. The rail represents the cooling (or
-   * heating) descent from "start threshold" to "target threshold", with a
-   * glowing cursor showing the current room T° pièce. When the zone is idle
-   * we hide the cursor reading but keep the bounds visible as a preview of
-   * the next cycle's range.
-   */
   _updateThermalRail(stateVal, attrs, get, ids) {
     const wrap = this.querySelector('[data-bind="rail-wrap"]');
     const fill = this.querySelector('[data-bind="rail-fill"]');
@@ -1569,6 +1269,88 @@ class DelormejClimateCard extends HTMLElement {
     fill.style.width = `${roomPct}%`;
   }
 
+  _updateTimeline(state, attrs, get, ids) {
+    const $ = (sel) => this.querySelector(`[data-bind="${sel}"]`);
+    const block = $("timeline");
+    if (!block) return;
+
+    const active = state === "starting" || state === "running" || state === "stabilizing";
+    const startedAt = attrs.cycle_started_at;
+    if (!active || !startedAt) {
+      block.style.display = "none";
+      return;
+    }
+    block.style.display = "";
+
+    const startMs = Date.parse(startedAt);
+    const elapsedMin = Math.max(0, Math.round((Date.now() - startMs) / 60000));
+    const target = attrs.target_temperature;
+
+    // Fetch (or reuse cached) history of the room temp sensor since cycle start.
+    this._ensureHistoryData(ids.roomTemp, startMs, Date.now()).then((points) => {
+      this._renderSpark($("spark"), points, target, attrs.direction);
+      // timeline-text supprimé : doublonne le strip session « Démarrée il y a X min »
+      const txtEl = $("timeline-text");
+      if (txtEl) txtEl.textContent = "";
+    });
+  }
+
+  _renderSpark(el, points, target, direction) {
+    if (!el) return;
+    if (!points || points.length < 2) {
+      el.innerHTML = "";
+      return;
+    }
+    const W = 280, H = 56, padX = 4, padY = 6;
+    const xs = points.map(p => p.ms);
+    const ys = points.map(p => p.t);
+    const xMin = xs[0], xMax = Math.max(xs[xs.length - 1], xs[0] + 60_000);
+    const tValues = [...ys];
+    const targetNum = parseFloat(target);
+    if (!Number.isNaN(targetNum)) tValues.push(targetNum);
+    let yMin = Math.min(...tValues) - 0.3;
+    let yMax = Math.max(...tValues) + 0.3;
+    if (yMax - yMin < 1) { yMax = yMin + 1; }
+    const sx = (x) => padX + ((x - xMin) / (xMax - xMin)) * (W - 2 * padX);
+    const sy = (y) => padY + (1 - (y - yMin) / (yMax - yMin)) * (H - 2 * padY);
+
+    const stroke = direction === "heat" ? "#ff6b35" : "#4d8bff";
+    const path = points.map((p, i) =>
+      `${i === 0 ? "M" : "L"}${sx(p.ms).toFixed(1)},${sy(p.t).toFixed(1)}`
+    ).join(" ");
+
+    let targetLine = "";
+    if (!Number.isNaN(targetNum)) {
+      const ty = sy(targetNum).toFixed(1);
+      targetLine =
+        `<line x1="${padX}" y1="${ty}" x2="${W - padX}" y2="${ty}" `
+        + `stroke="#fd9853" stroke-width="1" stroke-dasharray="3 3" opacity="0.7"/>`;
+    }
+
+    const last = points[points.length - 1];
+    const lastDot =
+      `<circle cx="${sx(last.ms).toFixed(1)}" cy="${sy(last.t).toFixed(1)}" `
+      + `r="2.5" fill="${stroke}"/>`;
+
+    el.innerHTML =
+      `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" `
+      + `style="width:100%;height:${H}px;display:block">`
+      + targetLine
+      + `<path d="${path}" fill="none" stroke="${stroke}" stroke-width="1.6" `
+      + `stroke-linejoin="round" stroke-linecap="round"/>`
+      + lastDot
+      + `</svg>`;
+  }
+
+  _deltaText(points, currentT) {
+    if (!points || points.length === 0 || Number.isNaN(currentT)) return null;
+    const startT = points[0].t;
+    const d = currentT - startT;
+    if (Math.abs(d) < 0.1) return "stable";
+    const sign = d > 0 ? "+" : "−";
+    return `${sign}${Math.abs(d).toFixed(1)}°C`;
+  }
+
   /* =================================================================== helpers */
 
   _pill(icon, text, cls = "neutral") {
@@ -1576,11 +1358,6 @@ class DelormejClimateCard extends HTMLElement {
     div.className = `dc-pill dc-pill--${cls}`;
     div.innerHTML = `<ha-icon icon="${icon}"></ha-icon><span>${this._escapeHTML(text)}</span>`;
     return div;
-  }
-  _openSettings(tab) {
-    const url = `/climate-manager?tab=${tab}&zone=${encodeURIComponent(this._zone)}`;
-    history.pushState(null, "", url);
-    window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
   }
 
   _call(domain, service, data) {
@@ -3169,11 +2946,6 @@ const STYLES = `
   }
 
   /* ============ §2 PROFILS — compact & clean ============ */
-  .dc-profiles-list {
-    cursor: pointer;
-    display: flex; flex-direction: column; gap: 8px;
-    margin-bottom: 10px;
-  }
   .dc-season-switch {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -3199,194 +2971,12 @@ const STYLES = `
     background: var(--card-background-color, #fff);
     box-shadow: 0 1px 4px rgba(0,0,0,.10);
   }
-  .dc-season-hint {
-    display: block;
-    margin: 0 2px 10px;
-    color: var(--dc-muted);
-    font-size: 11px;
-  }
-  .dc-profiles-empty {
-    background: var(--dc-surface);
-    border-radius: var(--dc-radius-sm);
-    padding: 18px;
-    color: var(--dc-muted);
-    font-size: 13px;
-    text-align: center;
-    margin-bottom: 10px;
-  }
-  .dc-profile {
-    background: var(--dc-surface);
-    border-radius: var(--dc-radius-sm);
-    padding: 12px 14px;
-    transition: background 0.2s;
-  }
-  .dc-profile--active {
-    background: var(--dc-accent-soft);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dc-accent), transparent 62%);
-  }
-  .dc-profile--active::before { content: none; }
-  .dc-profile-head {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 8px;
-  }
-  .dc-profile-badge {
-    background: var(--dc-accent);
-    color: rgba(0,0,0,0.85);
-    font-size: 10px; font-weight: 700;
-    padding: 2px 7px;
-    border-radius: var(--dc-radius-pill);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-  .dc-profile-badge.ghost {
-    visibility: hidden;
-    width: 0;
-    padding-left: 0;
-    padding-right: 0;
-  }
-  .dc-profile-name {
-    min-width: 0;
-    font-weight: 650;
-    color: var(--dc-fg);
-    font-size: 14px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .dc-profile-actions {
-    display: flex; gap: 0;
-    opacity: 0.58;
-  }
-  .dc-profile:hover .dc-profile-actions { opacity: 1; }
-  .dc-profile-actions button {
-    width: 26px; height: 26px;
-    border: none; border-radius: 8px;
-    background: transparent;
-    color: var(--dc-muted);
-    cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    transition: all 0.15s;
-    font-size: 13px;
-  }
-  .dc-profile-actions button ha-icon { --mdc-icon-size: 15px; }
-  .dc-profile-actions button:hover { background: var(--dc-bg-bubble-strong); color: var(--dc-fg); }
-  .dc-profile-meta {
-    display: flex; flex-wrap: wrap;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--dc-muted);
-    line-height: 1.35;
-  }
-  .dc-profile-meta span {
-    display: inline-flex; align-items: center; gap: 5px;
-    min-width: 0;
-    padding: 4px 8px;
-    border-radius: var(--dc-radius-pill);
-    background: rgba(255,255,255,0.045);
-    white-space: nowrap;
-    max-width: 100%;
-  }
-  .dc-profile-meta span.primary { color: var(--dc-fg); }
-  .dc-profile-meta ha-icon { --mdc-icon-size: 13px; color: var(--dc-dim); flex: 0 0 auto; }
-  .dc-profile-meta .v {
-    color: var(--dc-fg); font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  .dc-profile-detail {
-    margin-top: 7px;
-    color: var(--dc-dim);
-    font-size: 11px;
-    line-height: 1.35;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
 
   /* Profile edit form */
-  .dc-profile-edit { display: flex; flex-direction: column; gap: 10px; }
-  .dc-profile-edit-title {
-    font-size: 0.85em; color: var(--dc-muted); font-weight: 600;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--dc-hairline);
-  }
-  .dc-profile-edit .dc-field { display: flex; flex-direction: column; gap: 4px; }
-  .dc-profile-edit .dc-field label {
-    font-size: 0.75em; color: var(--dc-muted); font-weight: 600;
-  }
-  .dc-profile-edit input[type="text"],
-  .dc-profile-edit input[type="number"],
-  .dc-profile-edit input[type="time"],
-  .dc-profile-edit select {
-    background: var(--dc-bg-inset); border: none;
-    border-radius: var(--dc-radius-sm);
-    color: var(--dc-fg); padding: 9px 11px;
-    font-size: 0.9em; font-weight: 500;
-    appearance: none; -webkit-appearance: none;
-  }
   /* Advanced section (schedule entity picker) — collapsed by default,
      reachable for users who already had a schedule.* setup before time
      windows existed. */
-  .dc-profile-advanced { margin-top: 2px; }
-  .dc-profile-advanced > summary {
-    cursor: pointer; list-style: none;
-    font-size: 0.78em; color: var(--dc-muted); font-weight: 600;
-    padding: 6px 0;
-    user-select: none;
-  }
-  .dc-profile-advanced > summary::-webkit-details-marker { display: none; }
-  .dc-profile-advanced > summary::before {
-    content: "›"; display: inline-block;
-    transition: transform 0.15s ease;
-    color: var(--dc-dim); margin-right: 4px;
-  }
-  .dc-profile-advanced[open] > summary::before { transform: rotate(90deg); }
-  .dc-profile-advanced > summary:hover { color: var(--dc-fg); }
-  .dc-profile-advanced[open] > summary { color: var(--dc-fg); }
-  .dc-profile-edit select {
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(255,255,255,0.5)' d='M0 0l5 6 5-6z'/></svg>");
-    background-repeat: no-repeat; background-position: right 10px center;
-    padding-right: 28px;
-  }
-  .dc-profile-edit input:focus,
-  .dc-profile-edit select:focus { outline: 2px solid var(--dc-cool); outline-offset: -2px; }
-  .dc-profile-edit-actions {
-    display: flex; gap: 8px; justify-content: flex-end;
-    margin-top: 4px;
-  }
-  .dc-profile-edit-actions button {
-    padding: 8px 16px;
-    border-radius: var(--dc-radius-pill);
-    border: none; cursor: pointer;
-    font-size: 0.85em; font-weight: 600;
-    background: var(--dc-bg-inset); color: var(--dc-muted);
-    transition: all 0.15s;
-  }
-  .dc-profile-edit-actions button:hover { background: var(--dc-bg-bubble-strong); color: var(--dc-fg); }
-  .dc-profile-edit-actions .dc-profile-save {
-    background: var(--dc-success); color: white;
-  }
-  .dc-profile-edit-actions .dc-profile-save:hover { background: #2e8430; }
 
-  .dc-profile-add {
-    width: 100%;
-    padding: 11px 14px;
-    border: 1px dashed var(--dc-hairline);
-    border-radius: var(--dc-radius-sm);
-    background: transparent;
-    color: var(--dc-muted);
-    font-size: 0.9em; font-weight: 600;
-    cursor: pointer;
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-    transition: all 0.15s;
-  }
-  .dc-profile-add ha-icon { --mdc-icon-size: 18px; }
-  .dc-profile-add:hover {
-    border-color: var(--dc-cool);
-    color: var(--dc-cool);
-  }
 
   /* ============ §3 PILOTAGE ============ */
   .dc-control { margin-bottom: 14px; }
@@ -3642,24 +3232,16 @@ const STYLES = `
   ha-card.dc-split-widget .dc-collapsible { margin-top: 0; }
   ha-card.dc-widget-status .section-auto,
   ha-card.dc-widget-status .section-manual,
-  ha-card.dc-widget-status .section-profiles,
   ha-card.dc-widget-status .section-cycles { display: none; }
   /* Pilotage is now the daily widget: current state + automation controls together. */
   ha-card.dc-widget-pilotage .section-manual,
-  ha-card.dc-widget-pilotage .section-profiles,
   ha-card.dc-widget-pilotage .section-cycles { display: none; }
   ha-card.dc-widget-manual .section-status,
   ha-card.dc-widget-manual .section-auto,
-  ha-card.dc-widget-manual .section-profiles,
   ha-card.dc-widget-manual .section-cycles { display: none; }
-  ha-card.dc-widget-profiles .section-status,
-  ha-card.dc-widget-profiles .section-auto,
-  ha-card.dc-widget-profiles .section-manual,
-  ha-card.dc-widget-profiles .section-cycles { display: none; }
   ha-card.dc-widget-sessions .section-status,
   ha-card.dc-widget-sessions .section-auto,
-  ha-card.dc-widget-sessions .section-manual,
-  ha-card.dc-widget-sessions .section-profiles { display: none; }
+  ha-card.dc-widget-sessions .section-manual { display: none; }
 `;
 
 const TEMPLATE = `
@@ -3835,18 +3417,6 @@ const TEMPLATE = `
     <div class="dc-cycles-list" data-bind="cycles-list"></div>
   </section>
 
-  <!-- ════════════════════════════════════ PROFILS -->
-  <section class="dc-section section-profiles">
-    <span class="dc-season-hint" data-bind="season-hint"></span>
-    <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
-      Aucun profil pour cette saison : la zone ne démarre pas seule.
-    </div>
-    <div class="dc-profiles-list" data-bind="profiles-list"></div>
-    <button class="dc-profile-add" data-bind="profile-add">
-      <ha-icon icon="mdi:cog-outline"></ha-icon> Régler le programme
-    </button>
-  </section>
-
   <div class="dc-err" data-bind="error"></div>
 `;
 
@@ -3883,8 +3453,15 @@ class DelormejClimateManualCard extends HTMLElement {
     `;
   }
 }
-class DelormejClimateProfilesCard extends DelormejClimateCard {}
-DelormejClimateProfilesCard.widgetVariant = "profiles";
+/** Legacy programme card (≤ 0.24): the programme is set in the « Climat »
+ * panel now, so the card renders nothing and leaves the dashboard clean. */
+class DelormejClimateProfilesCard extends HTMLElement {
+  setConfig(_config) { this.style.display = "none"; }
+  static getStubConfig() { return { type: "custom:climate-manager-profiles-card" }; }
+  getCardSize() { return 0; }
+  getGridOptions() { return { columns: 12, rows: 0, min_rows: 0 }; }
+  set hass(_hass) {}
+}
 class DelormejClimateSessionsCard extends DelormejClimateCard {}
 DelormejClimateSessionsCard.widgetVariant = "sessions";
 
