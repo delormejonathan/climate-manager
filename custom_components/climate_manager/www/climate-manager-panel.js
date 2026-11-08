@@ -681,12 +681,12 @@ const STYLES = `
   :host {
     --dc-cool: #00BCD4; --dc-cool-soft: rgba(0,188,212,.13);
     --dc-warm: #FF8A65; --dc-warm-soft: rgba(255,138,101,.14);
-    --dc-accent: var(--dc-cool); --dc-accent-soft: var(--dc-cool-soft);
+    --dc-accent: var(--primary-color, var(--dc-cool)); --dc-accent-soft: color-mix(in srgb, var(--dc-accent) 14%, transparent);
     --dc-surface: rgba(36,40,50,.045); --dc-surface-strong: rgba(36,40,50,.075);
     --dc-hairline: rgba(36,40,50,.08);
     --dc-fg: var(--primary-text-color, rgba(36,40,50,.94)); --dc-muted: var(--secondary-text-color, rgba(36,40,50,.58));
     --dc-danger: #D05B50; --dc-ok: #3F9D6B;
-    --dc-radius: 26px; --dc-radius-sm: 16px;
+    --dc-radius: var(--ha-card-border-radius, 26px); --dc-radius-sm: 16px;
     display: block; min-height: 100vh; background: var(--primary-background-color); color: var(--dc-fg);
     font-family: var(--ha-card-font-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif); font-size: 14px; line-height: 1.45;
   }
@@ -710,6 +710,7 @@ const STYLES = `
 
   .card { background: var(--card-background-color, #fff); border: 1px solid var(--dc-hairline); border-radius: var(--dc-radius); overflow: hidden; }
   .card.accent-warm { --dc-accent: var(--dc-warm); --dc-accent-soft: var(--dc-warm-soft); }
+  .card.accent-cool { --dc-accent: var(--dc-cool); --dc-accent-soft: var(--dc-cool-soft); }
   .card.focus { box-shadow: 0 0 0 2px var(--dc-accent); }
   .card-head { display: flex; align-items: center; gap: 12px; padding: 18px 20px 12px; flex-wrap: wrap; }
   .bubble { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; background: var(--dc-accent-soft); color: var(--dc-accent); flex: none; }
@@ -777,10 +778,13 @@ const STYLES = `
   .f-control { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .f-control .sel, .f-control ha-selector { width: 100%; display: block; }
   .f-help { font-size: 12px; color: var(--dc-muted); }
-  .text { font: inherit; font-size: 14px; color: var(--dc-fg); background: var(--dc-surface); border: 1px solid transparent; border-radius: 12px;
-    padding: 10px 14px; width: 100%; max-width: 360px; outline: none; transition: border-color .15s, background .15s; }
-  .text:focus { border-color: var(--dc-accent); background: var(--card-background-color, #fff); }
-  .text.time { width: auto; padding: 8px 12px; font-variant-numeric: tabular-nums; }
+  /* Same field as Home Assistant's own pickers (theme form colours). */
+  .text { font: inherit; font-size: 15px; color: var(--dc-fg); background: var(--ha-color-form-background, var(--dc-surface)); border: 0;
+    border-bottom: 1px solid var(--ha-color-border-neutral-loud, rgba(36,40,50,.2)); border-radius: var(--ha-border-radius-sm, 8px) var(--ha-border-radius-sm, 8px) 0 0;
+    height: 56px; padding: 0 16px; width: 100%; outline: none; transition: border-color .15s, background .15s; }
+  .text:hover { background: var(--ha-color-form-background-hover, var(--dc-surface-strong)); }
+  .text:focus { border-bottom: 2px solid var(--dc-accent); }
+  .text.time { width: auto; height: 48px; padding: 0 12px; font-variant-numeric: tabular-nums; }
   .times { display: flex; align-items: center; gap: 8px; color: var(--dc-muted); }
   .stepper { display: inline-flex; align-items: center; gap: 2px; padding: 4px; border-radius: 14px; background: var(--dc-surface); }
   .stepper button { border: 0; width: 34px; height: 34px; border-radius: 10px; background: var(--card-background-color, #fff); color: var(--dc-fg);
