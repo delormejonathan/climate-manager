@@ -75,6 +75,8 @@ class DelormejClimateCard extends HTMLElement {
     this._optimisticSession = null;
     this._rendered = false;
     this._electricityPrice = this._resolveElectricityPrice(config);
+    this._maxSessions = Number(config.max_sessions) > 0 ? Number(config.max_sessions) : 5;
+    this._showAllSessions = false;
   }
   static getStubConfig() { return { type: "custom:climate-manager-card", zone: "rdc" }; }
   getCardSize() {
@@ -87,10 +89,11 @@ class DelormejClimateCard extends HTMLElement {
     // compact split widgets on mobile.
     return ({
       status:   { columns: 12, rows: 3, min_rows: 2 },
-      pilotage: { columns: 12, rows: 7, min_rows: 6 },
+      // Height follows the content: the sessions list grows with « Afficher plus ».
+      pilotage: { columns: 12, rows: "auto" },
       manual:   { columns: 12, rows: 5, min_rows: 4 },
       profiles: { columns: 12, rows: 6, min_rows: 5 },
-      sessions: { columns: 12, rows: 6, min_rows: 5 },
+      sessions: { columns: 12, rows: "auto" },
     })[this._variant] || { columns: 12, rows: 10, min_rows: 6 };
   }
 
@@ -979,7 +982,7 @@ class DelormejClimateCard extends HTMLElement {
       hero?.classList.add("active-cool");
       hero?.classList.remove("active-warm");
     } else {
-      card?.classList.remove("accent-warm");
+      card?.classList.toggle("accent-warm", attrs.season === "winter");
       hero?.classList.remove("active-cool", "active-warm");
     }
     hero?.classList.toggle("no-target", targetT == null);
@@ -1415,10 +1418,15 @@ class DelormejClimateCard extends HTMLElement {
     // Newest first (server gives oldest-first)
     const newest = [...cycles].reverse();
     this._cyclesForDetails = newest;
-    const sig = JSON.stringify(newest) + `|price:${this._electricityPrice ?? ""}`;
+    const shown = this._showAllSessions ? newest : newest.slice(0, this._maxSessions);
+    const hidden = newest.length - shown.length;
+    const sig = JSON.stringify(newest) + `|price:${this._electricityPrice ?? ""}|all:${this._showAllSessions}`;
     if (list.dataset.sig === sig) return;
     list.dataset.sig = sig;
-    list.innerHTML = newest.map((c, idx) => this._buildCycleRow(c, idx)).join("");
+    list.innerHTML = shown.map((c, idx) => this._buildCycleRow(c, idx)).join("")
+      + (hidden > 0
+        ? `<button class="dc-cycles-more" data-cycles-more>Afficher ${hidden} session${hidden > 1 ? "s" : ""} de plus</button>`
+        : (this._showAllSessions && newest.length > this._maxSessions ? `<button class="dc-cycles-more" data-cycles-more>Réduire</button>` : ""));
   }
 
   _buildCycleRow(c, idx) {
@@ -1465,6 +1473,12 @@ class DelormejClimateCard extends HTMLElement {
   }
 
   _onCycleClick(e) {
+    if (e.target.closest("[data-cycles-more]")) {
+      this._showAllSessions = !this._showAllSessions;
+      const attrs = this._hass?.states?.[this._ids().state]?.attributes;
+      if (attrs) this._renderCycleHistory(attrs);
+      return;
+    }
     const row = e.target.closest(".dc-cycle-row[data-cycle-idx]");
     if (!row) return;
     const idx = Number(row.dataset.cycleIdx);
@@ -2161,6 +2175,11 @@ const STYLES = `
   .dc-cycles-list {
     display: flex; flex-direction: column;
   }
+  .dc-cycles-more {
+    appearance: none; border: 0; margin: 12px auto 4px; padding: 0 16px; height: 36px; border-radius: 12px;
+    background: var(--dc-surface); color: var(--dc-fg); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .dc-cycles-more:hover { background: var(--dc-surface-strong); }
   .dc-cycle-row {
     width: 100%;
     appearance: none;
@@ -3433,7 +3452,6 @@ DelormejClimatePilotageCard.widgetVariant = "pilotage";
 class DelormejClimateManualCard extends HTMLElement {
   setConfig(_config) {
     this._rendered = false;
-    this._electricityPrice = this._resolveElectricityPrice(config);
   }
   static getStubConfig() { return { type: "custom:climate-manager-manual-card" }; }
   getCardSize() { return 1; }
