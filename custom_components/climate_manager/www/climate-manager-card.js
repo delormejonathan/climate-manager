@@ -300,6 +300,10 @@ class DelormejClimateCard extends HTMLElement {
     } else if (hasSession) {
       primary.push(btn("danger", "mdi:stop-circle-outline", "Arrêter la session", "session-cancel"));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
+    } else if (!attrs.operating_mode) {
+      // House mode « Arrêt »: a session would not start anything.
+      primary.push(info("mdi:power", "Mode Arrêt : choisis un mode pour lancer une session."));
+      secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
     } else {
       // IDLE en auto, pas de session
       primary.push(btn("primary", "mdi:play-circle", "Démarrer une session", "session-start"));
@@ -3564,12 +3568,13 @@ class ClimateManagerModeCard extends HTMLElement {
 
   /** One row per equipment: « En service » switch (Climate Manager may start it). */
   _equipmentRows(a) {
+    const off = !a.mode_id;  // « Arrêt »: running means its own programme, not us
     const byId = Object.fromEntries((this._switches || []).map((s) => [s.attributes.equipment_id, s]));
     const rows = (a.equipments || []).filter((e) => byId[e.id]).map((e) => {
       const sw = byId[e.id];
       const on = sw.state === "on";
       const icon = e.kind === "central" ? "mdi:water-boiler" : "mdi:air-conditioner";
-      const status = !on ? "Hors service" : e.running ? (a.direction === "cool" ? "Refroidit" : "Chauffe") : "En service";
+      const status = !on ? "Hors service" : e.running ? (off ? "En marche" : a.direction === "cool" ? "Refroidit" : "Chauffe") : "En service";
       return `<div class="cm-eq ${on ? "" : "out"} ${on && e.running ? "run" : ""}">
         <ha-icon icon="${icon}"></ha-icon>
         <div class="cm-eq-text"><b>${e.name}</b><span>${status}</span></div>
