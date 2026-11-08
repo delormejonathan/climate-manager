@@ -64,6 +64,7 @@ from .zone import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+KWH_SETTLE_S = 65 * 60
 
 NOTIFICATION_ACTION_EVENT = "mobile_app_notification_action"
 ANOMALY_EVENT = "climate_manager_temperature_anomaly"
@@ -288,6 +289,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             # First start with the plant model: store the migrated plant so ids stay stable.
             self.save_plant(self.plant)
         await self._load_runtime_state()
+        await self._async_backfill_session_kwh()
         await self._setup_state_listeners()
         self._unsub_notification_action = self.hass.bus.async_listen(
             NOTIFICATION_ACTION_EVENT, self._on_notification_action
@@ -300,10 +302,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             inputs = self._gather_inputs(zone, sensor_temps)
             self._maybe_seed_cycle_start_kwh(zone, inputs)
             prev_state = zone.state.state
-            prev_completed_count = len(zone.state.completed_sessions)
+            prev_last = zone.state.completed_sessions[-1] if zone.state.completed_sessions else None
             commands = zone.tick(inputs)
             self._maybe_seed_entered_session_kwh(zone, prev_state)
-            self._maybe_close_last_session_kwh(zone, prev_completed_count, sensor_temps)
+            self._maybe_close_last_session_kwh(zone, prev_last, sensor_temps)
+            self._settle_session_kwh(zone, inputs.now_ts)
             await self._maybe_seed_sensor_baselines(zone, prev_state, inputs, sensor_temps)
             await self._maybe_detect_temperature_anomalies(zone, inputs, sensor_temps)
             self._maybe_clear_sensor_baselines(zone, prev_state)
@@ -1081,6 +1084,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         )
 
     # === Session kWh tracking ===
+    # The clims' energy counters report about once an hour: a reading taken when
+    # a session ends misses its last hour. The end reading is therefore taken
+    # again KWH_SETTLE_S after the end (or at the next session's start if sooner).
 
     def _consumption_sensor_for(self, zone: Zone, active_profile: Profile | None) -> str | None:
         if active_profile is None:
@@ -1152,13 +1158,18 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     def _maybe_close_last_session_kwh(
         self,
         zone: Zone,
-        prev_completed_count: int,
+        prev_last: dict[str, Any] | None,
         sensor_temps: dict[str, float] | None = None,
     ) -> None:
-        """Patch end details on the session finalized during this tick."""
-        if len(zone.state.completed_sessions) <= prev_completed_count:
+        """Patch end details on the session finalized during this tick.
+
+        Compared by identity, not by count: once the history is full, appending
+        drops the oldest session and the count stays the same.
+        """
+        completed = zone.state.completed_sessions
+        if not completed or completed[-1] is prev_last:
             return
-        last = zone.state.completed_sessions[-1]
+        last = completed[-1]
         if sensor_temps:
             last["sensor_end_temperatures"] = dict(sensor_temps)
         if last.get("kwh_end") is not None:
@@ -1175,6 +1186,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         if kwh_end is None:
             return
         last["kwh_end"] = kwh_end
+        last["kwh_settle_ts"] = (last.get("end_ts") or utc_now_ts()) + KWH_SETTLE_S
         start_kwh = last.get("kwh_start")
         if start_kwh is not None and isinstance(start_kwh, (int, float)):
             delta = kwh_end - start_kwh
@@ -1182,6 +1194,91 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 # Compteur a reset (changement d'année) — on n'invente rien.
                 delta = None
             last["kwh_consumed"] = delta
+
+    def _settle_session_kwh(self, zone: Zone, now_ts: float) -> None:
+        """Final end reading, once the counter has reported the session's last hour."""
+        sessions = zone.state.completed_sessions
+        for i, s in enumerate(sessions):
+            settle = s.get("kwh_settle_ts")
+            if settle is None:
+                continue
+            nxt = sessions[i + 1].get("kwh_start") if i + 1 < len(sessions) else None
+            if isinstance(nxt, (int, float)):
+                end = nxt  # a new session started: its first reading closes this one
+            elif self._has_session_runtime(zone) and isinstance(zone.state.cycle_start_kwh, (int, float)):
+                end = zone.state.cycle_start_kwh
+            elif now_ts >= settle:
+                end = self._read_kwh(self._session_consumption_sensor(zone, s.get("session_mode")))
+                if end is None:
+                    continue
+            else:
+                continue
+            s.pop("kwh_settle_ts", None)
+            s["kwh_settled"] = True
+            start = s.get("kwh_start")
+            if isinstance(start, (int, float)) and end >= start:
+                s["kwh_end"], s["kwh_consumed"] = end, round(end - start, 3)
+
+    async def _async_backfill_session_kwh(self) -> None:
+        """Fill missing session kWh from the recorder (counter value at start/end).
+
+        Sessions closed while the end reading was skipped (history full, see
+        _maybe_close_last_session_kwh) get their consumption back as long as the
+        recorder still keeps the counter's history.
+        """
+        if "recorder" not in self.hass.config.components:
+            _LOGGER.debug("Session kWh backfill skipped: no recorder")
+            return
+        from homeassistant.components.recorder import get_instance, history
+
+        todo = []
+        for zone in self._zones.values():
+            for s in zone.state.completed_sessions:
+                sensor = self._session_consumption_sensor(zone, s.get("session_mode"))
+                if sensor and s.get("start_ts") and s.get("end_ts") and (
+                    s.get("kwh_consumed") is None or not s.get("kwh_settled")
+                ) and "kwh_settle_ts" not in s:
+                    todo.append((sensor, s, zone))
+        _LOGGER.debug("Session kWh backfill: %d session(s) without consumption", len(todo))
+        if not todo:
+            return
+
+        def value_at(entity_id: str, ts: float) -> float | None:
+            at = dt_util.utc_from_timestamp(ts)
+            states = history.get_significant_states(
+                self.hass, at, at + timedelta(seconds=1), [entity_id],
+                include_start_time_state=True, significant_changes_only=False, no_attributes=True,
+            ).get(entity_id) or []
+            return _as_float(states[0].state) if states else None
+
+        now = utc_now_ts()
+
+        def fill() -> int:
+            done = 0
+            for sensor, s, zone in todo:
+                start = s.get("kwh_start")
+                if not isinstance(start, (int, float)):
+                    start = value_at(sensor, s["start_ts"])
+                sessions = zone.state.completed_sessions
+                i = next(k for k, x in enumerate(sessions) if x is s)
+                nxt = sessions[i + 1].get("start_ts") if i + 1 < len(sessions) else None
+                at = min(t for t in (s["end_ts"] + KWH_SETTLE_S, nxt, now - 1) if t)
+                end = value_at(sensor, at)
+                if start is None or end is None or end < start:
+                    continue
+                s["kwh_start"], s["kwh_end"], s["kwh_consumed"] = start, end, round(end - start, 3)
+                s["kwh_settled"] = True
+                done += 1
+            return done
+
+        try:
+            done = await get_instance(self.hass).async_add_executor_job(fill)
+        except Exception:  # history is a bonus, never block the setup
+            _LOGGER.debug("Session kWh backfill failed", exc_info=True)
+            return
+        if done:
+            _LOGGER.info("Session kWh recovered from history for %d session(s)", done)
+            await self._save_runtime_state_if_changed()
 
     # === Persistence of mutable zone config ===
 

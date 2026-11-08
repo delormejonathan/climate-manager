@@ -109,3 +109,38 @@ async def test_sensor_returning_late_without_history_is_not_seeded(monkeypatch) 
     )
 
     assert zone.state.cycle_baseline_temps == {}
+
+
+def test_session_kwh_closed_when_history_is_full() -> None:
+    """History full: append drops the oldest, the count stays 20, the end reading must still be taken."""
+    old = [{"session_mode": "heat", "kwh_start": float(i), "kwh_end": float(i)} for i in range(20)]
+    new = {"session_mode": "heat", "kwh_start": 58.2, "kwh_end": None, "kwh_consumed": None}
+    zone = SimpleNamespace(
+        config=SimpleNamespace(consumption_sensor_heat="sensor.heat", consumption_sensor_cool=None, profiles=[]),
+        state=SimpleNamespace(completed_sessions=[*old[1:], new]),
+    )
+    coordinator = object.__new__(DelormejClimateCoordinator)
+    coordinator.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: SimpleNamespace(state="59.0")))
+    new["end_ts"] = 1000.0
+    DelormejClimateCoordinator._maybe_close_last_session_kwh(coordinator, zone, old[-1])
+    assert new["kwh_end"] == 59.0
+    assert new["kwh_consumed"] == pytest.approx(0.8)
+    # nothing new this tick: untouched
+    new["kwh_end"] = None
+    DelormejClimateCoordinator._maybe_close_last_session_kwh(coordinator, zone, new)
+    assert new["kwh_end"] is None
+
+
+def test_session_kwh_settles_after_the_counter_reported() -> None:
+    """Hourly counters: the end reading is taken again an hour later (or at the next session)."""
+    s1 = {"session_mode": "heat", "end_ts": 1000.0, "kwh_start": 10.0, "kwh_end": 10.0, "kwh_consumed": 0.0, "kwh_settle_ts": 1000.0 + 3900}
+    zone = SimpleNamespace(
+        config=SimpleNamespace(consumption_sensor_heat="sensor.heat", consumption_sensor_cool=None),
+        state=SimpleNamespace(completed_sessions=[s1], state="idle", session_target=None, cycle_start_kwh=None),
+    )
+    coordinator = object.__new__(DelormejClimateCoordinator)
+    coordinator.hass = SimpleNamespace(states=SimpleNamespace(get=lambda e: SimpleNamespace(state="10.7")))
+    DelormejClimateCoordinator._settle_session_kwh(coordinator, zone, 2000.0)
+    assert s1["kwh_consumed"] == 0.0 and "kwh_settle_ts" in s1  # too early
+    DelormejClimateCoordinator._settle_session_kwh(coordinator, zone, 5000.0)
+    assert s1["kwh_consumed"] == pytest.approx(0.7) and "kwh_settle_ts" not in s1 and s1["kwh_settled"]
