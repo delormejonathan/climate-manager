@@ -194,15 +194,14 @@ class ClimateManagerPanel extends HTMLElement {
     const root = this.shadowRoot;
     root.innerHTML = `<style>${STYLES}</style>
       <div class="toolbar">
-        <ha-menu-button></ha-menu-button>
-        <div class="title">Climat</div>
-        <div class="busy" data-busy>${this._busy ? "Enregistrement…" : ""}</div>
-      </div>
-      <div class="page">
+        <div class="start"><ha-menu-button></ha-menu-button><div class="title">Climat</div></div>
         <div class="pills tabs">
           ${[["programme", "mdi:calendar-clock", "Programme"], ["zones", "mdi:floor-plan", "Zones"], ["maison", "mdi:home-account", "Maison"]]
             .map(([id, icon, label]) => `<button class="${this._tab === id ? "on" : ""}" data-tab="${id}"><ha-icon icon="${icon}"></ha-icon>${label}</button>`).join("")}
         </div>
+        <div class="busy" data-busy>${this._busy ? "Enregistrement…" : ""}</div>
+      </div>
+      <div class="page">
         ${this._renderBody()}
       </div>`;
     const menu = root.querySelector("ha-menu-button");
@@ -691,10 +690,18 @@ const STYLES = `
     font-family: var(--ha-card-font-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif); font-size: 14px; line-height: 1.45;
   }
   * { box-sizing: border-box; }
-  .toolbar { height: var(--header-height, 56px); display: flex; align-items: center; gap: 4px; padding: 0 12px;
-    background: var(--app-header-background-color, var(--primary-background-color)); color: var(--app-header-text-color, var(--dc-fg));
-    border-bottom: 1px solid var(--app-header-border-bottom, var(--divider-color)); }
-  .title { font-size: 20px; font-weight: 400; flex: 1; }
+  /* Same header as the rest of HA with the « Maison » theme: title left, tabs centred. */
+  .toolbar { height: var(--header-height, 56px); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px;
+    padding: 0 16px; background: var(--primary-background-color); color: var(--dc-fg); position: sticky; top: 0; z-index: 2; }
+  .toolbar .start { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .toolbar ha-menu-button { --mdc-icon-button-size: 40px; color: var(--secondary-text-color); }
+  .title { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin-inline-start: 8px; white-space: nowrap; }
+  .toolbar .tabs { margin: 0; }
+  .toolbar .busy { justify-self: end; }
+  @media (max-width: 720px) {
+    .toolbar { grid-template-columns: 1fr auto; height: auto; padding: 8px 12px; row-gap: 8px; }
+    .toolbar .tabs { grid-row: 2; grid-column: 1 / -1; justify-self: center; }
+  }
   .busy { font-size: 13px; color: var(--dc-muted); }
   .page { max-width: 880px; margin: 0 auto; padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 16px; }
 
@@ -705,7 +712,7 @@ const STYLES = `
   .pills button.on { background: var(--card-background-color, #fff); color: var(--dc-fg); box-shadow: 0 1px 4px rgba(0,0,0,.10); }
   .pills.small button { font-size: 13px; padding: 7px 12px; }
   .pills.small button ha-icon { --mdc-icon-size: 16px; }
-  .tabs { align-self: center; background: rgba(36,40,50,.07); }
+  .tabs { align-self: center; background: var(--ha-color-form-background, rgba(36,40,50,.07)); border-radius: 16px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dc-accent); }
 
   .card { background: var(--card-background-color, #fff); border: 1px solid var(--dc-hairline); border-radius: var(--dc-radius); overflow: hidden; }
