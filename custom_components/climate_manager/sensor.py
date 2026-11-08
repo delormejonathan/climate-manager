@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -26,7 +26,6 @@ async def async_setup_entry(
             ZoneStateSensor(coord, zid),
             ZoneRoomTemperatureSensor(coord, zid),
             ZoneSetpointSentSensor(coord, zid),
-            ZoneOverrideUntilSensor(coord, zid),
         ]
     async_add_entities(entities)
 
@@ -97,7 +96,7 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
                     attrs[f"session_{ts_key.replace('_ts','_at')}"] = (
                         datetime.fromtimestamp(ts, tz=UTC).isoformat()
                     )
-        for ts_key in ("state_entered_ts", "cycle_started_ts"):
+        for ts_key in ("state_entered_ts", "cycle_started_ts", "override_until_ts"):
             ts = d.get(ts_key)
             if ts:
                 attrs[ts_key.replace("_ts", "_at")] = datetime.fromtimestamp(ts, tz=UTC).isoformat()
@@ -123,6 +122,7 @@ class ZoneRoomTemperatureSensor(DelormejClimateZoneEntity, SensorEntity):
 
 class ZoneSetpointSentSensor(DelormejClimateZoneEntity, SensorEntity):
     _attr_translation_key = "zone_setpoint_sent"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
@@ -134,22 +134,3 @@ class ZoneSetpointSentSensor(DelormejClimateZoneEntity, SensorEntity):
     def native_value(self) -> float | None:
         d = self._zone_data
         return d.get("last_setpoint_sent") if d else None
-
-
-class ZoneOverrideUntilSensor(DelormejClimateZoneEntity, SensorEntity):
-    _attr_translation_key = "zone_override_until"
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_icon = "mdi:account-clock"
-
-    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
-        super().__init__(coord, zone_id, "override_until")
-
-    @property
-    def native_value(self) -> datetime | None:
-        d = self._zone_data
-        if not d:
-            return None
-        ts = d.get("override_until_ts")
-        if ts is None:
-            return None
-        return datetime.fromtimestamp(ts, tz=UTC)

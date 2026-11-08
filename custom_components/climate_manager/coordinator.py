@@ -130,6 +130,44 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self.async_set_updated_data(self._build_coordinator_data())
         return True
 
+    def update_zone_bank(
+        self, zone_id: str, season: str, profiles: list[dict[str, Any]]
+    ) -> bool:
+        """Replace one season bank of a zone (active or not)."""
+        zone = self._zones.get(zone_id)
+        if not zone or season not in ClimateSeason.ALL:
+            return False
+        parsed = [Profile.from_dict(p) for p in profiles]
+        zone.config.profile_banks[season] = parsed
+        if zone.config.season == season:
+            zone.config.profiles = list(parsed)
+        serialized_banks = {
+            name: [p.to_dict() for p in zone.config.profile_banks.get(name, [])]
+            for name in ClimateSeason.ALL
+        }
+        persisted: dict[str, Any] = {CONF_PROFILE_BANKS: serialized_banks}
+        summer = serialized_banks.get(ClimateSeason.SUMMER, [])
+        persisted["profiles"] = summer  # legacy rollback mirror (summer bank)
+        self._persist_zone_config(zone_id, **persisted)
+        self.async_set_updated_data(self._build_coordinator_data())
+        return True
+
+    def set_house_season(self, season: str) -> bool:
+        """Switch every zone to the same season bank in one options write."""
+        if season not in ClimateSeason.ALL:
+            return False
+        zones = list(self.entry.options.get(CONF_ZONES, []))
+        for i, raw in enumerate(zones):
+            zone = self._zones.get(raw.get("id"))
+            if zone is not None:
+                zone.config.set_season(season)
+            zones[i] = {**raw, CONF_SEASON: season}
+        self.hass.config_entries.async_update_entry(
+            self.entry, options={**self.entry.options, CONF_ZONES: zones}
+        )
+        self.async_set_updated_data(self._build_coordinator_data())
+        return True
+
     def update_zone_config(self, zone_id: str, **kwargs: Any) -> None:
         zone = self._zones.get(zone_id)
         if not zone:

@@ -10,9 +10,7 @@ DOMAIN = "climate_manager"
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
-    Platform.SWITCH,
     Platform.SELECT,
-    Platform.NUMBER,
     Platform.BUTTON,
 ]
 
@@ -22,6 +20,7 @@ UPDATE_INTERVAL_SECONDS = 30
 
 CONF_PRESENCE_ENTITY = "presence_entity"
 CONF_PRESENCE_ABSENT_STATES = "presence_absent_states"
+CONF_PRESENCE_HOME_STATES = "presence_home_states"
 
 # === Zone config keys ===
 

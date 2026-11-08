@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
+from homeassistant.components import frontend, panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_ZONES,
@@ -20,11 +22,15 @@ from .const import (
     ProfileMode,
     ZoneMode,
 )
+from . import websocket_api
 from .coordinator import DelormejClimateCoordinator
 from .zone import utc_now_ts
 
 CARD_URL_PATH = f"/{DOMAIN}/climate-manager-card.js"
 CARD_FILENAME = "climate-manager-card.js"
+PANEL_URL_PATH = f"/{DOMAIN}/climate-manager-panel.js"
+PANEL_FILENAME = "climate-manager-panel.js"
+PANEL_FRONTEND_PATH = "climate-manager"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,12 +105,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    _remove_retired_entities(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     _register_services(hass)
     await _register_lovelace_card(hass)
+    websocket_api.async_register(hass)
+    await _register_panel(hass)
     return True
+
+
+# Entities moved to the settings panel or replaced by services (v0.25).
+RETIRED_ENTITY_SUFFIXES = (
+    "_auto",
+    "_override_duree_min",
+    "_season",
+    "_override_until",
+    "_reset_override",
+    "_force_start_cool",
+    "_force_start_heat",
+    "_start_fan_session",
+    "_extend_session_1h",
+    "_cancel_session",
+)
+
+
+def _remove_retired_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    registry = er.async_get(hass)
+    for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if reg_entry.unique_id.endswith(RETIRED_ENTITY_SUFFIXES):
+            registry.async_remove(reg_entry.entity_id)
+
+
+_PANEL_REGISTERED = "_panel_registered"
+_PANEL_PATH_REGISTERED = "_panel_path_registered"
+
+
+async def _register_panel(hass: HomeAssistant) -> None:
+    """Sidebar panel « Climat » (admins only): the single settings screen."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if domain_data.get(_PANEL_REGISTERED):
+        return
+    panel_path = Path(__file__).parent / "www" / PANEL_FILENAME
+    if not domain_data.get(_PANEL_PATH_REGISTERED):
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(PANEL_URL_PATH, str(panel_path), cache_headers=False)]
+        )
+        domain_data[_PANEL_PATH_REGISTERED] = True
+    await panel_custom.async_register_panel(
+        hass,
+        frontend_url_path=PANEL_FRONTEND_PATH,
+        webcomponent_name="climate-manager-panel",
+        sidebar_title="Climat",
+        sidebar_icon="mdi:thermostat",
+        module_url=f"{PANEL_URL_PATH}?v={_read_card_version()}",
+        require_admin=True,
+        config={},
+    )
+    domain_data[_PANEL_REGISTERED] = True
 
 
 _CARD_PATH_REGISTERED = "_card_path_registered"
@@ -217,8 +276,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         if coordinator is not None:
             await coordinator.async_shutdown()
-        if not hass.data[DOMAIN]:
+        if not _all_coordinators(hass):
             _unregister_services(hass)
+            if hass.data[DOMAIN].pop(_PANEL_REGISTERED, False):
+                frontend.async_remove_panel(hass, PANEL_FRONTEND_PATH)
     return unload_ok
 
 

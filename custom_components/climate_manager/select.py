@@ -23,7 +23,7 @@ async def async_setup_entry(
     coord: DelormejClimateCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[SelectEntity] = []
     for zid in coord.zones:
-        entities.extend((ZoneModeSelect(coord, zid), ZoneSeasonSelect(coord, zid)))
+        entities.append(ZoneModeSelect(coord, zid))
     async_add_entities(entities)
 
 
@@ -46,23 +46,3 @@ class ZoneModeSelect(DelormejClimateZoneEntity, SelectEntity):
             return
         zone.set_mode(option, utc_now_ts())
         await self.coordinator.async_tick_now()
-
-
-class ZoneSeasonSelect(DelormejClimateZoneEntity, SelectEntity):
-    """Sélectionne la banque Été/Hiver d'une zone."""
-
-    _attr_translation_key = "zone_season"
-    _attr_icon = "mdi:sun-snowflake-variant"
-    _attr_options = ClimateSeason.ALL
-
-    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
-        super().__init__(coord, zone_id, "season")
-
-    @property
-    def current_option(self) -> str | None:
-        d = self._zone_data
-        return d.get("season") if d else None
-
-    async def async_select_option(self, option: str) -> None:
-        if self.coordinator.set_zone_season(self._zone_id, option):
-            await self.coordinator.async_tick_now()

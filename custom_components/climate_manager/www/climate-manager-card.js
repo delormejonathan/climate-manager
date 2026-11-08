@@ -102,9 +102,7 @@ class DelormejClimateCard extends HTMLElement {
       regime: this._ent("sensor", "regime"),
       roomTemp: this._ent("sensor", "zone_temperature"),
       setpointSent: this._ent("sensor", "setpoint_sent"),
-      overrideUntil: this._ent("sensor", "override_until"),
       modeSelect: this._ent("select", "mode"),
-      seasonSelect: this._ent("select", "season"),
       powerSelect: this._ent("select", "power"),
       fanIntensitySelect: this._ent("select", "fan_intensity"),
       heatStart: this._ent("number", "heat_start_threshold"),
@@ -113,11 +111,7 @@ class DelormejClimateCard extends HTMLElement {
       coolStop: this._ent("number", "cool_stop_threshold"),
       stabDuration: this._ent("number", "stabilization_duration"),
       cooldownDuration: this._ent("number", "cooldown_duration"),
-      overrideDuration: this._ent("number", "override_duration"),
       boostBtn: this._ent("button", "boost_15_min"),
-      resumeAutoBtn: this._ent("button", "resume_auto"),
-      forceCoolBtn: this._ent("button", "start_cooling"),
-      forceHeatBtn: this._ent("button", "start_heating"),
     };
   }
 
@@ -162,12 +156,12 @@ class DelormejClimateCard extends HTMLElement {
     $("boost-btn").addEventListener("click", () =>
       this._call("button", "press", { entity_id: ids.boostBtn }));
     $("resume-btn").addEventListener("click", () =>
-      this._call("button", "press", { entity_id: ids.resumeAutoBtn }));
+      this._call("climate_manager", "reset_override", { zone_id: this._zone }));
     // Force start (visible only when idle/cooldown/etc.)
     $("force-cool-btn").addEventListener("click", () =>
-      this._call("button", "press", { entity_id: ids.forceCoolBtn }));
+      this._call("climate_manager", "force_start", { zone_id: this._zone, direction: "cool" }));
     $("force-heat-btn").addEventListener("click", () =>
-      this._call("button", "press", { entity_id: ids.forceHeatBtn }));
+      this._call("climate_manager", "force_start", { zone_id: this._zone, direction: "heat" }));
 
     // Manual clim controls
     if (this._climateEntity) {
@@ -193,13 +187,9 @@ class DelormejClimateCard extends HTMLElement {
     });
 
     // Profiles — single delegate on the list, plus "add" button
-    $("profiles-list").addEventListener("click", (e) => this._onProfileListClick(e));
-    $("profiles-list").addEventListener("change", (e) => this._onProfileFieldChange(e));
-    $("profile-add").addEventListener("click", () => this._onProfileAdd());
-    $("season").querySelectorAll("button").forEach((b) => {
-      b.addEventListener("click", () => this._call("select", "select_option",
-        { entity_id: ids.seasonSelect, option: b.dataset.season }));
-    });
+    // Profiles are read-only here: settings live in the « Climat » panel.
+    $("profiles-list").addEventListener("click", () => this._openSettings("comfort"));
+    $("profile-add").addEventListener("click", () => this._openSettings("comfort"));
 
     // Session actions
     const sessionModifyBtn = $("session-modify-btn");
@@ -322,7 +312,7 @@ class DelormejClimateCard extends HTMLElement {
       return this._call("climate_manager", "cancel_session", { zone_id: this._zone });
     }
     if (a === "resume-auto") {
-      return this._call("button", "press", { entity_id: this._ent("button", "resume_auto") });
+      return this._call("climate_manager", "reset_override", { zone_id: this._zone });
     }
     if (a === "mode-auto") {
       return this._call("select", "select_option", {
@@ -921,168 +911,6 @@ class DelormejClimateCard extends HTMLElement {
 
   /* =================================================================== profile modal */
 
-  _openProfileModal(idx) {
-    const profiles = this._currentProfiles();
-    const p = profiles[idx] || {};
-    const presenceEntities = this._listEntities([
-      "alarm_control_panel.", "person.", "binary_sensor.", "device_tracker.",
-      "input_boolean.", "group.",
-    ]);
-    const opt = (v, l, cur) =>
-      `<option value="${this._escapeHTML(v)}" ${v === cur ? "selected" : ""}>${this._escapeHTML(l)}</option>`;
-    this._openModal(`
-      <h2 class="dc-modal-title">Profil — ${this._escapeHTML(p.name || "Nouveau")}</h2>
-      <div class="dc-modal-form" data-bind="profile-modal-form" data-idx="${idx}">
-        <div class="dc-modal-field">
-          <label>Nom</label>
-          <input type="text" data-field="name" value="${this._escapeHTML(p.name || "")}">
-        </div>
-        <div class="dc-modal-field">
-          <label>Mode</label>
-          <select data-field="mode">
-            ${opt("cool", "Refroidissement", p.mode || "cool")}
-            ${opt("heat", "Chauffage", p.mode || "cool")}
-          </select>
-        </div>
-        <div class="dc-modal-pair">
-          <div class="dc-modal-field">
-            <label>Actif de</label>
-            <input type="time" data-field="active_from" value="${this._escapeHTML(p.active_from || "")}">
-          </div>
-          <div class="dc-modal-field">
-            <label>Jusqu'à</label>
-            <input type="time" data-field="active_to" value="${this._escapeHTML(p.active_to || "")}">
-          </div>
-        </div>
-        <div class="dc-modal-pair">
-          <div class="dc-modal-field">
-            <label>Seuil de démarrage</label>
-            <input type="number" step="0.5" data-field="seuil_demarrage" value="${p.seuil_demarrage ?? ""}">
-          </div>
-          <div class="dc-modal-field">
-            <label>Cible (°C)</label>
-            <input type="number" step="0.5" data-field="target" value="${p.target ?? ""}">
-          </div>
-        </div>
-        <div class="dc-modal-field">
-          <label>Cible de coupure (°C — vide = pas de coupure auto)</label>
-          <input type="number" step="0.5" data-field="target_cutoff" value="${p.target_cutoff ?? ""}">
-          <span class="dc-modal-hint">Si renseignée, la session s'arrête quand la pièce atteint cette T° pendant 15 min.</span>
-        </div>
-        <div class="dc-modal-pair">
-          <div class="dc-modal-field">
-            <label>Puissance</label>
-            <select data-field="power">
-              ${["doux","normal","agressif"].map(o => opt(o, this._capitalize(o), p.power || "normal")).join("")}
-            </select>
-          </div>
-          <div class="dc-modal-field">
-            <label>Ventilation</label>
-            <select data-field="fan_intensity">
-              ${["doux","normal","fort"].map(o => opt(o, this._capitalize(o), p.fan_intensity || "normal")).join("")}
-            </select>
-          </div>
-        </div>
-
-        <details class="dc-modal-advanced" ${p.kickstart_minutes > 0 ? "open" : ""}>
-          <summary>Kickstart (boost de démarrage)</summary>
-          <div class="dc-modal-field">
-            <label>Durée du kickstart (min, 0 = désactivé)</label>
-            <input type="number" min="0" step="5" data-field="kickstart_minutes" value="${p.kickstart_minutes ?? 0}">
-          </div>
-          <div class="dc-modal-pair">
-            <div class="dc-modal-field">
-              <label>Puissance kickstart</label>
-              <select data-field="kickstart_power">
-                <option value="">(hériter)</option>
-                ${["doux","normal","agressif"].map(o => opt(o, this._capitalize(o), p.kickstart_power || "")).join("")}
-              </select>
-            </div>
-            <div class="dc-modal-field">
-              <label>Ventilation kickstart</label>
-              <select data-field="kickstart_fan_intensity">
-                <option value="">(hériter)</option>
-                ${["doux","normal","fort"].map(o => opt(o, this._capitalize(o), p.kickstart_fan_intensity || "")).join("")}
-              </select>
-            </div>
-          </div>
-          <span class="dc-modal-hint">Pendant les N premières minutes, on remplace puissance + ventilation par les valeurs ci-dessus (idéal pour absorber un gros écart au démarrage).</span>
-        </details>
-
-        <details class="dc-modal-advanced" ${p.presence_entity ? "open" : ""}>
-          <summary>Présence (condition optionnelle)</summary>
-          <div class="dc-modal-field">
-            <label>Entité de présence</label>
-            <select data-field="presence_entity">
-              ${opt("", "— Aucune —", p.presence_entity || "")}
-              ${presenceEntities.map((e) => opt(e, e, p.presence_entity || "")).join("")}
-            </select>
-          </div>
-          <div class="dc-modal-field">
-            <label>État requis (ex: armed_away, home, on)</label>
-            <input type="text" data-field="presence_required_state" value="${this._escapeHTML(p.presence_required_state || "")}">
-          </div>
-        </details>
-
-        <div class="dc-modal-actions">
-          <button class="dc-btn" data-bind="modal-cancel">Annuler</button>
-          <button class="dc-btn dc-btn-primary" data-bind="modal-save">Enregistrer</button>
-        </div>
-      </div>
-    `);
-    const form = this._modalEl.querySelector('[data-bind="profile-modal-form"]');
-    form.querySelector('[data-bind="modal-cancel"]').addEventListener("click", () => this._closeModal());
-    form.querySelector('[data-bind="modal-save"]').addEventListener("click", () => this._submitProfileModal(form, idx));
-  }
-
-  _submitProfileModal(form, idx) {
-    const get = (f) => form.querySelector(`[data-field="${f}"]`)?.value ?? "";
-    const num = (f, def) => {
-      const v = parseFloat(get(f));
-      return Number.isFinite(v) ? v : def;
-    };
-    const nullableNum = (f) => {
-      const raw = get(f).trim();
-      if (raw === "") return null;
-      const v = parseFloat(raw);
-      return Number.isFinite(v) ? v : null;
-    };
-    const nullableInt = (f) => {
-      const raw = get(f).trim();
-      if (raw === "") return 0;
-      const v = parseInt(raw, 10);
-      return Number.isFinite(v) ? Math.max(0, v) : 0;
-    };
-    const nullableStr = (f) => {
-      const v = get(f);
-      return v === "" ? null : v;
-    };
-    const mode = get("mode") === "heat" ? "heat" : "cool";
-    const defSeuil = mode === "cool" ? 27.0 : 18.0;
-    const defTarget = mode === "cool" ? 24.5 : 21.0;
-    const profile = {
-      name: get("name").trim() || "Sans nom",
-      mode,
-      active_from: nullableStr("active_from"),
-      active_to: nullableStr("active_to"),
-      presence_entity: nullableStr("presence_entity"),
-      presence_required_state: nullableStr("presence_required_state"),
-      seuil_demarrage: num("seuil_demarrage", defSeuil),
-      target: num("target", defTarget),
-      target_cutoff: nullableNum("target_cutoff"),
-      power: get("power") || "normal",
-      fan_intensity: get("fan_intensity") || "normal",
-      kickstart_minutes: nullableInt("kickstart_minutes"),
-      kickstart_power: nullableStr("kickstart_power"),
-      kickstart_fan_intensity: nullableStr("kickstart_fan_intensity"),
-    };
-    const profiles = this._currentProfiles();
-    profiles[idx] = profile;
-    this._pendingNewProfile = null;
-    this._closeModal();
-    this._pushProfiles(profiles);
-  }
-
   /* =================================================================== update */
 
   _update() {
@@ -1209,11 +1037,11 @@ class DelormejClimateCard extends HTMLElement {
       climObj ? this._fmtTempUnit(climObj.attributes.current_temperature) : "—";
 
     // Override row
-    const overrideUntil = get(ids.overrideUntil);
+    const overrideUntil = attrs.override_until_at;
     const overrideRow = $("override-row");
-    if (overrideUntil && overrideUntil.state !== "unknown" && overrideUntil.state !== "unavailable") {
+    if (overrideUntil) {
       overrideRow.style.display = "";
-      $("override-until-val").textContent = this._fmtTime(overrideUntil.state);
+      $("override-until-val").textContent = this._fmtTime(overrideUntil);
     } else {
       overrideRow.style.display = "none";
     }
@@ -1382,13 +1210,10 @@ class DelormejClimateCard extends HTMLElement {
     const profiles = Array.isArray(attrs.profiles) ? attrs.profiles : [];
     const activeName = attrs.active_profile_name;
     const season = attrs.season || "summer";
-    this.querySelectorAll('[data-bind="season"] button').forEach((button) => {
-      button.classList.toggle("active", button.dataset.season === season);
-    });
     const count = attrs.profile_bank_counts?.[season] ?? profiles.length;
     const seasonHint = this.querySelector('[data-bind="season-hint"]');
     if (seasonHint) {
-      seasonHint.textContent = `${season === "winter" ? "Banque hiver" : "Banque été"} · ${count} profil${count === 1 ? "" : "s"}`;
+      seasonHint.textContent = `Programme ${season === "winter" ? "hiver" : "été"} · le premier profil qui correspond s'applique`;
     }
 
     if (profiles.length === 0) {
@@ -1400,37 +1225,27 @@ class DelormejClimateCard extends HTMLElement {
 
     // Re-render only when the underlying data signature changes (avoids
     // wiping a half-typed input on every coordinator tick).
-    const sig = JSON.stringify({ profiles, activeName, season, editing: this._editingProfileIdx });
+    const sig = JSON.stringify({ profiles, activeName, season });
     if (list.dataset.sig === sig) return;
     list.dataset.sig = sig;
     list.innerHTML = "";
 
     profiles.forEach((p, idx) => {
-      list.appendChild(this._buildProfileCard(p, idx, idx === this._editingProfileIdx, p.name === activeName));
+      list.appendChild(this._buildProfileCard(p, idx, p.name === activeName));
     });
   }
 
-  _buildProfileCard(profile, idx, isEditing, isActive) {
+  _buildProfileCard(profile, idx, isActive) {
     const card = document.createElement("div");
     card.className = "dc-profile" + (isActive ? " dc-profile--active" : "");
     card.dataset.idx = String(idx);
-
-    if (isEditing) {
-      card.appendChild(this._buildProfileEditForm(profile, idx));
-      return card;
-    }
 
     const head = document.createElement("div");
     head.className = "dc-profile-head";
     head.innerHTML = `
       ${isActive ? '<span class="dc-profile-badge">ACTIF</span>' : '<span class="dc-profile-badge ghost"></span>'}
       <span class="dc-profile-name">${this._escapeHTML(profile.name || "Sans nom")}</span>
-      <div class="dc-profile-actions">
-        <button data-action="up" title="Monter">↑</button>
-        <button data-action="down" title="Descendre">↓</button>
-        <button data-action="edit" title="Éditer"><ha-icon icon="mdi:pencil"></ha-icon></button>
-        <button data-action="delete" title="Supprimer"><ha-icon icon="mdi:trash-can-outline"></ha-icon></button>
-      </div>`;
+`;
     card.appendChild(head);
 
     const meta = document.createElement("div");
@@ -1508,13 +1323,18 @@ class DelormejClimateCard extends HTMLElement {
   }
 
   _presenceStateLabel(state) {
-    if (Array.isArray(state)) return state.map((s) => this._presenceStateLabel(s)).join(" ou ");
+    if (Array.isArray(state)) {
+      const set = [...state].map((x) => String(x).toLowerCase()).sort().join(",");
+      if (set === "armed_home,disarmed") return "Maison occupée";
+      return state.map((s) => this._presenceStateLabel(s)).join(" ou ");
+    }
     const s = String(state || "").toLowerCase();
     const labels = {
       armed_away: "Maison vide",
       armed_vacation: "Vacances",
       armed_night: "Nuit",
-      armed_home: "Maison armée",
+      armed_home: "Maison occupée",
+      disarmed: "Maison occupée",
       not_home: "Absent",
       away: "Absent",
       home: "Présent",
@@ -1530,197 +1350,6 @@ class DelormejClimateCard extends HTMLElement {
 
   _profileFanLabel(fan) {
     return ({ doux: "Ventil. douce", normal: "Ventil. normale", fort: "Ventil. forte" })[fan] || this._capitalize(fan);
-  }
-
-  _buildProfileEditForm(profile, idx) {
-    const form = document.createElement("div");
-    form.className = "dc-profile-edit";
-    form.dataset.idx = String(idx);
-    const presenceEntities = this._listEntities(["alarm_control_panel.", "person.", "binary_sensor.", "device_tracker.", "input_boolean.", "group."]);
-    const opt = (val, label, current) =>
-      `<option value="${this._escapeHTML(val)}" ${val === current ? "selected" : ""}>${this._escapeHTML(label)}</option>`;
-    const mode = profile.mode || "cool";
-    form.innerHTML = `
-      <div class="dc-profile-edit-title">Édition de ${this._escapeHTML(profile.name || "Sans nom")}</div>
-      <div class="dc-field"><label>Nom</label>
-        <input type="text" data-field="name" value="${this._escapeHTML(profile.name || "")}">
-      </div>
-      <div class="dc-field"><label>Mode</label>
-        <select data-field="mode">
-          ${opt("cool", "Refroidissement", mode)}
-          ${opt("heat", "Chauffage", mode)}
-        </select>
-      </div>
-      <div class="dc-pair">
-        <div class="dc-field"><label>Actif à partir de</label>
-          <input type="time" data-field="active_from" value="${this._escapeHTML(profile.active_from || "")}">
-        </div>
-        <div class="dc-field"><label>Jusqu'à</label>
-          <input type="time" data-field="active_to" value="${this._escapeHTML(profile.active_to || "")}">
-        </div>
-      </div>
-      <div class="dc-field"><label>Entité présence (condition optionnelle)</label>
-        <select data-field="presence_entity">
-          ${opt("", "— Aucune condition —", profile.presence_entity || "")}
-          ${presenceEntities.map(e => opt(e, e, profile.presence_entity || "")).join("")}
-        </select>
-      </div>
-      <div class="dc-field"><label>État requis (ex: armed_away, home, on)</label>
-        <input type="text" data-field="presence_required_state" value="${this._escapeHTML(profile.presence_required_state || "")}">
-      </div>
-      <div class="dc-pair">
-        <div class="dc-field"><label>Seuil de démarrage</label>
-          <div class="dc-input-wrap"><input type="number" step="0.5" data-field="seuil_demarrage" value="${profile.seuil_demarrage ?? ""}"><span class="unit">°C</span></div>
-        </div>
-        <div class="dc-field"><label>Cible</label>
-          <div class="dc-input-wrap"><input type="number" step="0.5" data-field="target" value="${profile.target ?? ""}"><span class="unit">°C</span></div>
-        </div>
-      </div>
-      <div class="dc-pair">
-        <div class="dc-field"><label>Puissance</label>
-          <select data-field="power">
-            ${["doux","normal","agressif"].map(o => opt(o, this._capitalize(o), profile.power || "normal")).join("")}
-          </select>
-        </div>
-        <div class="dc-field"><label>Ventilation</label>
-          <select data-field="fan_intensity">
-            ${["doux","normal","fort"].map(o => opt(o, this._capitalize(o), profile.fan_intensity || "normal")).join("")}
-          </select>
-        </div>
-      </div>
-      <div class="dc-profile-edit-actions">
-        <button data-action="cancel">Annuler</button>
-        <button data-action="save" class="dc-profile-save">Enregistrer</button>
-      </div>`;
-    return form;
-  }
-
-  _listEntities(prefixes) {
-    if (!this._hass) return [];
-    const list = Array.isArray(prefixes) ? prefixes : [prefixes];
-    return Object.keys(this._hass.states)
-      .filter((eid) => list.some((p) => eid.startsWith(p)))
-      .sort();
-  }
-
-  _onProfileListClick(e) {
-    const btn = e.target.closest("button[data-action]");
-    if (!btn) return;
-    const card = btn.closest(".dc-profile");
-    if (!card) return;
-    const idx = parseInt(card.dataset.idx, 10);
-    const action = btn.dataset.action;
-    if (action === "edit") {
-      this._openProfileModal(idx);
-    } else if (action === "cancel") {
-      this._editingProfileIdx = null;
-      this._update();
-    } else if (action === "delete") {
-      if (!confirm(`Supprimer ce profil ?`)) return;
-      const profiles = this._currentProfiles();
-      profiles.splice(idx, 1);
-      this._editingProfileIdx = null;
-      this._pushProfiles(profiles);
-    } else if (action === "up" && idx > 0) {
-      const profiles = this._currentProfiles();
-      [profiles[idx - 1], profiles[idx]] = [profiles[idx], profiles[idx - 1]];
-      this._pushProfiles(profiles);
-    } else if (action === "down") {
-      const profiles = this._currentProfiles();
-      if (idx < profiles.length - 1) {
-        [profiles[idx], profiles[idx + 1]] = [profiles[idx + 1], profiles[idx]];
-        this._pushProfiles(profiles);
-      }
-    } else if (action === "save") {
-      const form = card.querySelector(".dc-profile-edit");
-      if (!form) return;
-      const profiles = this._currentProfiles();
-      profiles[idx] = this._readProfileForm(form, profiles[idx]);
-      this._editingProfileIdx = null;
-      this._pushProfiles(profiles);
-    }
-  }
-
-  _onProfileFieldChange(_e) {
-    // No-op for now — fields are only committed on Enregistrer. Kept as a
-    // listener anchor so we can add per-field validation later.
-  }
-
-  _onProfileAdd() {
-    const profiles = this._currentProfiles();
-    const season = this._stateAttrs().season || "summer";
-    const winter = season === "winter";
-    profiles.push({
-      name: "Nouveau profil",
-      mode: winter ? "heat" : "cool",
-      active_from: null,
-      active_to: null,
-      presence_entity: null,
-      presence_required_state: null,
-      seuil_demarrage: winter ? 19.0 : 27.0,
-      target: winter ? 20.0 : 24.5,
-      target_cutoff: null,
-      power: "normal",
-      fan_intensity: "normal",
-      kickstart_minutes: 0,
-      kickstart_power: null,
-      kickstart_fan_intensity: null,
-    });
-    const idx = profiles.length - 1;
-    // Stocker temporairement le profil pour que le modal puisse l'éditer
-    // sans avoir à le pousser d'abord (et il sera persisté à la sauvegarde).
-    this._pendingNewProfile = profiles;
-    this._openProfileModal(idx);
-  }
-
-  _currentProfiles() {
-    // Pendant qu'un nouveau profil est en cours d'édition dans le modal,
-    // on travaille sur le buffer pending. Le buffer est effacé sur save ou cancel.
-    if (this._pendingNewProfile) {
-      return JSON.parse(JSON.stringify(this._pendingNewProfile));
-    }
-    const attrs = this._hass?.states[this._ent("sensor", "state")]?.attributes || {};
-    return JSON.parse(JSON.stringify(attrs.profiles || []));
-  }
-
-  _readProfileForm(form, fallback) {
-    const get = (field) => form.querySelector(`[data-field="${field}"]`)?.value ?? "";
-    const f = (field, def) => {
-      const v = parseFloat(get(field));
-      return Number.isFinite(v) ? v : def;
-    };
-    const i = (field) => {
-      const raw = get(field).trim();
-      if (raw === "") return null;
-      const v = parseInt(raw, 10);
-      return Number.isFinite(v) ? v : null;
-    };
-    const s = (field) => {
-      const v = get(field);
-      return v === "" ? null : v;
-    };
-    const mode = get("mode") === "heat" ? "heat" : "cool";
-    const defSeuil = mode === "cool" ? 27.0 : 18.0;
-    const defTarget = mode === "cool" ? 24.5 : 21.0;
-    return {
-      name: get("name") || "Sans nom",
-      mode,
-      active_from: s("active_from"),
-      active_to: s("active_to"),
-      presence_entity: s("presence_entity"),
-      presence_required_state: s("presence_required_state"),
-      seuil_demarrage: f("seuil_demarrage", fallback?.seuil_demarrage ?? defSeuil),
-      target: f("target", fallback?.target ?? defTarget),
-      power: get("power") || "normal",
-      fan_intensity: get("fan_intensity") || "normal",
-    };
-  }
-
-  _pushProfiles(profiles) {
-    this._call("climate_manager", "update_profiles", {
-      zone_id: this._zone,
-      profiles,
-    });
   }
 
   /* =================================================================== timeline */
@@ -1948,6 +1577,12 @@ class DelormejClimateCard extends HTMLElement {
     div.innerHTML = `<ha-icon icon="${icon}"></ha-icon><span>${this._escapeHTML(text)}</span>`;
     return div;
   }
+  _openSettings(tab) {
+    const url = `/climate-manager?tab=${tab}&zone=${encodeURIComponent(this._zone)}`;
+    history.pushState(null, "", url);
+    window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+  }
+
   _call(domain, service, data) {
     if (!this._hass) return Promise.resolve();
     const err = this.querySelector('[data-bind="error"]');
@@ -3535,6 +3170,7 @@ const STYLES = `
 
   /* ============ §2 PROFILS — compact & clean ============ */
   .dc-profiles-list {
+    cursor: pointer;
     display: flex; flex-direction: column; gap: 8px;
     margin-bottom: 10px;
   }
@@ -4201,17 +3837,13 @@ const TEMPLATE = `
 
   <!-- ════════════════════════════════════ PROFILS -->
   <section class="dc-section section-profiles">
-    <div class="dc-season-switch" data-bind="season" aria-label="Saison active">
-      <button type="button" data-season="summer"><ha-icon icon="mdi:white-balance-sunny"></ha-icon> Été</button>
-      <button type="button" data-season="winter"><ha-icon icon="mdi:snowflake"></ha-icon> Hiver</button>
-    </div>
     <span class="dc-season-hint" data-bind="season-hint"></span>
     <div class="dc-profiles-empty" data-bind="profiles-empty" style="display:none">
-      Aucun profil dans cette banque. Tant qu'aucun profil ne match, la zone reste OFF.
+      Aucun profil pour cette saison : la zone ne démarre pas seule.
     </div>
     <div class="dc-profiles-list" data-bind="profiles-list"></div>
     <button class="dc-profile-add" data-bind="profile-add">
-      <ha-icon icon="mdi:plus-circle"></ha-icon> Nouveau profil
+      <ha-icon icon="mdi:cog-outline"></ha-icon> Régler le programme
     </button>
   </section>
 
