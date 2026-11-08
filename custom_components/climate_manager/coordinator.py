@@ -91,6 +91,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         )
         self._last_runtime_payload: dict[str, Any] | None = None
         self.plant = Plant.from_options(entry.options)
+        # Equipment set the platforms were built for (one switch each).
+        self.equipment_ids = {e.id for e in self.plant.equipments}
         self._boost: dict[str, BoostMemory] = {}
         self._engaged: dict[str, list[Equipment]] = {}
         self._central: dict[str, CentralOrder] = {}
@@ -188,6 +190,39 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         )
         self._apply_plant_to_zones()
         self.async_set_updated_data(self._build_coordinator_data())
+
+    async def async_set_equipment_enabled(self, equipment_id: str, enabled: bool) -> bool:
+        """Put an equipment in or out of service; stop it once when it leaves."""
+        plant = Plant.from_options({**self.entry.options, **self.plant.to_options()})
+        eq = plant.equipment(equipment_id)
+        if eq is None:
+            return False
+        if eq.enabled == enabled:
+            return True
+        eq.enabled = enabled
+        was_ours = any(e.id == eq.id for eqs in self._engaged.values() for e in eqs)
+        self.save_plant(plant)
+        if not enabled and was_ours:
+            await self._stop_equipment(eq)
+        await self.async_tick_now()
+        return True
+
+    async def _stop_equipment(self, eq: Equipment) -> None:
+        """Turn off what Climate Manager had started on this equipment."""
+        if eq.kind == EquipmentKind.CENTRAL:
+            self._central_sent = {k: v for k, v in self._central_sent.items() if k[0] != eq.id}
+            await self._drive_central(eq, CentralOrder(on=False))
+            return
+        zone = self._zones.get(eq.zones[0]) if eq.zones else None
+        mode = self.plant.current_mode
+        backup = zone is not None and mode is not None and any(
+            e.enabled and e.id != eq.id for e in self.plant.mode_equipments_for(mode, zone.config.zone_id)
+        )
+        if zone is not None and not backup:
+            await self.async_cancel_zone_session(zone)  # nothing else serves the zone
+        st = self.hass.states.get(eq.entity) if eq.entity else None
+        if st is not None and st.state not in (STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN):
+            await self._apply_command(Command("climate", "turn_off", {"entity_id": eq.entity}))
 
     def set_active_mode(self, mode_id: str | None) -> bool:
         if mode_id is not None and self.plant.mode(mode_id) is None:
@@ -297,7 +332,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         )
 
     def _equipment_available(self, eq: Equipment) -> bool:
-        if not eq.entity:
+        if not eq.enabled or not eq.entity:
             return False
         st = self.hass.states.get(eq.entity)
         return st is not None and st.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
@@ -314,6 +349,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._engaged[zid] = engaged
         hp = self.plant.heat_pump_of(zid)
         commands = [c for c in commands if c.data.get("entity_id")]
+        if hp is not None and not hp.enabled:
+            # Out of service: never started nor stopped by Climate Manager.
+            return []
         if hp is None or demand.direction is None:
             return commands
         if demand.manual and self.plant.current_mode is None:
@@ -391,7 +429,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             "modes": [{"id": m.id, "name": m.name, "direction": m.direction, "icon": m.icon} for m in self.plant.modes],
             "equipments": [
                 {
-                    "id": e.id, "name": e.name, "kind": e.kind, "zones": list(e.zones),
+                    "id": e.id, "name": e.name, "kind": e.kind, "zones": list(e.zones), "enabled": e.enabled,
+                    "in_mode": bool(mode and e.id in mode.equipments),
                     "on": bool(self._central.get(e.id) and self._central[e.id].on) if e.kind == EquipmentKind.CENTRAL else None,
                     "running": self._equipment_running(e),
                 }
@@ -406,7 +445,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         out = []
         for e in self.plant.serving(zone_id):
             out.append({
-                "id": e.id, "name": e.name, "kind": e.kind,
+                "id": e.id, "name": e.name, "kind": e.kind, "enabled": e.enabled,
                 "in_mode": e.id in in_mode,
                 "engaged": e.id in engaged,
                 "running": self._equipment_running(e) and (e.kind == EquipmentKind.HEAT_PUMP or e.id in engaged or bool(e.running_entity)),
@@ -418,6 +457,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         zones_data = data.get("zones", {}) if isinstance(data, dict) else {}
         for zid, zone in self._zones.items():
             zone.state = ZoneRuntimeState.from_dict(zones_data.get(zid))
+            # No per-zone switch any more: the house mode is the main switch.
+            zone.state.mode = ZoneMode.AUTO
         self._last_runtime_payload = self._runtime_payload()
 
     def _runtime_payload(self) -> dict[str, Any]:
@@ -483,6 +524,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         )
         if zone is None:
             return
+        hp = self.plant.heat_pump_of(zone.config.zone_id)
+        if hp is not None and not hp.enabled:
+            return  # out of service: used by hand, not an override
         if self._context_tracker.is_ours(event.context):
             return
         if old_state.state == new_state.state and not self._user_action_changed(
@@ -606,8 +650,11 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         """Premier profil dont les gates matchent (time window + présence).
 
         No operating mode in service: nothing starts on its own."""
-        if self.plant.current_mode is None:
+        mode = self.plant.current_mode
+        if mode is None:
             return None
+        if not any(e.enabled for e in self.plant.mode_equipments_for(mode, zone.config.zone_id)):
+            return None  # every equipment of this zone is out of service
         for p in zone.config.profiles:
             if not self._profile_time_window_on(p):
                 continue
@@ -1204,7 +1251,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "house_is_absent": self._house_is_absent(),
                 "in_override": zone.state.state
                 in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE),
-                "is_off_mode": zone.state.mode == ZoneMode.OFF,
                 "state_entered_ts": entered_ts,
                 "cycle_started_ts": zone.state.cycle_started_ts,
                 "direction": direction,

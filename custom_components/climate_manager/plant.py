@@ -75,6 +75,9 @@ class Equipment:
     setpoint_entity: str | None = None  # number.* written while it runs
     setpoint_offset: float = DEFAULT_SETPOINT_OFFSET
     running_entity: str | None = None  # binary_sensor.* « it is producing » (flame)
+    # « En service »: off means Climate Manager never starts it (the mode falls
+    # back on the next equipment) and leaves it alone otherwise.
+    enabled: bool = True
 
     def supports(self, direction: str) -> bool:
         return self.heat if direction == HEAT else self.cool
@@ -98,6 +101,7 @@ class Equipment:
             setpoint_entity=d.get("setpoint_entity") or None,
             setpoint_offset=float(d.get("setpoint_offset", DEFAULT_SETPOINT_OFFSET)),
             running_entity=d.get("running_entity") or None,
+            enabled=bool(d.get("enabled", True)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +118,7 @@ class Equipment:
             "setpoint_entity": self.setpoint_entity,
             "setpoint_offset": self.setpoint_offset,
             "running_entity": self.running_entity,
+            "enabled": self.enabled,
         }
 
 
@@ -320,8 +325,8 @@ def central_orders(
     """One order per central equipment: on while any of its zones engages it."""
     orders: dict[str, CentralOrder] = {}
     for eq in plant.equipments:
-        if eq.kind != EquipmentKind.CENTRAL:
-            continue
+        if eq.kind != EquipmentKind.CENTRAL or not eq.enabled:
+            continue  # out of service: Climate Manager leaves it alone
         zones = [zid for zid, eqs in engaged_by_zone.items() if any(e.id == eq.id for e in eqs)]
         if not zones:
             orders[eq.id] = CentralOrder(on=False)

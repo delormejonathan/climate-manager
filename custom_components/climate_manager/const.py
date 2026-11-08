@@ -12,6 +12,7 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
     Platform.SELECT,
     Platform.BUTTON,
+    Platform.SWITCH,
 ]
 
 UPDATE_INTERVAL_SECONDS = 30

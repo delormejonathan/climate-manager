@@ -14,15 +14,14 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 
+from . import websocket_api
 from .const import (
     CONF_ZONES,
     DOMAIN,
     FAN_SESSION_DURATION_MIN,
     PLATFORMS,
     ProfileMode,
-    ZoneMode,
 )
-from . import websocket_api
 from .coordinator import DelormejClimateCoordinator
 from .zone import utc_now_ts
 
@@ -50,9 +49,6 @@ SERVICE_CANCEL_SESSION = "cancel_session"
 SERVICE_START_FAN_SESSION = "start_fan_session"
 
 SCHEMA_ZONE_ID = vol.Schema({vol.Required("zone_id"): cv.string})
-SCHEMA_SET_MODE = vol.Schema(
-    {vol.Required("zone_id"): cv.string, vol.Required("mode"): vol.In(ZoneMode.ALL)}
-)
 SCHEMA_FORCE_START = vol.Schema(
     {vol.Required("zone_id"): cv.string, vol.Required("direction"): vol.In(["cool", "heat"])}
 )
@@ -134,8 +130,15 @@ RETIRED_ENTITY_SUFFIXES = (
 def _remove_retired_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
     registry = er.async_get(hass)
     for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if reg_entry.unique_id.endswith(RETIRED_ENTITY_SUFFIXES):
+        uid = reg_entry.unique_id
+        # Per-zone mode select: gone, the house operating mode is the main switch.
+        zone_mode = uid.endswith("_mode") and uid.removesuffix("_mode").removeprefix(f"{entry.entry_id}_") in coordinator_zone_ids(hass, entry)
+        if uid.endswith(RETIRED_ENTITY_SUFFIXES) or zone_mode:
             registry.async_remove(reg_entry.entity_id)
+
+
+def coordinator_zone_ids(hass: HomeAssistant, entry: ConfigEntry) -> set[str]:
+    return {z.get("id") for z in entry.options.get(CONF_ZONES, [])}
 
 
 _PANEL_REGISTERED = "_panel_registered"
@@ -299,7 +302,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     coordinator: DelormejClimateCoordinator = hass.data[DOMAIN][entry.entry_id]
     current_zone_ids = set(coordinator.zones.keys())
     new_zone_ids = {z.get("id") for z in entry.options.get(CONF_ZONES, [])}
-    if current_zone_ids == new_zone_ids:
+    new_equipment_ids = {e.get("id") for e in entry.options.get("equipments", [])}
+    if current_zone_ids == new_zone_ids and coordinator.equipment_ids == new_equipment_ids:
         # Same zone set → just refresh configs in place (preserves runtime state).
         await coordinator.async_reload_zones()
     else:
@@ -339,23 +343,15 @@ def _slug(s: str) -> str:
 
 
 def _register_services(hass: HomeAssistant) -> None:
-    if hass.services.has_service(DOMAIN, SERVICE_SET_MODE):
+    if hass.services.has_service(DOMAIN, SERVICE_FORCE_OFF):
         return
 
-    async def _set_mode(call: ServiceCall) -> None:
-        coord, zone = _find_zone(hass, call.data["zone_id"])
-        if zone is None:
-            _LOGGER.warning("set_mode: zone %r not found", call.data["zone_id"])
-            return
-        zone.set_mode(call.data["mode"], utc_now_ts())
-        await coord.async_tick_now()
-
     async def _force_off(call: ServiceCall) -> None:
+        """Stop the zone's session now (the next one follows the programme)."""
         coord, zone = _find_zone(hass, call.data["zone_id"])
         if zone is None:
             return
-        zone.set_mode(ZoneMode.OFF, utc_now_ts())
-        await coord.async_tick_now()
+        await coord.async_cancel_zone_session(zone)
 
     async def _reset_override(call: ServiceCall) -> None:
         coord, zone = _find_zone(hass, call.data["zone_id"])
@@ -474,7 +470,6 @@ def _register_services(hass: HomeAssistant) -> None:
             return
         await coord.async_cancel_zone_session(zone)
 
-    hass.services.async_register(DOMAIN, SERVICE_SET_MODE, _set_mode, schema=SCHEMA_SET_MODE)
     hass.services.async_register(DOMAIN, SERVICE_FORCE_OFF, _force_off, schema=SCHEMA_ZONE_ID)
     hass.services.async_register(
         DOMAIN, SERVICE_RESET_OVERRIDE, _reset_override, schema=SCHEMA_ZONE_ID

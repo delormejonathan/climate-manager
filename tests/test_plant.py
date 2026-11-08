@@ -99,3 +99,17 @@ def test_central_runs_while_one_zone_needs_it_with_the_warmest_target():
 def test_heat_pump_serves_one_zone_only():
     eq = plant.Equipment.from_dict({"kind": "heat_pump", "name": "X", "entity": "climate.x", "zones": ["a", "b"]})
     assert eq.zones == ["a"]
+
+
+def test_out_of_service_is_kept_skipped_and_left_alone():
+    p = house()
+    p.active_mode = "boiler"
+    boiler = p.equipment("boiler")
+    boiler.enabled = False
+    assert plant.Plant.from_options(p.to_options()).equipment("boiler").enabled is False
+    assert plant.Equipment.from_dict({"name": "X", "entity": "climate.x"}).enabled is True
+    # the coordinator's availability check skips it: the mode falls back on the clim
+    available = lambda e: e.enabled  # noqa: E731
+    assert ids(plant.engaged_equipment(p, demand(), 0, available, plant.BoostMemory())) == ["hp_rdc"]
+    # no order at all, not even « off »: Climate Manager leaves it alone
+    assert "boiler" not in plant.central_orders(p, {"rdc": [boiler]}, {"rdc": demand()})

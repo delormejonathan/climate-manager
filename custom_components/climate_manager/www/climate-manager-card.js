@@ -225,7 +225,7 @@ class DelormejClimateCard extends HTMLElement {
     const icon = (s) => (s.kind === "central" ? "mdi:water-boiler" : "mdi:air-conditioner");
     el.innerHTML = sources.map((s) => {
       const on = cycleActive && s.engaged;
-      const label = on ? (s.running || s.kind !== "central" ? verb : "démarre") : s.running ? "en marche" : "au repos";
+      const label = s.enabled === false ? "hors service" : on ? (s.running || s.kind !== "central" ? verb : "démarre") : s.running ? "en marche" : "au repos";
       return `<span class="dc-source ${on ? "on" : ""}"><ha-icon icon="${icon(s)}"></ha-icon><b>${s.name}</b><span>${label}</span></span>`;
     }).join("");
   }
@@ -258,7 +258,9 @@ class DelormejClimateCard extends HTMLElement {
   _updateActionsBlock(stateVal, attrs) {
     const block = this.querySelector('[data-bind="actions-block"]');
     if (!block) return;
-    const isOff = !!attrs.is_off_mode;
+    // Every equipment serving this zone is out of service: nothing runs here.
+    const srcs = (attrs.sources || []).filter((s) => s.in_mode);
+    const isOff = srcs.length > 0 && srcs.every((s) => s.enabled === false);
     const inOverride = !!attrs.in_override;
     const hasSession = !!attrs.session;
     const isWindow = stateVal === "window_open";
@@ -292,21 +294,17 @@ class DelormejClimateCard extends HTMLElement {
       primary.push(btn("primary", "mdi:restore", "Reprendre le pilotage auto", "resume-auto"));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
     } else if (isOff) {
-      primary.push(info("mdi:power-off", "Pilotage désactivé."));
-      primary.push(btn("primary", "mdi:auto-mode", "Réactiver le pilotage auto", "mode-auto"));
-      primary.push(btn("secondary", "mdi:play-circle", "Démarrer une session manuelle", "session-start"));
-      primary.push(btn("secondary", "mdi:fan", "Ventilation 45 min", "session-fan"));
+      const names = srcs.map((s) => s.name).join(" et ");
+      primary.push(info("mdi:power-plug-off-outline", `${names} hors service : rien ne démarre seul ici.`));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
     } else if (hasSession) {
       primary.push(btn("danger", "mdi:stop-circle-outline", "Arrêter la session", "session-cancel"));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
-      secondary.push(btn("secondary-line", "mdi:power", "Désactiver le pilotage auto", "mode-off"));
     } else {
       // IDLE en auto, pas de session
       primary.push(btn("primary", "mdi:play-circle", "Démarrer une session", "session-start"));
       primary.push(btn("secondary", "mdi:fan", "Ventilation 45 min", "session-fan"));
       secondary.push(btn("secondary-line", "mdi:tune-variant", "Contrôle direct de la clim", "open-manual"));
-      secondary.push(btn("secondary-line", "mdi:power", "Désactiver le pilotage auto", "mode-off"));
     }
 
     const primaryHtml = `<div class="dc-actions-primary">${primary.join("")}</div>`;
@@ -335,19 +333,6 @@ class DelormejClimateCard extends HTMLElement {
     }
     if (a === "resume-auto") {
       return this._call("climate_manager", "reset_override", { zone_id: this._zone });
-    }
-    if (a === "mode-auto") {
-      return this._call("select", "select_option", {
-        entity_id: this._ent("select", "mode"),
-        option: "auto",
-      });
-    }
-    if (a === "mode-off") {
-      if (!confirm("Désactiver le pilotage automatique ? Toutes les sessions s'arrêteront.")) return;
-      return this._call("select", "select_option", {
-        entity_id: this._ent("select", "mode"),
-        option: "off",
-      });
     }
     if (a === "open-manual") return this._openManualControlModal();
   }
@@ -3527,7 +3512,8 @@ class ClimateManagerModeCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     const st = hass.states[this._entity];
-    const key = st ? JSON.stringify([st.state, st.attributes.options, st.attributes.equipments]) : "none";
+    this._switches = Object.values(hass.states).filter((s) => s.entity_id.startsWith("switch.") && s.attributes.equipment_id);
+    const key = st ? JSON.stringify([st.state, st.attributes.options, st.attributes.equipments, this._switches.map((s) => [s.entity_id, s.state])]) : "none";
     if (key === this._key) return;
     this._key = key;
     this._render(st);
@@ -3538,6 +3524,12 @@ class ClimateManagerModeCard extends HTMLElement {
       this._card = document.createElement("ha-card");
       this.appendChild(this._card);
       this._card.addEventListener("click", (e) => {
+        const sw = e.target.closest("button[data-switch]");
+        if (sw) {
+          const on = sw.getAttribute("aria-checked") === "true";
+          this._hass.callService("switch", on ? "turn_off" : "turn_on", { entity_id: sw.dataset.switch });
+          return;
+        }
         const b = e.target.closest("button[data-option]");
         if (!b || b.classList.contains("on")) return;
         this._hass.callService("select", "select_option", { entity_id: this._entity, option: b.dataset.option });
@@ -3550,8 +3542,12 @@ class ClimateManagerModeCard extends HTMLElement {
     const running = (a.equipments || []).filter((e) => e.running);
     const icons = { heat: "mdi:fire", cool: "mdi:snowflake" };
     const options = a.options || [];
+    const inMode = (a.equipments || []).filter((e) => e.in_mode);
+    const allOut = inMode.length > 0 && inMode.every((e) => e.enabled === false);
     const line = off
       ? "Rien ne démarre seul."
+      : allOut
+        ? `${inMode.map((e) => e.name).join(" et ")} hors service : rien ne démarre.`
       : running.length
         ? `${running.map((e) => e.name).join(" et ")} ${running.length > 1 ? (warm ? "chauffent" : "refroidissent") : (warm ? "chauffe" : "refroidit")} en ce moment.`
         : "Tout est à température.";
@@ -3562,7 +3558,25 @@ class ClimateManagerModeCard extends HTMLElement {
         <div class="cm-mode-text"><div class="cm-mode-label">Mode</div><div class="cm-mode-name">${st.state}</div></div>
         <div class="cm-mode-line">${line}</div>
       </div>
-      <div class="cm-mode-pills">${options.map((o) => `<button data-option="${o}" class="${o === st.state ? "on" : ""}">${o}</button>`).join("")}</div>`;
+      <div class="cm-mode-pills">${options.map((o) => `<button data-option="${o}" class="${o === st.state ? "on" : ""}">${o}</button>`).join("")}</div>
+      ${this._equipmentRows(a)}`;
+  }
+
+  /** One row per equipment: « En service » switch (Climate Manager may start it). */
+  _equipmentRows(a) {
+    const byId = Object.fromEntries((this._switches || []).map((s) => [s.attributes.equipment_id, s]));
+    const rows = (a.equipments || []).filter((e) => byId[e.id]).map((e) => {
+      const sw = byId[e.id];
+      const on = sw.state === "on";
+      const icon = e.kind === "central" ? "mdi:water-boiler" : "mdi:air-conditioner";
+      const status = !on ? "Hors service" : e.running ? (a.direction === "cool" ? "Refroidit" : "Chauffe") : "En service";
+      return `<div class="cm-eq ${on ? "" : "out"} ${on && e.running ? "run" : ""}">
+        <ha-icon icon="${icon}"></ha-icon>
+        <div class="cm-eq-text"><b>${e.name}</b><span>${status}</span></div>
+        <button class="cm-eq-switch" role="switch" aria-checked="${on}" data-switch="${sw.entity_id}" title="${on ? "Mettre hors service" : "Remettre en service"}"><i></i></button>
+      </div>`;
+    });
+    return rows.length ? `<div class="cm-eqs">${rows.join("")}</div>` : "";
   }
 }
 
@@ -3583,6 +3597,22 @@ const MODE_STYLES = `
     padding: 9px 12px; border-radius: 999px; cursor: pointer; white-space: nowrap; }
   .cm-mode-pills button.on { background: var(--card-background-color, #fff); color: var(--primary-text-color); font-weight: 600;
     box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .cm-eqs { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+  .cm-eq { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 16px;
+    border: 1px solid var(--divider-color, rgba(0,0,0,.08)); }
+  .cm-eq > ha-icon { --mdc-icon-size: 20px; color: var(--secondary-text-color); flex: none; }
+  .cm-eq.run > ha-icon { color: var(--cm-accent); }
+  .cm-eq-text { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
+  .cm-eq-text b { font-size: 14px; font-weight: 600; color: var(--primary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cm-eq-text span { font-size: 12px; color: var(--secondary-text-color); }
+  .cm-eq.run .cm-eq-text span { color: var(--cm-accent); font-weight: 500; }
+  .cm-eq.out .cm-eq-text b { color: var(--secondary-text-color); }
+  .cm-eq-switch { flex: none; width: 40px; height: 24px; border: 0; padding: 0; border-radius: 999px; cursor: pointer; position: relative;
+    background: var(--disabled-color, #bdbdbd); transition: background .15s; }
+  .cm-eq-switch i { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s; }
+  .cm-eq-switch[aria-checked="true"] { background: var(--primary-color); }
+  .cm-eq-switch[aria-checked="true"] i { transform: translateX(16px); }
   @media (max-width: 520px) {
     .cm-mode-line { margin-left: 0; width: 100%; }
     .cm-mode-pills { flex-wrap: wrap; border-radius: 20px; }

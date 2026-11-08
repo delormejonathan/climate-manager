@@ -1,29 +1,6 @@
-set_mode:
-  name: Set zone mode
-  description: Change le mode global d'une zone (auto / off / boost).
-  fields:
-    zone_id:
-      name: Zone ID
-      description: ID interne de la zone (visible dans les attributs de l'entité sensor d'état).
-      required: true
-      example: rdc
-      selector:
-        text:
-    mode:
-      name: Mode
-      description: Mode global de la zone.
-      required: true
-      example: auto
-      selector:
-        select:
-          options:
-            - auto
-            - "off"
-            - boost
-
 force_off:
   name: Force off
-  description: Force la zone en mode OFF (coupe la clim et empêche la reprise auto).
+  description: Arrête la session en cours de la zone (la suivante suit le programme).
   fields:
     zone_id:
       name: Zone ID

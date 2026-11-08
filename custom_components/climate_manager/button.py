@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, FAN_SESSION_DURATION_MIN, ProfileMode
+from .const import DOMAIN, ProfileMode
 from .coordinator import DelormejClimateCoordinator
 from .entity_base import DelormejClimateZoneEntity
 from .zone import Zone, utc_now_ts

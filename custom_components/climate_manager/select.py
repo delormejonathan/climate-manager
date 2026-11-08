@@ -1,4 +1,4 @@
-"""Select platform: per-zone mode (auto/off/boost).
+"""Select platform: house operating mode (the main switch).
 
 Power et fan_intensity sont désormais portés par les profils — plus de select
 au niveau zone pour ces deux knobs.
@@ -13,10 +13,8 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, ZoneMode
+from .const import DOMAIN
 from .coordinator import DelormejClimateCoordinator
-from .entity_base import DelormejClimateZoneEntity
-from .zone import utc_now_ts
 
 
 async def async_setup_entry(
@@ -24,8 +22,6 @@ async def async_setup_entry(
 ) -> None:
     coord: DelormejClimateCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[SelectEntity] = []
-    for zid in coord.zones:
-        entities.append(ZoneModeSelect(coord, zid))
     entities.append(OperatingModeSelect(coord))
     async_add_entities(entities)
 
@@ -75,25 +71,4 @@ class OperatingModeSelect(CoordinatorEntity[DelormejClimateCoordinator], SelectE
     async def async_select_option(self, option: str) -> None:
         mode = next((m for m in self.coordinator.plant.modes if m.name == option), None)
         self.coordinator.set_active_mode(mode.id if mode else None)
-        await self.coordinator.async_tick_now()
-
-
-class ZoneModeSelect(DelormejClimateZoneEntity, SelectEntity):
-    _attr_translation_key = "zone_mode"
-    _attr_icon = "mdi:tune-variant"
-    _attr_options = ZoneMode.ALL
-
-    def __init__(self, coord: DelormejClimateCoordinator, zone_id: str) -> None:
-        super().__init__(coord, zone_id, "mode")
-
-    @property
-    def current_option(self) -> str | None:
-        d = self._zone_data
-        return d.get("mode") if d else None
-
-    async def async_select_option(self, option: str) -> None:
-        zone = self.coordinator.zone(self._zone_id)
-        if not zone:
-            return
-        zone.set_mode(option, utc_now_ts())
         await self.coordinator.async_tick_now()

@@ -278,10 +278,10 @@ class ClimateManagerPanel extends HTMLElement {
     const season = this._season;
     const rows = this._rows(season);
     const seasonPills = `<div class="pills small">${Object.entries(SEASONS).map(([k, v]) =>
-      `<button data-view-season="${k}" class="${season === k ? "on" : ""}"><ha-icon icon="${v.icon}"></ha-icon>${v.label}${inService === k ? '<span class="dot" title="En service"></span>' : ""}</button>`).join("")}</div>`;
+      `<button data-view-season="${k}" class="${season === k ? "on" : ""}"><ha-icon icon="${v.icon}"></ha-icon>${v.label}${inService === k ? '<span class="dot" title="Actif"></span>' : ""}</button>`).join("")}</div>`;
     const banner = inService === season
-      ? `<div class="note"><ha-icon icon="${this._modeIcon(mode)}"></ha-icon><span>Mode <b>${esc(mode.name)}</b> en service : ces profils décident quand ${SEASONS[season].mode === "heat" ? "chauffer" : "refroidir"} chaque zone (${esc(this._modeChain(mode))}).</span></div>`
-      : `<div class="note muted"><ha-icon icon="mdi:pause-circle-outline"></ha-icon><span>${mode ? `Mode <b>${esc(mode.name)}</b> en service : ` : "Aucun mode en service : "}ces profils attendent un mode de ${SEASONS[season].label.toLowerCase()}.</span>
+      ? `<div class="note"><ha-icon icon="${this._modeIcon(mode)}"></ha-icon><span>Mode <b>${esc(mode.name)}</b> actif : ces profils décident quand ${SEASONS[season].mode === "heat" ? "chauffer" : "refroidir"} chaque zone (${esc(this._modeChain(mode))}).</span></div>`
+      : `<div class="note muted"><ha-icon icon="mdi:pause-circle-outline"></ha-icon><span>${mode ? `Mode <b>${esc(mode.name)}</b> actif : ` : "Aucun mode actif : "}ces profils attendent un mode de ${SEASONS[season].label.toLowerCase()}.</span>
         <button class="btn small" data-tab="modes">Modes</button></div>`;
     const running = {};
     if (inService === season) for (const z of s.zones) if (z.live?.active_profile_name) (running[z.live.active_profile_name] ||= []).push(zoneName(z));
@@ -467,15 +467,15 @@ class ClimateManagerPanel extends HTMLElement {
     const zones = s.zones;
     const head = eqs.map((e) => {
       const accent = e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
-      return `<th><button class="eq-head ${accent}" data-edit-eq="${e.id}" title="Modifier">
+      return `<th><button class="eq-head ${e.enabled === false ? "out" : accent}" data-edit-eq="${e.id}" title="Modifier">
         <span class="eq-bubble"><ha-icon icon="${this._eqIcon(e)}"></ha-icon>${e.running ? '<span class="live-dot"></span>' : ""}</span>
-        <span class="eq-name">${esc(e.name)}</span><span class="eq-sub">${this._eqDoes(e)}</span></button></th>`;
+        <span class="eq-name">${esc(e.name)}</span><span class="eq-sub">${e.enabled === false ? "Hors service" : this._eqDoes(e)}</span></button></th>`;
     }).join("");
     const rows = zones.map((z) => `<tr>
       <th class="zone-head"><button data-open-zone="${z.id}"><span>${esc(zoneName(z))}</span><small>${deg(z.live?.room_temperature)}</small></button></th>
       ${eqs.map((e) => {
         const on = e.zones.includes(z.id);
-        const accent = e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
+        const accent = e.enabled === false ? "out" : e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
         return `<td><button class="cell ${on ? `on ${accent}` : ""}" data-toggle-cover="${e.id}|${z.id}" title="${on ? "Dessert" : "Ne dessert pas"} ${esc(zoneName(z))}">
           ${on ? '<ha-icon icon="mdi:check"></ha-icon>' : ""}</button></td>`;
       }).join("")}
@@ -510,13 +510,17 @@ class ClimateManagerPanel extends HTMLElement {
     const zones = this._settings.zones;
     const where = e.zones.length === zones.length && zones.length > 1 ? "toute la maison" : e.zones.map((id) => zoneName(this._zone(id))).join(", ") || "aucune zone";
     const accent = e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
-    return `<div class="row ${open ? "open" : ""}">
-      <button class="row-head" data-edit-eq="${e.id}">
-        <span class="row-icon ${accent}"><ha-icon icon="${this._eqIcon(e)}"></ha-icon></span>
-        <span class="row-main"><span class="row-title">${esc(e.name)}${e.running ? '<span class="badge ok">En marche</span>' : ""}</span>
-          <span class="row-meta"><span>${KINDS[e.kind].label}</span><span>${this._eqDoes(e)}</span><span><ha-icon icon="mdi:floor-plan"></ha-icon>${esc(where)}</span></span></span>
-        <ha-icon class="chev" icon="${open ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>
-      </button>
+    const inService = e.enabled !== false;
+    return `<div class="row ${open ? "open" : ""} ${inService ? "" : "out"}">
+      <div class="row-head">
+        <button class="row-hit" data-edit-eq="${e.id}">
+          <span class="row-icon ${inService ? accent : ""}"><ha-icon icon="${this._eqIcon(e)}"></ha-icon></span>
+          <span class="row-main"><span class="row-title">${esc(e.name)}${!inService ? '<span class="badge">Hors service</span>' : e.running ? '<span class="badge ok">En marche</span>' : ""}</span>
+            <span class="row-meta"><span>${KINDS[e.kind].label}</span><span>${this._eqDoes(e)}</span><span><ha-icon icon="mdi:floor-plan"></ha-icon>${esc(where)}</span></span></span>
+        </button>
+        <button class="svc-switch" role="switch" aria-checked="${inService}" data-enable-eq="${e.id}" title="${inService ? "En service : Climate Manager peut le démarrer" : "Hors service : Climate Manager n'y touche pas"}"><i></i></button>
+        <button class="icon-btn flat" data-edit-eq="${e.id}" aria-label="Modifier"><ha-icon icon="${open ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon></button>
+      </div>
       ${open ? this._renderEqEditor() : ""}
     </div>`;
   }
@@ -610,14 +614,14 @@ class ClimateManagerPanel extends HTMLElement {
     const rows = s.modes.map((m, i) => this._renderModeRow(m, i)).join("");
     const off = `<div class="row ${!active ? "running" : ""}"><div class="row-head static">
         <span class="row-icon"><ha-icon icon="mdi:power"></ha-icon></span>
-        <span class="row-main"><span class="row-title">Arrêt${!active ? '<span class="badge">En service</span>' : ""}</span>
+        <span class="row-main"><span class="row-title">Arrêt${!active ? '<span class="badge">Actif</span>' : ""}</span>
           <span class="row-meta"><span>Rien ne démarre seul. Le pilotage à la main reste possible.</span></span></span>
-        ${active ? '<button class="btn small" data-set-mode="">Mettre en service</button>' : ""}
+        ${active ? '<button class="btn small" data-set-mode="">Activer</button>' : ""}
         <span class="icon-btn flat ghost"></span>
       </div></div>`;
     return `<div class="card">
       ${this._cardHead("mdi:tune-variant", "Modes de fonctionnement")}
-      <div class="hint">Un mode dit quels appareils ont le droit de tourner, pour chauffer ou pour refroidir (jamais les deux). Un seul est en service à la fois ; le programme, lui, dit quelle température tu veux. Change de mode ici, depuis le tableau de bord ou par une automatisation.</div>
+      <div class="hint">Un mode dit quels appareils ont le droit de tourner, pour chauffer ou pour refroidir (jamais les deux). Un seul est actif à la fois, « Arrêt » coupe tout ; le programme, lui, dit quelle température tu veux. Un appareil mis hors service (onglet Installation ou tableau de bord) est sauté : le mode passe au suivant. Change de mode ici, depuis le tableau de bord ou par une automatisation.</div>
       <div class="rows">${rows}${off}
         ${this._modeEdit && !this._modeEdit.id ? `<div class="row open"><div class="row-head static"><span class="row-icon"><ha-icon icon="mdi:plus"></ha-icon></span><span class="row-main"><span class="row-title">Nouveau mode</span></span></div>${this._renderModeEditor()}</div>`
           : '<button class="add-row" data-add-mode><ha-icon icon="mdi:plus"></ha-icon>Ajouter un mode</button>'}
@@ -633,10 +637,10 @@ class ClimateManagerPanel extends HTMLElement {
       <div class="row-head">
         <button class="row-hit" data-edit-mode="${m.id}">
           <span class="row-icon ${accent}"><ha-icon icon="${this._modeIcon(m)}"></ha-icon></span>
-          <span class="row-main"><span class="row-title">${esc(m.name)}${isActive ? '<span class="badge">En service</span>' : ""}</span>
+          <span class="row-main"><span class="row-title">${esc(m.name)}${isActive ? '<span class="badge">Actif</span>' : ""}</span>
             <span class="row-meta"><span><ha-icon icon="${m.direction === "cool" ? "mdi:snowflake" : "mdi:fire"}"></ha-icon>${m.direction === "cool" ? "Refroidit" : "Chauffe"}</span><span>${esc(this._modeChain(m))}</span></span></span>
         </button>
-        ${isActive ? "" : `<button class="btn small" data-set-mode="${m.id}">Mettre en service</button>`}
+        ${isActive ? "" : `<button class="btn small" data-set-mode="${m.id}">Activer</button>`}
         <button class="icon-btn flat" data-edit-mode="${m.id}" aria-label="Modifier"><ha-icon icon="${open ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon></button>
       </div>
       ${open ? this._renderModeEditor() : ""}
@@ -906,10 +910,16 @@ class ClimateManagerPanel extends HTMLElement {
     on("[data-set-mode]", (b) => {
       const id = b.dataset.setMode || null;
       const m = this._settings.modes.find((x) => x.id === id);
-      this._ws({ type: "climate_manager/mode/set", mode_id: id }, m ? `Mode « ${m.name} » en service` : "Arrêt : rien ne démarre seul");
+      this._ws({ type: "climate_manager/mode/set", mode_id: id }, m ? `Mode « ${m.name} » actif` : "Arrêt : rien ne démarre seul");
     });
     on("[data-edit-eq]", (b) => this._openEq(b.dataset.editEq));
     on("[data-add-eq]", () => this._openEq(null));
+    on("[data-enable-eq]", (b) => {
+      const enabled = b.getAttribute("aria-checked") !== "true";
+      const eq = this._equipment(b.dataset.enableEq);
+      this._ws({ type: "climate_manager/equipment/enable", equipment_id: b.dataset.enableEq, enabled },
+        `${eq ? eq.name : "Équipement"} ${enabled ? "en service" : "hors service"}`);
+    });
     on("[data-cancel-eq]", () => { this._eqEdit = null; this._render(); });
     on("[data-save-eq]", () => this._saveEq());
     on("[data-delete-eq]", () => {
@@ -1185,6 +1195,13 @@ const STYLES = `
   .row-head .row-hit { flex: 1; min-width: 0; border: 0; background: transparent; font: inherit; color: inherit; text-align: left; cursor: pointer;
     display: flex; align-items: center; gap: 14px; padding: 0; }
   .row-head:has(.row-hit) { cursor: default; }
+  .svc-switch { flex: none; width: 40px; height: 24px; border: 0; padding: 0; border-radius: 999px; cursor: pointer; position: relative;
+    background: var(--dc-surface-strong); transition: background .15s; }
+  .svc-switch i { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s; }
+  .svc-switch[aria-checked="true"] { background: var(--dc-accent); }
+  .svc-switch[aria-checked="true"] i { transform: translateX(16px); }
+  .row.out .row-title { color: var(--dc-muted); }
   .icon-btn.flat { box-shadow: none; background: transparent; }
   .icon-btn.ghost { visibility: hidden; }
   .icon-btn:disabled { opacity: .3; cursor: default; }
@@ -1206,6 +1223,8 @@ const STYLES = `
   .live-dot { position: absolute; top: -3px; right: -3px; width: 12px; height: 12px; border-radius: 50%; background: var(--dc-ok); border: 2px solid var(--card-background-color, #fff); }
   .eq-name { font-weight: 600; font-size: 14px; white-space: nowrap; }
   .eq-sub { font-size: 12px; color: var(--dc-muted); }
+  .eq-head.out .eq-name { color: var(--dc-muted); }
+  .cell.on.out { background: var(--dc-surface-strong); color: var(--dc-muted); }
   .zone-head { text-align: left !important; width: 1%; white-space: nowrap; }
   .zone-head button { border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; text-align: left; padding: 14px 18px 14px 6px;
     display: flex; flex-direction: column; gap: 1px; border-radius: 12px; }

@@ -156,6 +156,7 @@ EQUIPMENT_SCHEMA = vol.Schema(
         vol.Optional("setpoint_entity"): vol.Any(None, _any_entity),
         vol.Optional("setpoint_offset", default=1.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=5)),
         vol.Optional("running_entity"): vol.Any(None, _any_entity),
+        vol.Optional("enabled"): bool,
     },
     extra=vol.REMOVE_EXTRA,
 )
@@ -251,6 +252,7 @@ def async_register(hass: HomeAssistant) -> None:
         ws_set_season,
         ws_save_house,
         ws_save_equipment,
+        ws_enable_equipment,
         ws_delete_equipment,
         ws_save_mode,
         ws_delete_mode,
@@ -440,6 +442,9 @@ async def ws_save_equipment(hass: HomeAssistant, connection, msg) -> None:
     plant = _plant_copy(coordinator)
     known_zones = set(coordinator.zones)
     data["zones"] = [z for z in data["zones"] if z in known_zones]
+    if "enabled" not in data:
+        previous = plant.equipment(data.get("id") or "")
+        data["enabled"] = previous.enabled if previous else True
     eq = Equipment.from_dict(data)
     if eq.kind == EquipmentKind.HEAT_PUMP:
         # A zone has one heat pump at most: the new one replaces it there.
@@ -454,6 +459,26 @@ async def ws_save_equipment(hass: HomeAssistant, connection, msg) -> None:
     coordinator.save_plant(plant)
     await coordinator.async_tick_now()
     connection.send_result(msg["id"], {"equipment_id": eq.id})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/equipment/enable",
+        vol.Required("equipment_id"): str,
+        vol.Required("enabled"): bool,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_enable_equipment(hass: HomeAssistant, connection, msg) -> None:
+    entry, coordinator = _entry_and_coordinator(hass)
+    if entry is None:
+        _not_loaded(connection, msg)
+        return
+    if not await coordinator.async_set_equipment_enabled(msg["equipment_id"], msg["enabled"]):
+        connection.send_error(msg["id"], "not_found", "unknown equipment")
+        return
+    connection.send_result(msg["id"], {})
 
 
 @websocket_api.websocket_command(
