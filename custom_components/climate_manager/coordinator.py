@@ -39,6 +39,8 @@ from .const import (
     ZoneState,
 )
 from .context_tracker import ContextTracker
+from .drivers.base import Command
+from .drivers.relay import EntityReading, RelayDriver, RelayOrder
 from .plant import (
     BANK_FOR_DIRECTION,
     COOL,
@@ -53,7 +55,6 @@ from .plant import (
     engaged_equipment,
 )
 from .zone import (
-    Command,
     Profile,
     Zone,
     ZoneConfig,
@@ -64,6 +65,7 @@ from .zone import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_RELAY = RelayDriver()
 KWH_SETTLE_S = 65 * 60
 
 NOTIFICATION_ACTION_EVENT = "mobile_app_notification_action"
@@ -374,31 +376,16 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         st = self.hass.states.get(eq.entity)
         if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
-        domain = eq.entity.split(".", 1)[0]
-        calls: list[Command] = []
-        if domain == "climate":
-            if order.on:
-                if st.state != order.direction:
-                    calls.append(Command("climate", "set_hvac_mode", {"entity_id": eq.entity, "hvac_mode": order.direction}))
-                current = _as_float(st.attributes.get(ATTR_TEMPERATURE))
-                if order.setpoint is not None and (current is None or abs(current - order.setpoint) >= SETPOINT_NOOP_DELTA):
-                    calls.append(Command("climate", "set_temperature", {"entity_id": eq.entity, "temperature": round(order.setpoint * 2) / 2}))
-            elif st.state != STATE_OFF:
-                calls.append(Command("climate", "turn_off", {"entity_id": eq.entity}))
-        elif domain in ("select", "input_select"):
-            wanted = eq.on_option if order.on else eq.off_option
-            if wanted and st.state != wanted:
-                calls.append(Command(domain, "select_option", {"entity_id": eq.entity, "option": wanted}))
-        elif domain in ("switch", "input_boolean", "light", "fan"):
-            wanted = STATE_ON if order.on else STATE_OFF
-            if st.state != wanted:
-                calls.append(Command(domain, f"turn_{wanted}", {"entity_id": eq.entity}))
-        if order.on and order.setpoint is not None and eq.setpoint_entity and domain != "climate":
-            sp = self.hass.states.get(eq.setpoint_entity)
-            value = round(order.setpoint * 2) / 2
-            if sp is not None and _as_float(sp.state) != value:
-                sp_domain = eq.setpoint_entity.split(".", 1)[0]
-                calls.append(Command(sp_domain, "set_value", {"entity_id": eq.setpoint_entity, "value": value}))
+        sp = self.hass.states.get(eq.setpoint_entity) if eq.setpoint_entity else None
+        calls = _RELAY.plan(
+            eq.entity,
+            EntityReading(st.state, dict(st.attributes)),
+            RelayOrder(on=order.on, direction=order.direction, setpoint=order.setpoint),
+            on_option=eq.on_option,
+            off_option=eq.off_option,
+            setpoint_entity=eq.setpoint_entity,
+            setpoint_reading=EntityReading(sp.state, dict(sp.attributes)) if sp is not None else None,
+        )
         now = utc_now_ts()
         for cmd in calls:
             # The device may report its new state a few seconds later: do not repeat an order.

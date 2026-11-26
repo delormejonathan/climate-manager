@@ -25,50 +25,36 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from homeassistant.components.climate import (
-    ATTR_FAN_MODE,
-    ATTR_HVAC_MODE,
-    ATTR_SWING_MODE,
     HVACMode,
 )
-from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
 
 from .const import (
     BOOST_DURATION_MIN,
-    BOOST_FAN_MODE,
-    BOOST_OFFSET,
     CLIM_MAX_SETPOINT,
     CLIM_MIN_SETPOINT,
     DEFAULT_ANOMALY_COOL_GAIN_PER_HOUR,
     DEFAULT_ANOMALY_DELAY_MIN,
     DEFAULT_ANOMALY_HEAT_GAIN_PER_HOUR,
     DEFAULT_FAN_INTENSITY,
-    DEFAULT_HEAT_SWING_MODE,
     DEFAULT_MODE,
     DEFAULT_OVERRIDE_DUREE_MIN,
     DEFAULT_POWER,
     DEFAULT_SEUIL_DEMARRAGE_COOL,
     DEFAULT_SEUIL_DEMARRAGE_HEAT,
-    DEFAULT_SWING_MODE,
     DEFAULT_TARGET_COOL,
     DEFAULT_TARGET_HEAT,
-    FAN_MODES,
-    FAN_SESSION_FAN_MODE,
-    HEAT_APPROACH_MIN_OFFSET_C,
-    HEAT_APPROACH_POWER_RATIO,
-    HEAT_HOLD_RELEASE_OFFSET_C,
-    POWER_OFFSETS,
-    RATE_LIMIT_SECONDS,
     SESSION_SAFETY_OVERSHOOT_C,
-    SETPOINT_NOOP_DELTA,
     TARGET_CUTOFF_HOLD_SECONDS,
-    TARGET_DEAD_BAND,
     ClimateSeason,
     ProfileMode,
     ZoneMode,
     ZoneState,
 )
+from .drivers.base import Command
+from .drivers.heat_pump import HeatPumpDriver, HeatPumpPlan, SentMemory
 
 _LOGGER = logging.getLogger(__name__)
+_HEAT_PUMP = HeatPumpDriver()
 
 
 # === Inputs / Outputs ===
@@ -96,15 +82,6 @@ class ZoneInputs:
     supports_fan_only: bool = True
     clim_state_last_changed_ts: float | None = None
     active_profile: Profile | None = None
-
-
-@dataclass(frozen=True)
-class Command:
-    """Un appel de service HA à exécuter côté coordinator."""
-
-    domain: str
-    service: str
-    data: dict[str, Any]
 
 
 # === Profile ===
@@ -893,67 +870,35 @@ class Zone:
         """Émet les commandes selon les paramètres de la session active.
 
         La session est self-contained : on ne lit plus du tout active_profile
-        pour décider quoi envoyer à la clim — uniquement les session_* fields."""
-        target = self.state.session_target
-        mode = self.state.session_mode
-        if mode is None:
-            return []
-
-        cmds: list[Command] = []
-        if mode == ProfileMode.FAN_ONLY:
-            if not inp.supports_fan_only:
-                return []
-            if inp.clim_current_hvac_mode != HVACMode.FAN_ONLY:
-                cmds.append(self._cmd_set_hvac_mode(HVACMode.FAN_ONLY))
-                self.state.last_hvac_sent = HVACMode.FAN_ONLY
-            if inp.supports_fan_mode and inp.clim_current_fan_mode != FAN_SESSION_FAN_MODE:
-                cmds.append(self._cmd_set_fan_mode(FAN_SESSION_FAN_MODE))
-                self.state.last_fan_sent = FAN_SESSION_FAN_MODE
-            if cmds:
-                self.state.last_command_ts = inp.now_ts
-            return cmds
-
-        if target is None or inp.room_temperature is None:
-            return []
-
-        target_mode = HVACMode.COOL if mode == ProfileMode.COOL else HVACMode.HEAT
-        power = self.state.session_power or DEFAULT_POWER
-        fan_intensity = self.state.session_fan_intensity or DEFAULT_FAN_INTENSITY
-
-        if inp.clim_current_hvac_mode != target_mode:
-            cmds.append(self._cmd_set_hvac_mode(target_mode))
-            self.state.last_hvac_sent = target_mode
-
-        setpoint = self._compute_pendulum_setpoint(
-            inp.room_temperature,
-            inp.clim_internal_temperature,
-            inp.clim_min_setpoint,
-            inp.clim_max_setpoint,
-            target,
-            power,
-            mode,
+        pour décider quoi envoyer à la clim — uniquement les session_* fields.
+        Le pilote de la clim (HeatPumpDriver) choisit les commandes."""
+        plan = _HEAT_PUMP.plan_session(
+            self.config.climate_entity,
+            inp,
+            mode=self.state.session_mode,
+            target=self.state.session_target,
+            power=self.state.session_power,
+            fan_intensity=self.state.session_fan_intensity,
+            sent=self._sent_memory(),
         )
-        if setpoint is not None and self._setpoint_should_send(setpoint, inp):
-            cmds.append(self._cmd_set_temperature(setpoint))
-            self.state.last_setpoint_sent = setpoint
+        return self._record_plan(plan, inp)
 
-        if inp.supports_fan_mode:
-            target_fan = FAN_MODES.get(fan_intensity, FAN_MODES[DEFAULT_FAN_INTENSITY])
-            if inp.clim_current_fan_mode != target_fan:
-                cmds.append(self._cmd_set_fan_mode(target_fan))
-                self.state.last_fan_sent = target_fan
+    def _sent_memory(self) -> SentMemory:
+        return SentMemory(
+            last_command_ts=self.state.last_command_ts,
+            last_setpoint_sent=self.state.last_setpoint_sent,
+        )
 
-        target_swing = None
-        if mode == ProfileMode.HEAT and inp.supports_swing:
-            target_swing = DEFAULT_HEAT_SWING_MODE
-        elif inp.supports_windnice:
-            target_swing = DEFAULT_SWING_MODE
-        if target_swing and inp.clim_current_swing_mode != target_swing:
-            cmds.append(self._cmd_set_swing_mode(target_swing))
-
-        if cmds:
+    def _record_plan(self, plan: HeatPumpPlan, inp: ZoneInputs) -> list[Command]:
+        if plan.hvac_sent is not None:
+            self.state.last_hvac_sent = plan.hvac_sent
+        if plan.setpoint_sent is not None:
+            self.state.last_setpoint_sent = plan.setpoint_sent
+        if plan.fan_sent is not None:
+            self.state.last_fan_sent = plan.fan_sent
+        if plan.commands:
             self.state.last_command_ts = inp.now_ts
-        return cmds
+        return plan.commands
 
     def _compute_pendulum_setpoint(
         self,
@@ -965,65 +910,12 @@ class Zone:
         power: str,
         mode: str,
     ) -> float | None:
-        """Pilote la Daikin avec une correction relative et un relâchement franc.
-
-        Tant que la zone demande un effort, la sonde Daikin sert de zéro relatif
-        (interne ± offset). À la cible, une petite correction inverse n'est pas
-        toujours suffisante pour neutraliser le compresseur: on envoie alors la
-        borne physique opposée de l'appareil (minimum en chauffage, maximum en
-        refroidissement).
-        """
-        if clim_internal is None:
-            return None
-        offset = POWER_OFFSETS.get(power, POWER_OFFSETS[DEFAULT_POWER])
-        if mode == ProfileMode.COOL:
-            if room > target + TARGET_DEAD_BAND:
-                raw = clim_internal - offset  # pousse froid
-            elif room <= target:
-                raw = clim_max_setpoint  # relâche froid au maximum physique
-            else:
-                raw = clim_internal  # zéro relatif
-        else:
-            if room < target - TARGET_DEAD_BAND:
-                raw = clim_internal + offset  # pousse chaud
-            elif room < target:
-                # Continuer à chauffer dans le dernier demi-degré, mais réduire
-                # l'effort linéairement pour ne pas traverser la cible avec trop
-                # d'inertie. Le plancher garde une progression douce.
-                remaining_ratio = min(
-                    1.0,
-                    max(0.0, (target - room) / TARGET_DEAD_BAND),
-                )
-                approach_offset = max(
-                    HEAT_APPROACH_MIN_OFFSET_C,
-                    offset * HEAT_APPROACH_POWER_RATIO * remaining_ratio,
-                )
-                raw = clim_internal + approach_offset
-            elif room < target + TARGET_DEAD_BAND:
-                # Une consigne égale à la sonde interne peut encore chauffer à
-                # cause de l'hystérésis Daikin. Relâcher légèrement sans envoyer
-                # immédiatement la borne minimale évite l'effet chaud/froid.
-                raw = clim_internal - HEAT_HOLD_RELEASE_OFFSET_C
-            else:
-                raw = clim_min_setpoint  # relâche chaud au minimum physique
-        rounded = round(raw * 2) / 2
-        return max(clim_min_setpoint, min(clim_max_setpoint, rounded))
+        return HeatPumpDriver.pendulum_setpoint(
+            room, clim_internal, clim_min_setpoint, clim_max_setpoint, target, power, mode
+        )
 
     def _setpoint_should_send(self, setpoint: float, inp: ZoneInputs) -> bool:
-        """Rate-limit : pas de réémission si trop proche du courant ou trop tôt."""
-        if (
-            inp.clim_current_setpoint is not None
-            and abs(setpoint - inp.clim_current_setpoint) < SETPOINT_NOOP_DELTA
-        ):
-            return False
-        if (
-            self.state.last_command_ts
-            and (inp.now_ts - self.state.last_command_ts) < RATE_LIMIT_SECONDS
-            and self.state.last_setpoint_sent is not None
-            and abs(setpoint - self.state.last_setpoint_sent) < SETPOINT_NOOP_DELTA
-        ):
-            return False
-        return True
+        return HeatPumpDriver.setpoint_should_send(setpoint, inp, self._sent_memory())
 
     # --- pilotage boost ---
 
@@ -1040,29 +932,13 @@ class Zone:
                 self.state.cycle_start_profile_name = (
                     inp.active_profile.name if inp.active_profile else "Boost"
                 )
-        cmds: list[Command] = []
-        if inp.clim_current_hvac_mode != target_mode:
-            cmds.append(self._cmd_set_hvac_mode(target_mode))
-        setpoint = self._setpoint_for_boost(inp, target_mode)
-        if setpoint is not None and self._setpoint_should_send(setpoint, inp):
-            cmds.append(self._cmd_set_temperature(setpoint))
-            self.state.last_setpoint_sent = setpoint
-        if inp.supports_fan_mode and inp.clim_current_fan_mode != BOOST_FAN_MODE:
-            cmds.append(self._cmd_set_fan_mode(BOOST_FAN_MODE))
-            self.state.last_fan_sent = BOOST_FAN_MODE
-        if inp.supports_windnice and inp.clim_current_swing_mode != "swing":
-            cmds.append(self._cmd_set_swing_mode("swing"))
-        if cmds:
-            self.state.last_command_ts = inp.now_ts
-        return cmds
+        plan = _HEAT_PUMP.plan_boost(
+            self.config.climate_entity, inp, target_mode, self._sent_memory()
+        )
+        return self._record_plan(plan, inp)
 
     def _setpoint_for_boost(self, inp: ZoneInputs, target_mode: str) -> float | None:
-        if inp.clim_internal_temperature is None:
-            return None
-        signed = BOOST_OFFSET if target_mode == HVACMode.HEAT else -BOOST_OFFSET
-        raw = inp.clim_internal_temperature + signed
-        rounded = round(raw * 2) / 2
-        return max(CLIM_MIN_SETPOINT, min(CLIM_MAX_SETPOINT, rounded))
+        return HeatPumpDriver.boost_setpoint(inp.clim_internal_temperature, target_mode)
 
     def _desired_hvac_mode(self, inp: ZoneInputs) -> str | None:
         if self.state.forced_direction in (HVACMode.COOL, HVACMode.HEAT):
@@ -1358,39 +1234,20 @@ class Zone:
     # --- command factory ---
 
     def _cmd_turn_off(self) -> Command:
-        return Command(
-            domain="climate",
-            service="turn_off",
-            data={ATTR_ENTITY_ID: self.config.climate_entity},
-        )
+        return HeatPumpDriver.turn_off(self.config.climate_entity)
 
     def _cmd_set_hvac_mode(self, mode: str) -> Command:
-        return Command(
-            domain="climate",
-            service="set_hvac_mode",
-            data={ATTR_ENTITY_ID: self.config.climate_entity, ATTR_HVAC_MODE: mode},
-        )
+        return HeatPumpDriver.set_hvac_mode(self.config.climate_entity, mode)
 
     def _cmd_set_temperature(self, temp: float) -> Command:
-        return Command(
-            domain="climate",
-            service="set_temperature",
-            data={ATTR_ENTITY_ID: self.config.climate_entity, ATTR_TEMPERATURE: temp},
-        )
+        return HeatPumpDriver.set_temperature(self.config.climate_entity, temp)
 
     def _cmd_set_fan_mode(self, mode: str) -> Command:
-        return Command(
-            domain="climate",
-            service="set_fan_mode",
-            data={ATTR_ENTITY_ID: self.config.climate_entity, ATTR_FAN_MODE: mode},
-        )
+        return HeatPumpDriver.set_fan_mode(self.config.climate_entity, mode)
 
     def _cmd_set_swing_mode(self, mode: str) -> Command:
-        return Command(
-            domain="climate",
-            service="set_swing_mode",
-            data={ATTR_ENTITY_ID: self.config.climate_entity, ATTR_SWING_MODE: mode},
-        )
+        return HeatPumpDriver.set_swing_mode(self.config.climate_entity, mode)
+
 
 
 def utc_now_ts() -> float:
