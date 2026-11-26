@@ -4,9 +4,12 @@ Equipment
     Something that produces heat or cold. Two kinds:
     - ``heat_pump``: a ``climate.*`` unit serving one zone, driven finely by
       the zone (pendulum setpoint, fan, swing). Daikin units are this kind.
-    - ``central``: an on/off source serving one or several zones (gas boiler
-      through its thermostat, a ducted unit, a relay). It runs while at least
-      one of its zones asks for it, and stops when none does.
+    - ``central``: an on/off source serving one or several zones (a ducted
+      unit, a relay). It runs while at least one of its zones asks for it, and
+      stops when none does.
+    - ``thermostat``: a boiler whose room thermostat regulates on its own
+      (gas boiler on eBUS). Climate Manager keeps one steady setpoint from its
+      own time plan (day, night) and the presence; see ``drivers/thermostat``.
 
 Operating mode
     Which equipment produces heat (or cold) and how they combine. Only one
@@ -41,7 +44,8 @@ DIRECTION_FOR_BANK = {v: k for k, v in BANK_FOR_DIRECTION.items()}
 class EquipmentKind:
     HEAT_PUMP = "heat_pump"
     CENTRAL = "central"
-    ALL: ClassVar[list[str]] = [HEAT_PUMP, CENTRAL]
+    THERMOSTAT = "thermostat"
+    ALL: ClassVar[list[str]] = [HEAT_PUMP, CENTRAL, THERMOSTAT]
 
 
 class Relation:
@@ -85,6 +89,13 @@ class Equipment:
     setpoint_entity: str | None = None  # number.* written while it runs
     setpoint_offset: float = DEFAULT_SETPOINT_OFFSET
     running_entity: str | None = None  # binary_sensor.* « it is producing » (flame)
+    # thermostat only (``entity`` is the setpoint number it regulates on)
+    schedule_entity: str | None = None  # switch.* the thermostat's own time programme
+    holiday_entity: str | None = None  # switch.* holiday mode
+    holiday_setpoint_entity: str | None = None  # number.* holiday setpoint
+    room_sensor: str | None = None  # the thermostat's own room temperature
+    target_entity: str | None = None  # sensor.* target the thermostat aims now
+    thermostat: dict[str, Any] = field(default_factory=dict)  # ThermostatSettings
     # « En service »: off means Climate Manager never starts it (the mode falls
     # back on the next equipment) and leaves it alone otherwise.
     enabled: bool = True
@@ -116,10 +127,17 @@ class Equipment:
             setpoint_entity=d.get("setpoint_entity") or None,
             setpoint_offset=float(d.get("setpoint_offset", DEFAULT_SETPOINT_OFFSET)),
             running_entity=d.get("running_entity") or None,
+            schedule_entity=d.get("schedule_entity") or None,
+            holiday_entity=d.get("holiday_entity") or None,
+            holiday_setpoint_entity=d.get("holiday_setpoint_entity") or None,
+            room_sensor=d.get("room_sensor") or None,
+            target_entity=d.get("target_entity") or None,
+            thermostat=dict(d.get("thermostat") or {}),
             enabled=bool(d.get("enabled", True)),
             energy_sensors=[s for s in d.get("energy_sensors") or [] if s],
             energy=(energy := d.get("energy") if d.get("energy") in Energy.ALL
-                    else Energy.GAS if kind == EquipmentKind.CENTRAL else Energy.ELECTRICITY),
+                    else Energy.GAS if kind in (EquipmentKind.CENTRAL, EquipmentKind.THERMOSTAT)
+                    else Energy.ELECTRICITY),
             energy_price=float(d["energy_price"]) if d.get("energy_price") is not None else DEFAULT_ENERGY_PRICE[energy],
         )
 
@@ -137,6 +155,12 @@ class Equipment:
             "setpoint_entity": self.setpoint_entity,
             "setpoint_offset": self.setpoint_offset,
             "running_entity": self.running_entity,
+            "schedule_entity": self.schedule_entity,
+            "holiday_entity": self.holiday_entity,
+            "holiday_setpoint_entity": self.holiday_setpoint_entity,
+            "room_sensor": self.room_sensor,
+            "target_entity": self.target_entity,
+            "thermostat": dict(self.thermostat),
             "enabled": self.enabled,
             "energy_sensors": list(self.energy_sensors),
             "energy": self.energy,

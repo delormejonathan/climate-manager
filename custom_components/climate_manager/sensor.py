@@ -9,11 +9,14 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, Sen
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import DelormejClimateCoordinator
 from .entity_base import DelormejClimateZoneEntity
+from .plant import EquipmentKind
 
 
 async def async_setup_entry(
@@ -27,6 +30,11 @@ async def async_setup_entry(
             ZoneRoomTemperatureSensor(coord, zid),
             ZoneSetpointSentSensor(coord, zid),
         ]
+    entities += [
+        ThermostatSetpointSensor(coord, eq.id)
+        for eq in coord.plant.equipments
+        if eq.kind == EquipmentKind.THERMOSTAT
+    ]
     async_add_entities(entities)
 
 
@@ -137,3 +145,74 @@ class ZoneSetpointSentSensor(DelormejClimateZoneEntity, SensorEntity):
     def native_value(self) -> float | None:
         d = self._zone_data
         return d.get("last_setpoint_sent") if d else None
+
+
+class ThermostatSetpointSensor(CoordinatorEntity[DelormejClimateCoordinator], SensorEntity):
+    """Setpoint Climate Manager wants on a thermostat equipment (written or,
+    in observation, only computed)."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:thermostat"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    def __init__(self, coord: DelormejClimateCoordinator, equipment_id: str) -> None:
+        super().__init__(coord)
+        self._equipment_id = equipment_id
+        self._attr_unique_id = f"{coord.entry.entry_id}_equipment_{equipment_id}_setpoint"
+        eq = coord.plant.equipment(equipment_id)
+        self._attr_name = f"{eq.name if eq else equipment_id} consigne voulue"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self.coordinator.entry.entry_id}_house")},
+            name="Climate Manager",
+            manufacturer="delormej",
+            model="Smart Climate House",
+        )
+
+    @property
+    def _payload(self) -> dict[str, Any] | None:
+        data = self.coordinator.data or {}
+        for e in (data.get("plant") or {}).get("equipments", []):
+            if e.get("id") == self._equipment_id:
+                return e.get("thermostat")
+        return None
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._payload is not None
+
+    @property
+    def native_value(self) -> float | None:
+        p = self._payload
+        return p.get("wanted") if p else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        p = self._payload
+        if not p:
+            return None
+        def iso(ts: float | None) -> str | None:
+            return datetime.fromtimestamp(ts, tz=UTC).isoformat() if ts else None
+        return {
+            "observation": p.get("observe"),
+            "reason": p.get("reason"),
+            "role": p.get("role"),
+            "thermostat_setpoint": p.get("setpoint"),
+            "programme_target": p.get("target_in_force"),
+            "room_temperature": p.get("room"),
+            "programme_on": p.get("schedule_on"),
+            "taken_over": p.get("taken_over"),
+            "heat_rate": p.get("heat_rate"),
+            "heat_rate_samples": p.get("heat_rate_samples"),
+            "preheat_lead_min": p.get("preheat_lead_min"),
+            "last_write": iso(p.get("last_write_ts")),
+            "next_write_allowed": iso(p.get("blocked_until_ts")),
+            "settings": p.get("settings"),
+            "journal": [
+                {**j, "ts": iso(j.get("ts"))} for j in p.get("journal") or []
+            ],
+        }

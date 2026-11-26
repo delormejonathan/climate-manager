@@ -45,6 +45,7 @@ from .const import (
     MIN_OVERRIDE_DUREE_MIN,
     ClimateSeason,
 )
+from .drivers.thermostat import ThermostatSettings
 from .plant import DIRECTIONS, Equipment, EquipmentKind, OperatingMode, Plant, Relation
 from .zone import Profile, ZoneConfig
 
@@ -156,6 +157,12 @@ EQUIPMENT_SCHEMA = vol.Schema(
         vol.Optional("setpoint_entity"): vol.Any(None, _any_entity),
         vol.Optional("setpoint_offset", default=1.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=5)),
         vol.Optional("running_entity"): vol.Any(None, _any_entity),
+        vol.Optional("schedule_entity"): vol.Any(None, _any_entity),
+        vol.Optional("holiday_entity"): vol.Any(None, _any_entity),
+        vol.Optional("holiday_setpoint_entity"): vol.Any(None, _any_entity),
+        vol.Optional("room_sensor"): vol.Any(None, _any_entity),
+        vol.Optional("target_entity"): vol.Any(None, _any_entity),
+        vol.Optional("thermostat"): vol.Any(None, dict),
         vol.Optional("enabled"): bool,
         vol.Optional("energy_sensors", default=list): [_any_entity],
         vol.Optional("energy"): vol.In(("electricity", "gas")),
@@ -448,6 +455,8 @@ async def ws_save_equipment(hass: HomeAssistant, connection, msg) -> None:
     if "enabled" not in data:
         previous = plant.equipment(data.get("id") or "")
         data["enabled"] = previous.enabled if previous else True
+    if data["kind"] == EquipmentKind.THERMOSTAT:
+        data["thermostat"] = ThermostatSettings.from_dict(data.get("thermostat")).to_dict()
     eq = Equipment.from_dict(data)
     if eq.kind == EquipmentKind.HEAT_PUMP:
         # A zone has one heat pump at most: the new one replaces it there.

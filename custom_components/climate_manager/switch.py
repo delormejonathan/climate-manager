@@ -38,7 +38,7 @@ class EquipmentSwitch(CoordinatorEntity[DelormejClimateCoordinator], SwitchEntit
         self._attr_unique_id = f"{coord.entry.entry_id}_equipment_{equipment_id}"
         eq = coord.plant.equipment(equipment_id)
         self._attr_name = eq.name if eq else equipment_id
-        self._attr_icon = "mdi:water-boiler" if eq and eq.kind == EquipmentKind.CENTRAL else "mdi:air-conditioner"
+        self._attr_icon = "mdi:water-boiler" if eq and eq.kind != EquipmentKind.HEAT_PUMP else "mdi:air-conditioner"
 
     @property
     def device_info(self) -> DeviceInfo:

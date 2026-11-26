@@ -41,6 +41,15 @@ from .const import (
 from .context_tracker import ContextTracker
 from .drivers.base import Command
 from .drivers.relay import EntityReading, RelayDriver, RelayOrder
+from .drivers.thermostat import (
+    STANDBY,
+    ThermostatDriver,
+    ThermostatEntities,
+    ThermostatMemory,
+    ThermostatPlan,
+    ThermostatReading,
+    ThermostatSettings,
+)
 from .plant import (
     BANK_FOR_DIRECTION,
     COOL,
@@ -66,6 +75,8 @@ from .zone import (
 
 _LOGGER = logging.getLogger(__name__)
 _RELAY = RelayDriver()
+_THERMOSTAT = ThermostatDriver()
+THERMOSTAT_JOURNAL_SIZE = 40
 KWH_SETTLE_S = 65 * 60
 
 NOTIFICATION_ACTION_EVENT = "mobile_app_notification_action"
@@ -101,6 +112,10 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._energy_last: dict[str, float] = {}  # last counter total per equipment
         self._central: dict[str, CentralOrder] = {}
         self._central_sent: dict[tuple[str, str], tuple[Any, float]] = {}
+        # Thermostat equipment: memory (persisted), last plan, journal of changes.
+        self._thermo_mem: dict[str, ThermostatMemory] = {}
+        self._thermo_plan: dict[str, ThermostatPlan] = {}
+        self._thermo_journal: dict[str, list[dict[str, Any]]] = {}
         self._rebuild_zones()
 
     # === Public API ===
@@ -204,7 +219,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         if eq.enabled == enabled:
             return True
         eq.enabled = enabled
-        was_ours = any(e.id == eq.id for eqs in self._engaged.values() for e in eqs)
+        was_ours = any(e.id == eq.id for eqs in self._engaged.values() for e in eqs) or (
+            eq.kind == EquipmentKind.THERMOSTAT and self._thermo_mem.get(eq.id, ThermostatMemory()).taken_over
+        )
         self.save_plant(plant)
         if not enabled and was_ours:
             await self._stop_equipment(eq)
@@ -216,6 +233,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         if eq.kind == EquipmentKind.CENTRAL:
             self._central_sent = {k: v for k, v in self._central_sent.items() if k[0] != eq.id}
             await self._drive_central(eq, CentralOrder(on=False))
+            return
+        if eq.kind == EquipmentKind.THERMOSTAT:
+            await self._release_thermostat(eq)
             return
         zone = self._zones.get(eq.zones[0]) if eq.zones else None
         mode = self.plant.current_mode
@@ -319,6 +339,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._central = central_orders(self.plant, self._engaged, demands)
         for eq_id, order in self._central.items():
             await self._drive_central(self.plant.equipment(eq_id), order)
+        for eq in self.plant.equipments:
+            if eq.kind == EquipmentKind.THERMOSTAT:
+                await self._drive_thermostat(eq)
         await self._save_runtime_state_if_changed()
         return self._build_coordinator_data()
 
@@ -398,6 +421,128 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Central %s: %s.%s %s", eq.name, cmd.domain, cmd.service, cmd.data)
             await self._apply_command(cmd)
 
+    # === Thermostat equipment ===
+
+    def _float_state(self, entity_id: str | None) -> float | None:
+        if not entity_id:
+            return None
+        st = self.hass.states.get(entity_id)
+        return _as_float(st.state) if st is not None else None
+
+    def _bool_state(self, entity_id: str | None) -> bool | None:
+        if not entity_id:
+            return None
+        st = self.hass.states.get(entity_id)
+        if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        return st.state == STATE_ON
+
+    def _thermostat_entities(self, eq: Equipment) -> ThermostatEntities:
+        return ThermostatEntities(
+            setpoint=eq.entity,
+            schedule=eq.schedule_entity,
+            holiday=eq.holiday_entity,
+            holiday_setpoint=eq.holiday_setpoint_entity,
+            room_sensor=eq.room_sensor,
+        )
+
+    def _thermostat_role(self, eq: Equipment) -> str | None:
+        """pilot: the mode heats with it; standby: another equipment heats or
+        cools; None: « Arrêt », the thermostat runs its own programme."""
+        mode = self.plant.current_mode
+        if mode is None:
+            return None
+        if mode.direction == HEAT and eq.id in mode.equipments:
+            return "pilot"
+        return STANDBY
+
+    async def _drive_thermostat(self, eq: Equipment) -> None:
+        settings = ThermostatSettings.from_dict(eq.thermostat)
+        mem = self._thermo_mem.setdefault(eq.id, ThermostatMemory())
+        role = self._thermostat_role(eq)
+        if not eq.enabled or (role is None and not settings.observe):
+            # Out of service or « Arrêt »: hand the house back to its programme.
+            await self._release_thermostat(eq)
+            self._thermo_plan.pop(eq.id, None)
+            return
+        now = dt_util.now()
+        reading = ThermostatReading(
+            now_ts=now.timestamp(),
+            now_min=now.hour * 60 + now.minute,
+            absent=self._house_is_absent(),
+            room=self._float_state(eq.room_sensor),
+            setpoint=self._float_state(eq.entity),
+            schedule_on=self._bool_state(eq.schedule_entity),
+            holiday_on=self._bool_state(eq.holiday_entity),
+            holiday_setpoint=self._float_state(eq.holiday_setpoint_entity),
+            target_in_force=self._float_state(eq.target_entity),
+        )
+        prev = (mem.last_wanted, mem.last_reason)
+        plan = _THERMOSTAT.plan(
+            self._thermostat_entities(eq), settings, reading, mem,
+            # Observation shows the comfort plan even when no mode uses the boiler yet.
+            role=STANDBY if role == STANDBY and not settings.observe else "pilot",
+        )
+        self._thermo_plan[eq.id] = plan
+        if (plan.wanted, plan.reason) != prev or plan.commands:
+            entry = {
+                "ts": reading.now_ts,
+                "wanted": plan.wanted,
+                "reason": plan.reason,
+                "setpoint": reading.setpoint,
+                "room": reading.room,
+                "written": any(c.service == "set_value" and c.data.get("entity_id") == eq.entity for c in plan.commands),
+                "observe": settings.observe,
+            }
+            journal = self._thermo_journal.setdefault(eq.id, [])
+            journal.append(entry)
+            del journal[:-THERMOSTAT_JOURNAL_SIZE]
+            _LOGGER.info(
+                "Thermostat %s%s: setpoint %s °C (%s), thermostat holds %s °C, room %s °C",
+                eq.name, " (observation)" if settings.observe else "", plan.wanted, plan.reason,
+                reading.setpoint, reading.room,
+            )
+        for cmd in plan.commands:
+            _LOGGER.info("Thermostat %s: %s.%s %s", eq.name, cmd.domain, cmd.service, cmd.data)
+            await self._apply_command(cmd)
+
+    async def _release_thermostat(self, eq: Equipment) -> None:
+        mem = self._thermo_mem.get(eq.id)
+        if mem is None or not mem.taken_over:
+            return
+        st = self.hass.states.get(eq.schedule_entity) if eq.schedule_entity else None
+        cmds = _THERMOSTAT.release(eq.schedule_entity, st.state if st else None)
+        if mem.holiday_by_us and eq.holiday_entity and self._bool_state(eq.holiday_entity):
+            cmds.append(Command("switch", "turn_off", {"entity_id": eq.holiday_entity}))
+        for cmd in cmds:
+            _LOGGER.info("Thermostat %s handed back: %s.%s", eq.name, cmd.domain, cmd.service)
+            await self._apply_command(cmd)
+        mem.taken_over = False
+        mem.holiday_by_us = False
+
+    def _thermostat_payload(self, eq: Equipment) -> dict[str, Any]:
+        settings = ThermostatSettings.from_dict(eq.thermostat)
+        mem = self._thermo_mem.get(eq.id, ThermostatMemory())
+        plan = self._thermo_plan.get(eq.id)
+        return {
+            "observe": settings.observe,
+            "settings": settings.to_dict(),
+            "role": self._thermostat_role(eq),
+            "wanted": plan.wanted if plan else None,
+            "reason": plan.reason if plan else None,
+            "preheat_lead_min": plan.preheat_lead_min if plan else None,
+            "blocked_until_ts": plan.blocked_until_ts if plan else None,
+            "setpoint": self._float_state(eq.entity),
+            "room": self._float_state(eq.room_sensor),
+            "target_in_force": self._float_state(eq.target_entity),
+            "schedule_on": self._bool_state(eq.schedule_entity),
+            "taken_over": mem.taken_over,
+            "heat_rate": mem.heat_rate,
+            "heat_rate_samples": mem.heat_rate_samples,
+            "last_write_ts": mem.last_write_ts,
+            "journal": list(self._thermo_journal.get(eq.id, []))[-10:],
+        }
+
     def _equipment_running(self, eq: Equipment) -> bool:
         if eq.kind == EquipmentKind.HEAT_PUMP:
             st = self.hass.states.get(eq.entity) if eq.entity else None
@@ -422,6 +567,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                     "in_mode": bool(mode and e.id in mode.equipments),
                     "on": bool(self._central.get(e.id) and self._central[e.id].on) if e.kind == EquipmentKind.CENTRAL else None,
                     "running": self._equipment_running(e),
+                    "thermostat": self._thermostat_payload(e) if e.kind == EquipmentKind.THERMOSTAT else None,
                 }
                 for e in self.plant.equipments
             ],
@@ -457,12 +603,22 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             k: float(v) for k, v in (energy_last or {}).items()
             if isinstance(v, (int, float))
         }
+        thermostats = data.get("thermostats", {}) if isinstance(data, dict) else {}
+        for eq_id, raw in (thermostats or {}).items():
+            if not isinstance(raw, dict):
+                continue
+            self._thermo_mem[eq_id] = ThermostatMemory.from_dict(raw.get("memory"))
+            self._thermo_journal[eq_id] = [j for j in raw.get("journal") or [] if isinstance(j, dict)]
         self._last_runtime_payload = self._runtime_payload()
 
     def _runtime_payload(self) -> dict[str, Any]:
         return {
             "zones": {zid: zone.state.to_dict() for zid, zone in self._zones.items()},
             "energy_last": dict(self._energy_last),
+            "thermostats": {
+                eq_id: {"memory": mem.to_dict(), "journal": list(self._thermo_journal.get(eq_id, []))}
+                for eq_id, mem in self._thermo_mem.items()
+            },
         }
 
     async def _save_runtime_state_if_changed(self) -> None:
@@ -729,7 +885,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 clim_last_changed_ts = clim_state.last_changed.timestamp()
         # Heat/cold may come from other equipment than the zone's heat pump.
         serving = self.plant.serving(zone.config.zone_id)
-        if any(e.kind == EquipmentKind.CENTRAL for e in serving):
+        if any(e.kind != EquipmentKind.HEAT_PUMP for e in serving):
             supports_heat = supports_heat or any(e.heat for e in serving)
             supports_cool = supports_cool or any(e.cool for e in serving)
         if clim_internal is None and not zone.config.climate_entity:
