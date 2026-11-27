@@ -3898,6 +3898,151 @@ class ClimateManagerZoneCard extends ClimateManagerDailyCard {
   }
 }
 
+/* The house's daily control, shaped by what really heats it.
+ * One boiler for the whole house: a single card (the boiler follows the
+ * highest zone target, so one setpoint and one Auto / Forcer / Couper drive
+ * every zone it covers). Equipments per zone (heat pumps): one zone card each.
+ *   type: custom:climate-manager-control-card
+ *   zones: [{zone: rdc, name: RDC, icon: mdi:sofa-outline}, …]  (default: every zone) */
+class ClimateManagerControlCard extends ClimateManagerDailyCard {
+  setConfig(config) { this._config = config || {}; this._pending = null; this._children = {}; }
+  static getStubConfig() { return { type: "custom:climate-manager-control-card" }; }
+  getCardSize() { return 6; }
+  getGridOptions() { return { columns: "full", rows: "auto" }; }
+  _zones() {
+    const found = Object.keys(this._hass.states).filter((k) => /^sensor\.climate_manager_.+_state$/.test(k) && this._hass.states[k].attributes.zone_id)
+      .map((k) => ({ zone: k.slice("sensor.climate_manager_".length, -"_state".length), id: this._hass.states[k].attributes.zone_id }));
+    const conf = this._config.zones?.length ? this._config.zones : found.map((z) => ({ zone: z.zone }));
+    return conf.map((z) => {
+      const st = this._hass.states[`sensor.climate_manager_${z.zone}_state`];
+      return { ...z, id: st?.attributes.zone_id, st, name: z.name || st?.attributes.friendly_name?.replace(/^Climate Manager · /, "").replace(/ (état|state)$/i, "") || z.zone };
+    }).filter((z) => z.st);
+  }
+  /** The whole-house boiler when the active mode heats with it alone. */
+  _houseBoiler(zones) {
+    const p = this._plant()?.attributes || {};
+    const mode = (p.modes || []).find((m) => m.id === p.mode_id);
+    if (!mode || mode.direction === "cool") return null;
+    const inMode = (p.equipments || []).filter((e) => e.in_mode && e.enabled !== false);
+    if (!inMode.length || inMode.some((e) => e.kind !== "thermostat")) return null;
+    const b = inMode[0];
+    return zones.length > 1 && zones.every((z) => (b.zones || []).includes(z.id)) ? b : null;
+  }
+  set hass(hass) {
+    this._hass = hass;
+    const zones = this._zones();
+    const boiler = this._houseBoiler(zones);
+    const layout = boiler ? "house" : "zones";
+    if (layout !== this._layout) { this._layout = layout; this.innerHTML = ""; this._card = null; this._grid = null; this._children = {}; this._key = null; }
+    if (layout === "zones") { this._paintZones(zones); return; }
+    const key = JSON.stringify([...zones.flatMap((z) => [z.st.last_updated, this._hass.states[`sensor.climate_manager_${z.zone}_zone_temperature`]?.state]),
+      this._plant()?.last_updated, this._hass.states[boiler.entity]?.last_updated]);
+    if (key === this._key) return;
+    this._key = key;
+    this._paint();
+  }
+  _paintZones(zones) {
+    if (!this._grid) {
+      this._grid = document.createElement("div");
+      this._grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--ha-section-grid-row-gap,8px) var(--ha-section-grid-column-gap,8px)";
+      this.appendChild(this._grid);
+    }
+    zones.forEach((z) => {
+      let c = this._children[z.zone];
+      if (!c) {
+        c = document.createElement("climate-manager-zone-card");
+        c.setConfig({ zone: z.zone, title: z.name, ...(z.icon ? { icon: z.icon } : {}) });
+        this._children[z.zone] = c;
+        this._grid.appendChild(c);
+      }
+      c.hass = this._hass;
+    });
+  }
+  _paint(keep) {
+    const zones = this._zones();
+    const boiler = this._houseBoiler(zones);
+    if (!boiler) return;
+    this._mount("heat house");
+    const t = boiler.thermostat || {};
+    const za = zones.map((z) => ({ ...z, a: z.st.attributes, running: z.st.state === "running", temp: this._hass.states[`sensor.climate_manager_${z.zone}_zone_temperature`]?.state }));
+    const controls = [...new Set(za.map((z) => z.a.control || "auto"))];
+    const control = controls.length === 1 ? controls[0] : "mixed";
+    const wanted = t.wanted ?? Math.max(...za.map((z) => z.a.session?.target ?? z.a.target_temperature ?? z.a.programme?.target ?? -Infinity));
+    if (this._pending !== null && !keep && Math.abs(this._pending - wanted) < 0.01) this._pending = null;
+    const heating = !!boiler.running;
+    const badge = control === "off" ? `<span class="cmd-badge">Coupé</span>`
+      : heating ? `<span class="cmd-badge run"><ha-icon icon="mdi:fire"></ha-icon>Chauffe</span>`
+      : `<span class="cmd-badge">À température</span>`;
+    const temps = za.map((z) => `<div class="cmc-t"><b>${z.temp && !Number.isNaN(Number(z.temp)) ? Number(z.temp).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : "—"}<small>°</small></b><span>${cmEsc(z.name)}</span></div>`).join("");
+    // Programme: once when the zones agree, per zone otherwise
+    const progs = za.map((z) => z.a.programme ? `${z.a.programme.name} · ${cmDeg(z.a.programme.target)}` : "Aucun créneau");
+    const same = new Set(progs).size === 1;
+    const progTxt = same ? cmEsc(progs[0]) : za.map((z, i) => `${cmEsc(z.name)} ${cmEsc(progs[i])}`).join(" · ");
+    let now;
+    if (control === "force") now = `À la main · ${cmDeg(wanted)} <span>au lieu de ${progTxt}</span>`;
+    else if (control === "off") now = `Coupé <span>au lieu de ${progTxt}</span>`;
+    else now = `${progTxt} <span>${heating ? "chauffe" : "à température"}</span>`;
+    const lines = [`<div class="cmd-line"><ha-icon icon="mdi:calendar-clock"></ha-icon><span class="k">Maintenant</span><span class="v">${now}</span></div>`];
+    const nxt = za.map((z) => z.a.next_change).filter((x) => x?.at).sort((x, y) => new Date(x.at) - new Date(y.at))[0];
+    if (nxt) lines.push(`<div class="cmd-line"><ha-icon icon="mdi:clock-outline"></ha-icon><span class="k">${cmTime(nxt.at)}</span><span class="v">${nxt.name ? `${cmEsc(nxt.name)} · ${cmDeg(nxt.target)}` : "fin du programme"}${control !== "auto" ? " <span>retour au programme</span>" : ""}</span></div>`);
+    const ret = za.map((z) => z.a.on_return).filter(Boolean)[0];
+    if (ret) lines.push(`<div class="cmd-line"><ha-icon icon="mdi:home-import-outline"></ha-icon><span class="k">À ton retour</span><span class="v">${cmEsc(ret.name)} · ${cmDeg(ret.target)}</span></div>`);
+    const shown = this._pending ?? wanted;
+    const seg = (id, label, on) => `<button data-ctl="${id}" class="${on ? "on" : ""}">${label}</button>`;
+    const until = nxt ? ` jusqu'à ${cmTime(nxt.at)}` : "";
+    const bannerTxt = control === "force" ? `${cmDeg(wanted)} à la main${until}` : control === "off" ? `Coupé${until}`
+      : control === "mixed" ? za.filter((z) => (z.a.control || "auto") !== "auto").map((z) => `${z.name} ${z.a.control === "off" ? "coupé" : "à la main"}`).join(" · ") : "";
+    const banner = bannerTxt ? `<div class="cmd-banner"><span><ha-icon icon="mdi:hand-back-right-outline"></ha-icon>${cmEsc(bannerTxt)}</span><button class="cmd-pill" data-ctl="auto">Reprendre le programme</button></div>` : "";
+    const sub = `Chaudière${t.observe ? " · son propre programme" : ""}${t.room !== undefined && t.room !== null ? ` · thermostat ${cmDeg(t.room)}` : ""}`;
+    this._card.innerHTML = `<style>${CM_DAILY_STYLES}
+        .cmc-temps { display: grid; grid-template-columns: repeat(${za.length}, 1fr); gap: 8px; margin-top: 14px; }
+        .cmc-t { background: var(--cmd-bg); border-radius: 14px; padding: 10px 14px 9px; }
+        .cmc-t b { display: block; font-size: 34px; font-weight: 300; letter-spacing: -.03em; line-height: 1.05; }
+        .cmc-t b small { font-size: 18px; color: var(--cmd-muted); margin-left: 1px; }
+        .cmc-t span { font-size: 12.5px; font-weight: 600; color: var(--cmd-muted); }
+      </style>
+      <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="mdi:home-thermometer-outline"></ha-icon></div>
+        <div class="cmd-name"><b>${cmEsc(this._config.title || "Toute la maison")}</b><span>${cmEsc(sub)}</span></div>${badge}</div>
+      <div class="cmc-temps">${temps}</div>
+      <div class="cmd-lines">${lines.join("")}</div>
+      <div class="cmd-ctl">
+        <div class="cmd-step">
+          <button class="cmd-rnd" data-step="-1" title="Baisser"><ha-icon icon="mdi:minus"></ha-icon></button>
+          <div class="cmd-setp ${control === "off" ? "dim" : ""}">${cmDeg(shown)}</div>
+          <button class="cmd-rnd" data-step="1" title="Monter"><ha-icon icon="mdi:plus"></ha-icon></button>
+        </div>
+        <div class="cmd-seg">${seg("auto", "Auto", control === "auto")}${seg("force", "Forcer", control === "force")}${seg("off", "Couper", control === "off")}</div>
+      </div>${banner}${this._error ? `<div class="cmd-err">${cmEsc(this._error)}</div>` : ""}`;
+  }
+  async _all(action, target) {
+    const zones = this._zones();
+    try {
+      this._error = null;
+      await Promise.all(zones.map((z) => this._hass.callWS({ type: "climate_manager/zone/control", zone_id: z.id, action, ...(target !== undefined ? { target } : {}) })));
+    } catch (err) { this._error = err?.message || "Commande refusée"; this._paint(true); }
+  }
+  _onClick(e) {
+    if (this._layout !== "house") return;
+    const step = e.target.closest("[data-step]");
+    if (step) {
+      const t = this._houseBoiler(this._zones())?.thermostat || {};
+      const base = this._pending ?? t.wanted ?? 20;
+      this._pending = Math.min(30, Math.max(10, Math.round((Number(base) + 0.5 * Number(step.dataset.step)) * 2) / 2));
+      this._paint(true);
+      clearTimeout(this._timer);
+      this._timer = setTimeout(() => this._all("force", this._pending), 1200);
+      return;
+    }
+    const ctl = e.target.closest("[data-ctl]");
+    if (!ctl || (ctl.classList.contains("on") && ctl.dataset.ctl !== "force")) return;
+    clearTimeout(this._timer);
+    const action = ctl.dataset.ctl;
+    const target = action === "force" ? (this._pending ?? this._houseBoiler(this._zones())?.thermostat?.wanted ?? undefined) : undefined;
+    this._pending = null;
+    this._all(action, target ?? undefined);
+  }
+}
+
 /* What really heats or cools the house now, in plain words: the operating
  * mode, and what each equipment does on its own when Climate Manager does
  * not drive it (the boiler keeps its own programme in observation or off). */
@@ -3992,6 +4137,21 @@ class ClimateManagerHouseCard extends ClimateManagerDailyCard {
       + opt(offName, "chacun en manuel", "mdi:hand-back-right-outline", !a.mode_id);
     const pending = this._pendingOption ? `<div class="cmd-note"><ha-icon icon="mdi:timer-sand"></ha-icon><span>Passage à ${cmEsc(this._pendingOption)}…</span></div>` : "";
     if (!keep && this._pendingOption && st.state === this._pendingOption) this._pendingOption = null;
+    if (this._config.compact) {
+      const odd = s.truth.filter((x) => /quand même|toujours|à la main/.test(x));
+      this._card.innerHTML = `<style>${CM_DAILY_STYLES}
+          .cmd-opts.cmp { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); margin-top: 12px; }
+          .cmd-opts.cmp .cmd-opt { flex-direction: row; align-items: center; gap: 8px; padding: 9px 10px; }
+          .cmd-opts.cmp .cmd-opt ha-icon { margin: 0; --mdc-icon-size: 18px; }
+          .cmd-opts.cmp .cmd-opt span { display: none; }
+          .cmd-opts.cmp .cmd-opt b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        </style>
+        <div class="cmd-name"><b>${cmEsc(this._config.title || "Mode de la saison")}</b><span>Ce que Climate Manager démarre pour chauffer ou rafraîchir</span></div>
+        <div class="cmd-opts cmp">${opts}</div>
+        ${odd.length ? `<div class="cmd-note cmd-truth"><ha-icon icon="mdi:information-outline"></ha-icon><span>${odd.join(" ")}</span></div>` : ""}
+        ${pending}${this._error ? `<div class="cmd-err">${cmEsc(this._error)}</div>` : ""}`;
+      return;
+    }
     this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style>
       <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="mdi:home-thermometer-outline"></ha-icon></div>
         <div class="cmd-name"><b>${cmEsc(this._config.title || "Qui chauffe la maison ?")}</b><span>Climate Manager démarre et règle ce que tu choisis ici</span></div></div>
@@ -4133,6 +4293,7 @@ class ClimateManagerEquipmentCard extends ClimateManagerDailyCard {
 }
 
 customElements.define("climate-manager-zone-card", ClimateManagerZoneCard);
+customElements.define("climate-manager-control-card", ClimateManagerControlCard);
 customElements.define("climate-manager-house-card", ClimateManagerHouseCard);
 customElements.define("climate-manager-summary-card", ClimateManagerSummaryCard);
 customElements.define("climate-manager-equipment-card", ClimateManagerEquipmentCard);
@@ -4173,6 +4334,7 @@ window.customCards = window.customCards || [];
     description: "Mode de fonctionnement de la maison (chaudière, climatisation…).",
   },
   { type: "climate-manager-zone-card", name: "Climate Manager — Pièce", description: "Température, programme en cours et suivant, consigne, Auto / Forcer / Couper." },
+  { type: "climate-manager-control-card", name: "Climate Manager — Pilotage", description: "Toute la maison quand la chaudière chauffe seule, une carte par pièce sinon." },
   { type: "climate-manager-house-card", name: "Climate Manager — Maison", description: "Qui chauffe ou refroidit la maison, et ce qui se passe vraiment." },
   { type: "climate-manager-summary-card", name: "Climate Manager — Accueil", description: "Une ligne pour l'accueil : qui chauffe, les températures, la suite." },
   { type: "climate-manager-equipment-card", name: "Climate Manager — Équipement", description: "Ce que fait un équipement et ce que Climate Manager en attend." },
