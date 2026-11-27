@@ -212,6 +212,10 @@ class ThermostatDriver(Driver):
 
         if reason == MANUAL or not e.setpoint:
             return plan
+        if r.setpoint is None:
+            # Not read yet (HA or ebusd just restarted): never write blind,
+            # the zones may not be loaded either (a passing « floor »).
+            return plan
         if r.setpoint is not None and abs(r.setpoint - wanted) < SETPOINT_STEP:
             return plan
         if mem.last_write_ts is not None:

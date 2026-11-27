@@ -163,3 +163,13 @@ def test_settings_saved_with_their_own_plan_load_without_it():
                                       "preheat_max_min": 120, "floor": 16.5})
     assert s.floor == 16.5 and set(s.to_dict()) == {"floor", "min_write_interval_min", "holiday_after_h",
                                                     "holiday_setpoint", "observe"}
+
+
+def test_nothing_written_while_the_setpoint_is_unknown():
+    """After a restart the thermostat is not read yet: no blind write."""
+    d, s, m = ThermostatDriver(), live(), ThermostatMemory()
+    p = d.plan(E, s, reading(hm(14), setpoint=None, demand=None), m)
+    assert not any(c.service == "set_value" for c in p.commands)
+    assert m.last_write_ts is None
+    p = d.plan(E, s, reading(hm(14), setpoint=21.0, demand=18.0), m)
+    assert any(c.service == "set_value" and c.data["value"] == 18.0 for c in p.commands)
