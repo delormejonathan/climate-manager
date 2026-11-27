@@ -3831,7 +3831,7 @@ class ClimateManagerZoneCard extends ClimateManagerDailyCard {
     // Controls
     const shown = this._pending ?? v.target;
     const canForce = !noMode && sources.some((s) => s.enabled !== false);
-    const canCut = control === "force" || control === "manual" || running || (!!prog && control !== "off");
+    const canCut = !noMode && (control === "force" || control === "manual" || running || (!!prog && control !== "off"));
     const seg = (id, label, on, enabled) => `<button data-ctl="${id}" class="${on ? "on" : ""}" ${enabled ? "" : "disabled"}>${label}</button>`;
     const ctl = `<div class="cmd-ctl">
         <div class="cmd-step">

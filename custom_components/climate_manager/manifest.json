@@ -15,7 +15,7 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/delormejonathan/climate-manager/issues",
   "requirements": [],
-  "version": "0.36.3",
+  "version": "0.36.4",
   "after_dependencies": [
     "recorder"
   ]
