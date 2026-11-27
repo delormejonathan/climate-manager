@@ -238,6 +238,9 @@ def _settings_payload(hass: HomeAssistant, entry: ConfigEntry, coordinator) -> d
         "equipments": [
             {
                 **e.to_dict(),
+                # Thermostat settings normalised (older saves had no periods).
+                **({"thermostat": ThermostatSettings.from_dict(e.thermostat).to_dict()}
+                   if e.kind == EquipmentKind.THERMOSTAT else {}),
                 "running": live_eq.get(e.id, {}).get("running", False),
                 # Thermostat: what Climate Manager wants now and why (observation or driving).
                 "live": live_eq.get(e.id, {}).get("thermostat"),

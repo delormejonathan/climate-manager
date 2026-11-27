@@ -6,15 +6,15 @@ boiler and radiators have a lot of inertia. There is no session and no
 pendulum: the driver keeps one steady setpoint and only rewrites it when the
 comfort plan changes.
 
-The setpoint is the lowest of the plans in force:
-- day (comfort) when someone is home,
-- night between ``night_start`` and ``night_end``,
-- away once the house has been empty for ``away_delay_min``,
-and never below ``floor``. ``night_end`` is the morning heating start: the day
-setpoint comes back exactly then, never earlier (the household already chose
-it to have the house warm later in the morning). The heating rate learnt on
-real rises is kept as information only. A long absence switches the thermostat to its holiday
-mode. A setpoint changed by hand on the thermostat is respected for a while.
+The plan is a list of periods, each one a time slot (or the whole day) tied
+to the house presence (always, occupied, empty) with a setpoint. The first
+period that matches the time and the presence gives the setpoint, as the
+zone profiles do; none matches: ``floor``. The house counts as empty once it
+has been so for ``away_delay_min``. A period start is a heating start: the
+setpoint changes exactly then, never earlier (the heating rate learnt on real
+rises is information only). A long absence switches the thermostat to its
+holiday mode. A setpoint changed by hand on the thermostat is respected for a
+while.
 
 The thermostat keeps its setpoint in non-volatile memory: writes are rare
 (only on change, at least ``min_write_interval_min`` apart).
@@ -27,9 +27,7 @@ from typing import Any, ClassVar
 
 from .base import Command, Driver, round_half
 
-DAY = "day"
-NIGHT = "night"
-AWAY = "away"
+FLOOR = "floor"  # no period matches
 HOLIDAY = "holiday"
 MANUAL = "manual"
 STANDBY = "standby"
@@ -66,13 +64,76 @@ def in_window(now_min: int, start_min: int, end_min: int) -> bool:
     return now_min >= start_min or now_min < end_min
 
 
+PRESENCES = ("any", "home", "away")
+MAX_PERIODS = 8
+
+
+def _hhmm_str(value: Any) -> str | None:
+    """« 7:5 » -> « 07:05 »; empty or malformed -> None (whole day)."""
+    if not value:
+        return None
+    try:
+        h, m = str(value).split(":")[:2]
+        return f"{int(h) % 24:02d}:{int(m) % 60:02d}"
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class ThermostatPeriod:
+    name: str
+    setpoint: float
+    start: str | None = None  # None (with end None) = the whole day
+    end: str | None = None
+    presence: str = "any"  # any | home (house occupied) | away (house empty)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ThermostatPeriod:
+        try:
+            setpoint = float(d.get("setpoint"))
+        except (TypeError, ValueError):
+            setpoint = 19.0
+        start, end = _hhmm_str(d.get("start")), _hhmm_str(d.get("end"))
+        if start is None or end is None or start == end:
+            start = end = None
+        presence = d.get("presence") if d.get("presence") in PRESENCES else "any"
+        name = str(d.get("name") or "").strip()[:30] or "Plage"
+        return cls(name=name, setpoint=max(5.0, min(26.0, setpoint)), start=start, end=end, presence=presence)
+
+    def matches(self, now_min: int, away: bool) -> bool:
+        if (self.presence == "home" and away) or (self.presence == "away" and not away):
+            return False
+        if self.start is None or self.end is None:
+            return True
+        return in_window(now_min, _hhmm(self.start, "00:00"), _hhmm(self.end, "00:00"))
+
+
+def default_periods() -> list[ThermostatPeriod]:
+    return [
+        ThermostatPeriod("Absence", 18.5, presence="away"),
+        ThermostatPeriod("Nuit", 19.0, "22:30", "06:00"),
+        ThermostatPeriod("Jour", 21.0, presence="home"),
+    ]
+
+
+def _legacy_periods(d: dict[str, Any]) -> list[ThermostatPeriod]:
+    """Settings saved before periods (comfort / night / away): same behaviour."""
+    def f(key: str, default: float) -> float:
+        try:
+            return float(d.get(key, default))
+        except (TypeError, ValueError):
+            return default
+    return [
+        ThermostatPeriod("Absence", f("away", 18.5), presence="away"),
+        ThermostatPeriod.from_dict({"name": "Nuit", "setpoint": f("night", 19.0),
+                                    "start": d.get("night_start") or "22:30", "end": d.get("night_end") or "06:00"}),
+        ThermostatPeriod("Jour", f("comfort", 21.0), presence="home"),
+    ]
+
+
 @dataclass
 class ThermostatSettings:
-    comfort: float = 21.0
-    night: float = 19.0
-    night_start: str = "22:30"
-    night_end: str = "06:00"
-    away: float = 18.5
+    periods: list[ThermostatPeriod] = field(default_factory=default_periods)
     floor: float = 17.0
     away_delay_min: int = 15
     min_write_interval_min: int = 15
@@ -92,12 +153,15 @@ class ThermostatSettings:
                 v = getattr(base, key)
             return max(lo, min(hi, v))
 
+        raw = d.get("periods")
+        if isinstance(raw, list):
+            periods = [ThermostatPeriod.from_dict(p) for p in raw if isinstance(p, dict)][:MAX_PERIODS]
+        elif any(k in d for k in ("comfort", "night", "away", "night_start", "night_end")):
+            periods = _legacy_periods(d)
+        else:
+            periods = default_periods()
         return cls(
-            comfort=num("comfort", 10, 26),
-            night=num("night", 10, 26),
-            night_start=f"{_hhmm(d.get('night_start'), base.night_start) // 60:02d}:{_hhmm(d.get('night_start'), base.night_start) % 60:02d}",
-            night_end=f"{_hhmm(d.get('night_end'), base.night_end) // 60:02d}:{_hhmm(d.get('night_end'), base.night_end) % 60:02d}",
-            away=num("away", 10, 26),
+            periods=periods,
             floor=num("floor", 10, 22),
             away_delay_min=int(num("away_delay_min", 0, 240)),
             min_write_interval_min=int(num("min_write_interval_min", 1, 240)),
@@ -108,6 +172,11 @@ class ThermostatSettings:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def standby_setpoint(self) -> float:
+        """Kept while another equipment heats: the empty-house setpoint."""
+        away = next((p.setpoint for p in self.periods if p.presence == "away"), self.floor)
+        return max(self.floor, away)
 
 
 @dataclass
@@ -179,20 +248,16 @@ class ThermostatDriver(Driver):
     def wanted(
         self, s: ThermostatSettings, r: ThermostatReading, mem: ThermostatMemory
     ) -> tuple[float, str]:
-        """Setpoint the comfort plan asks for now, with its reason."""
-        start = _hhmm(s.night_start, "22:30")
-        end = _hhmm(s.night_end, "06:00")
-        night = in_window(r.now_min, start, end)
+        """Setpoint the plan asks for now, with its reason (the period name)."""
         away_confirmed = (
             r.absent
             and mem.absent_since_ts is not None
             and r.now_ts - mem.absent_since_ts >= s.away_delay_min * 60
         )
-        reason = NIGHT if night else DAY
-        value = s.night if night else s.comfort
-        if away_confirmed and s.away < value:
-            reason, value = AWAY, s.away
-        return round_half(max(s.floor, value)), reason
+        for p in s.periods:
+            if p.matches(r.now_min, away_confirmed):
+                return round_half(max(s.floor, p.setpoint)), p.name
+        return round_half(s.floor), FLOOR
 
     def plan(
         self,
@@ -213,7 +278,7 @@ class ThermostatDriver(Driver):
 
         wanted, reason = self.wanted(s, r, mem)
         if role == STANDBY:
-            wanted, reason = round_half(max(s.floor, min(wanted, s.away))), STANDBY
+            wanted, reason = round_half(min(wanted, s.standby_setpoint())), STANDBY
 
         holiday = (
             r.absent

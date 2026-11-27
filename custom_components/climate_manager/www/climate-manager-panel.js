@@ -27,14 +27,18 @@ const KINDS = {
 };
 /* Defaults of a thermostat equipment (same as ThermostatSettings in drivers/thermostat.py). */
 const THERMOSTAT_DEFAULTS = {
-  comfort: 21, night: 19, night_start: "22:30", night_end: "06:00", away: 18.5, floor: 17,
-  away_delay_min: 15, min_write_interval_min: 15, holiday_after_h: 24, holiday_setpoint: 16,
+  periods: [
+    { name: "Absence", setpoint: 18.5, start: null, end: null, presence: "away" },
+    { name: "Nuit", setpoint: 19, start: "22:30", end: "06:00", presence: "any" },
+    { name: "Jour", setpoint: 21, start: null, end: null, presence: "home" },
+  ],
+  floor: 17, away_delay_min: 15, min_write_interval_min: 15, holiday_after_h: 24, holiday_setpoint: 16,
   observe: true,
 };
 const THERMOSTAT_REASONS = {
-  day: "jour", night: "nuit", away: "absence", 
-  holiday: "vacances", manual: "réglée à la main sur le thermostat", standby: "en retrait, un autre appareil chauffe",
+  floor: "aucune plage", holiday: "vacances", manual: "réglée à la main sur le thermostat", standby: "en retrait, un autre appareil chauffe",
 };
+const MAX_PERIODS = 8;
 const NEW_EQUIPMENT = {
   id: null, name: "", kind: "central", entity: null, zones: [], heat: true, cool: false,
   on_option: null, off_option: null, setpoint_entity: null, setpoint_offset: 1, running_entity: null,
@@ -557,7 +561,7 @@ class ClimateManagerPanel extends HTMLElement {
     if (this._eqEdit && this._eqEdit.id === id) { this._eqEdit = null; this._render(); return; }
     this._eqEdit = id ? clone(this._equipment(id)) : clone(NEW_EQUIPMENT);
     delete this._eqEdit.live; delete this._eqEdit.running;
-    if (this._eqEdit.kind === "thermostat") this._eqEdit.thermostat = { ...THERMOSTAT_DEFAULTS, ...(this._eqEdit.thermostat || {}) };
+    if (this._eqEdit.kind === "thermostat") this._eqEdit.thermostat = { ...clone(THERMOSTAT_DEFAULTS), ...(this._eqEdit.thermostat || {}) };
     if (!id && this._settings.zones.length) this._eqEdit.zones = this._settings.zones.map((z) => z.id);
     this._render();
     this.shadowRoot.querySelector(".row.open")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -601,7 +605,31 @@ class ClimateManagerPanel extends HTMLElement {
     </div>`;
   }
 
-  /** Thermostat equipment: temperatures, night, absence, and the thermostat's entities. */
+  /** One period of the boiler plan: name, presence, time slot, setpoint. */
+  _renderPeriod(pd, i, count, current) {
+    const ranged = !!(pd.start && pd.end);
+    const time = (key) => `<input type="time" class="text time" data-period-time="${i}|${key}" value="${esc(pd[key] || "")}">`;
+    const active = !this._periodActiveShown && current === pd.name;
+    if (active) this._periodActiveShown = true;
+    return `<div class="period ${active ? "active" : ""}">
+      <div class="period-head">
+        <input class="text period-name" data-period-text="${i}" value="${esc(pd.name)}" maxlength="30" aria-label="Nom de la plage">
+        ${active ? '<span class="badge ok">En cours</span>' : ""}
+        <span class="spacer"></span>
+        ${this._stepper(`thp:${i}`, Number(pd.setpoint), { step: 0.5, min: 5, max: 26 })}
+        <span class="period-tools">
+          <button class="icon-btn flat" data-period-move="${i}|-1" aria-label="Monter" ${i === 0 ? "disabled" : ""}><ha-icon icon="mdi:arrow-up"></ha-icon></button>
+          <button class="icon-btn flat" data-period-move="${i}|1" aria-label="Descendre" ${i === count - 1 ? "disabled" : ""}><ha-icon icon="mdi:arrow-down"></ha-icon></button>
+          <button class="icon-btn flat" data-period-delete="${i}" aria-label="Supprimer" ${count === 1 ? "disabled" : ""}><ha-icon icon="mdi:delete-outline"></ha-icon></button>
+        </span>
+      </div>
+      <div class="period-row"><span class="period-label">Présence</span>${this._choice(`thp-presence:${i}`, OCCUPANCY, pd.presence || "any")}</div>
+      <div class="period-row"><span class="period-label">Heures</span>${this._choice(`thp-when:${i}`, [["all", "Toute la journée"], ["range", "De… à…"]], ranged ? "range" : "all")}
+        ${ranged ? `<span class="times">${time("start")}<span>à</span>${time("end")}</span>` : ""}</div>
+    </div>`;
+  }
+
+  /** Thermostat equipment: periods (time slot + presence), absence, and the thermostat's entities. */
   _renderThermostatEditor() {
     const e = this._eqEdit;
     const t = e.thermostat;
@@ -611,6 +639,7 @@ class ClimateManagerPanel extends HTMLElement {
     const minutes = (label, key, min, max, step, help = "") => this._field(label, this._stepper(`th:${key}`, Number(t[key]), { step, min, max, unit: "min", digits: 0 }), help);
     const time = (key) => `<input type="time" class="text time" data-th-time="${key}" value="${esc(t[key] || "")}">`;
     const status = this._thermostatStatus({ live });
+    this._periodActiveShown = false;
     const rate = live.heat_rate_samples ? `chauffe mesurée ${num(live.heat_rate, 2)} °C/h (${live.heat_rate_samples} montée${live.heat_rate_samples > 1 ? "s" : ""})` : "vitesse de chauffe pas encore mesurée";
     const facts = [
       live.setpoint != null ? `thermostat à ${deg(live.setpoint)}` : "",
@@ -628,13 +657,14 @@ class ClimateManagerPanel extends HTMLElement {
           t.observe ? "Il calcule et affiche la consigne voulue sans rien écrire : le thermostat garde son propre programme." : "Il coupe le programme horaire du thermostat et écrit la consigne. Le programme revient en « Arrêt », hors service ou si Climate Manager ne répond plus.")}
       </div>
       <div class="group">
-        <div class="group-title">Températures</div>
-        ${temp("Jour", "comfort", "Quand quelqu'un est là.")}
-        ${this._field("Nuit", `${this._stepper("th:night", Number(t.night), { step: 0.5, min: 10, max: 26 })}<div class="times"><span>à partir de</span>${time("night_start")}</div>`)}
-        ${this._field("Début de chauffe du matin", time("night_end"), "La température Jour revient à cette heure, jamais avant.")}
-        ${temp("Absence", "away", "Quand la maison est vide.")}
-        ${minutes("Absence confirmée après", "away_delay_min", 0, 240, 5, "Évite de baisser pour un départ de quelques minutes.")}
-        ${temp("Jamais sous", "floor", "", { max: 22 })}
+        <div class="group-title">Plages</div>
+        <div class="f-help periods-help">La première plage qui correspond à l'heure et à la présence donne la consigne. Le début d'une plage est l'heure où la chaudière repart, jamais avant.</div>
+        <div class="periods">${t.periods.map((pd, i) => this._renderPeriod(pd, i, t.periods.length, live.reason)).join("")}</div>
+        ${t.periods.length < MAX_PERIODS ? '<button class="btn plain add-period" data-period-add><ha-icon icon="mdi:plus"></ha-icon>Ajouter une plage</button>' : ""}
+      </div>
+      <div class="group">
+        ${minutes("Maison vide après", "away_delay_min", 0, 240, 5, "Évite de baisser pour un départ de quelques minutes.")}
+        ${temp("Jamais sous", "floor", "Aussi la consigne quand aucune plage ne correspond.", { max: 22 })}
       </div>
       <div class="group">
         <div class="group-title">Longue absence</div>
@@ -694,8 +724,9 @@ class ClimateManagerPanel extends HTMLElement {
     if (e.kind === "thermostat") {
       if (!["number", "input_number"].includes(domain)) return this._toast("La consigne du thermostat doit être un nombre (number).");
       const t = e.thermostat;
-      if (t.night_start === t.night_end) return this._toast("La nuit doit commencer et finir à des heures différentes.");
-      if (t.floor > Math.min(t.comfort, t.night, t.away)) return this._toast("« Jamais sous » doit rester sous les autres températures.");
+      if (!t.periods.length) return this._toast("Garde au moins une plage.");
+      if (t.periods.some((pd) => !String(pd.name || "").trim())) return this._toast("Donne un nom à chaque plage.");
+      if (t.periods.some((pd) => pd.start && pd.end && pd.start === pd.end)) return this._toast("Une plage doit commencer et finir à des heures différentes.");
     }
     const ok = await this._ws({ type: "climate_manager/equipment/save", equipment: e }, "Équipement enregistré");
     if (ok) { this._eqEdit = null; this._render(); }
@@ -1039,7 +1070,20 @@ class ClimateManagerPanel extends HTMLElement {
       this._ws({ type: "climate_manager/equipment/delete", equipment_id: this._eqEdit.id }, "Équipement supprimé").then((ok) => { if (ok) { this._eqEdit = null; this._render(); } });
     });
     on("[data-eq-text]", (i) => { this._eqEdit[i.dataset.eqText] = i.value; }, "input");
-    on("[data-th-time]", (i) => { if (i.value) this._eqEdit.thermostat[i.dataset.thTime] = i.value; }, "change");
+    const period = (i) => this._eqEdit.thermostat.periods[Number(i)];
+    on("[data-period-text]", (i) => { period(i.dataset.periodText).name = i.value; }, "input");
+    on("[data-period-time]", (i) => { const [n, key] = i.dataset.periodTime.split("|"); if (i.value) period(n)[key] = i.value; }, "change");
+    on("[data-period-move]", (b) => {
+      const [n, d] = b.dataset.periodMove.split("|").map(Number); const list = this._eqEdit.thermostat.periods;
+      if (n + d < 0 || n + d >= list.length) return;
+      [list[n], list[n + d]] = [list[n + d], list[n]]; this._render();
+    });
+    on("[data-period-delete]", (b) => { const list = this._eqEdit.thermostat.periods; if (list.length > 1) { list.splice(Number(b.dataset.periodDelete), 1); this._render(); } });
+    on("[data-period-add]", () => {
+      const list = this._eqEdit.thermostat.periods;
+      if (list.length >= MAX_PERIODS) return;
+      list.push({ name: `Plage ${list.length + 1}`, setpoint: 20, start: "07:00", end: "09:00", presence: "home" }); this._render();
+    });
     on("[data-toggle-cover]", (b) => { const [eq, zone] = b.dataset.toggleCover.split("|"); this._toggleCover(eq, zone); });
     on("[data-edit-mode]", (b) => this._openMode(b.dataset.editMode));
     on("[data-add-mode]", () => this._openMode(null));
@@ -1097,11 +1141,16 @@ class ClimateManagerPanel extends HTMLElement {
           if (val === "thermostat") {
             e.heat = true; e.cool = false; e.zones = [];
             e.entity = /^(input_)?number\./.test(e.entity || "") ? e.entity : null;
-            e.thermostat = { ...THERMOSTAT_DEFAULTS, ...(e.thermostat || {}) };
+            e.thermostat = { ...clone(THERMOSTAT_DEFAULTS), ...(e.thermostat || {}) };
           }
           if (!e.id && !(e.energy_sensors || []).length) { e.energy = val === "heat_pump" ? "electricity" : "gas"; e.energy_price = DEFAULT_PRICE[e.energy]; }
         }
         else if (name === "th-observe") e.thermostat.observe = val === "observe";
+        else if (name.startsWith("thp-presence:")) e.thermostat.periods[Number(name.split(":")[1])].presence = val;
+        else if (name.startsWith("thp-when:")) {
+          const pd = e.thermostat.periods[Number(name.split(":")[1])];
+          if (val === "all") { pd.start = null; pd.end = null; } else if (!pd.start || !pd.end) { pd.start = "06:00"; pd.end = "22:30"; }
+        }
         else if (name === "eq-does") { if (val === "heat") e.heat = !e.heat; else e.cool = !e.cool; }
         else if (name === "eq-on") e.on_option = val;
         else if (name === "eq-energy") {
@@ -1151,6 +1200,7 @@ class ClimateManagerPanel extends HTMLElement {
 
   _stepperValue(field) {
     if (field.startsWith("eq:")) return Number(this._eqEdit[field.slice(3)] ?? 0);
+    if (field.startsWith("thp:")) return Number(this._eqEdit.thermostat.periods[Number(field.slice(4))].setpoint);
     if (field.startsWith("th:")) return Number(this._eqEdit.thermostat[field.slice(3)] ?? 0);
     if (field.startsWith("mode:")) return Number(this._modeEdit[field.slice(5)] ?? 0);
     if (field.startsWith("zone:")) { const [, key, f] = field.split(":"); return Number(this._zoneDraft(key)[f] ?? NEW_ZONE[f]); }
@@ -1158,6 +1208,7 @@ class ClimateManagerPanel extends HTMLElement {
   }
   _stepperSet(field, value) {
     if (field.startsWith("eq:")) { this._eqEdit[field.slice(3)] = value; return; }
+    if (field.startsWith("thp:")) { this._eqEdit.thermostat.periods[Number(field.slice(4))].setpoint = value; return; }
     if (field.startsWith("th:")) { this._eqEdit.thermostat[field.slice(3)] = value; return; }
     if (field.startsWith("mode:")) { this._modeEdit[field.slice(5)] = value; return; }
     if (field.startsWith("zone:")) { const [, key, f] = field.split(":"); this._zoneDraft(key)[f] = value; this._refreshZoneButtons(key); return; }
@@ -1296,6 +1347,19 @@ const STYLES = `
   .text:focus { border-bottom: 2px solid var(--dc-accent); }
   .text.time { width: auto; height: 48px; padding: 0 12px; font-variant-numeric: tabular-nums; }
   .times { display: flex; align-items: center; gap: 8px; color: var(--dc-muted); }
+  .periods-help { margin: 0 0 10px; }
+  .periods { display: flex; flex-direction: column; gap: 8px; }
+  .period { background: var(--dc-surface); border: 1px solid transparent; border-radius: var(--dc-radius-sm); padding: 8px 10px 10px 12px; }
+  .period.active { border-color: var(--dc-ok); }
+  .period-head { display: flex; align-items: center; gap: 8px; }
+  .period-tools { display: flex; }
+  .period-tools .icon-btn { --mdc-icon-size: 18px; }
+  .period-name { max-width: 180px; font-weight: 600; padding: 6px 8px; background: transparent; border-color: transparent; }
+  .period-name:hover, .period-name:focus { background: var(--dc-surface-strong); }
+  .period-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; padding-left: 8px; }
+  .period-label { width: 70px; font-size: 13px; color: var(--dc-muted); }
+  .add-period { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; }
+  .add-period ha-icon { --mdc-icon-size: 18px; }
   .stepper { display: inline-flex; align-items: center; gap: 2px; padding: 4px; border-radius: 14px; background: var(--dc-surface); }
   .stepper button { border: 0; width: 34px; height: 34px; border-radius: 10px; background: var(--card-background-color, #fff); color: var(--dc-fg);
     display: grid; place-items: center; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.08); }

@@ -23,7 +23,7 @@ def _coord(observe: bool, mode: str | None = "chauffage"):
         "schedule_entity": "switch.prog", "holiday_entity": "switch.hol",
         "room_sensor": "sensor.room", "target_entity": "sensor.target",
         "heat": True, "cool": False, "zones": [],
-        "thermostat": {"observe": observe, "night_start": "00:00", "night_end": "00:00"},
+        "thermostat": {"observe": observe, "periods": [{"name": "day", "setpoint": 21, "presence": "home"}]},
     })
     plant = Plant(
         equipments=[eq],
