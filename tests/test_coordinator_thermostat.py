@@ -36,6 +36,7 @@ def _coord(observe: bool, mode: str | None = "chauffage"):
     ))
     c.plant = plant
     c._thermo_mem, c._thermo_plan, c._thermo_journal = {}, {}, {}
+    c._thermo_heartbeat_ts = None
     c.sent = []
 
     async def apply(cmd):
@@ -72,3 +73,45 @@ def test_take_over_then_hand_back_on_stop_mode():
         assert not c._thermo_mem["boiler"].taken_over
     finally:
         STATES["switch.prog"] = "on"
+
+
+def _stub_save(c):
+    async def save():
+        c.saved = True
+
+    c._save_runtime_state_if_changed = save
+
+
+def test_heartbeat_moves_in_five_minute_steps():
+    c, eq = _coord(observe=True)
+    assert c._thermostat_payload(eq)["heartbeat_ts"] is None
+    asyncio.run(c._drive_thermostat(eq))
+    hb = c._thermostat_payload(eq)["heartbeat_ts"]
+    assert hb is not None and hb % 300 == 0
+    assert 0 <= c._thermo_heartbeat_ts - hb < 300
+
+
+def test_shutdown_hands_the_programme_back_once():
+    c, eq = _coord(observe=False)
+    _stub_save(c)
+    asyncio.run(c._drive_thermostat(eq))
+    assert c._thermo_mem["boiler"].taken_over
+    STATES["switch.prog"] = "off"
+    try:
+        c.sent.clear()
+        asyncio.run(c.async_release_thermostats())
+        assert [(x.data["entity_id"], x.service) for x in c.sent] == [("switch.prog", "turn_on")]
+        assert not c._thermo_mem["boiler"].taken_over and c.saved
+        c.sent.clear()
+        asyncio.run(c.async_release_thermostats())
+        assert c.sent == []  # already handed back
+    finally:
+        STATES["switch.prog"] = "on"
+
+
+def test_shutdown_in_observation_touches_nothing():
+    c, eq = _coord(observe=True)
+    _stub_save(c)
+    asyncio.run(c._drive_thermostat(eq))
+    asyncio.run(c.async_release_thermostats())
+    assert c.sent == []

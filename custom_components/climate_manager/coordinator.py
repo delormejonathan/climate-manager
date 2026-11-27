@@ -14,7 +14,13 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import (
+    EVENT_HOMEASSISTANT_STOP,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import Context, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
@@ -77,6 +83,8 @@ _LOGGER = logging.getLogger(__name__)
 _RELAY = RelayDriver()
 _THERMOSTAT = ThermostatDriver()
 THERMOSTAT_JOURNAL_SIZE = 40
+# The heartbeat moves in steps so the recorder keeps one row per step, not one per tick.
+THERMOSTAT_HEARTBEAT_STEP_S = 300
 KWH_SETTLE_S = 65 * 60
 
 NOTIFICATION_ACTION_EVENT = "mobile_app_notification_action"
@@ -116,6 +124,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         self._thermo_mem: dict[str, ThermostatMemory] = {}
         self._thermo_plan: dict[str, ThermostatPlan] = {}
         self._thermo_journal: dict[str, list[dict[str, Any]]] = {}
+        # Last tick that looked after the thermostats: a failsafe automation in
+        # HA puts the time programme back when it stops moving.
+        self._thermo_heartbeat_ts: float | None = None
         self._rebuild_zones()
 
     # === Public API ===
@@ -318,6 +329,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             NOTIFICATION_ACTION_EVENT, self._on_notification_action
         )
 
+        async def _on_hass_stop(_: Event) -> None:
+            # HA going down: nobody will drive the boiler, give it its programme back.
+            self._unsub_hass_stop = None
+            await self.async_release_thermostats()
+
+        self._unsub_hass_stop = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_hass_stop)
+
     async def _async_update_data(self) -> dict[str, Any]:
         demands: dict[str, ZoneDemand] = {}
         for zone in self._zones.values():
@@ -457,6 +475,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         return STANDBY
 
     async def _drive_thermostat(self, eq: Equipment) -> None:
+        self._thermo_heartbeat_ts = dt_util.now().timestamp()
         settings = ThermostatSettings.from_dict(eq.thermostat)
         mem = self._thermo_mem.setdefault(eq.id, ThermostatMemory())
         role = self._thermostat_role(eq)
@@ -540,6 +559,10 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             "heat_rate": mem.heat_rate,
             "heat_rate_samples": mem.heat_rate_samples,
             "last_write_ts": mem.last_write_ts,
+            "heartbeat_ts": (
+                self._thermo_heartbeat_ts // THERMOSTAT_HEARTBEAT_STEP_S * THERMOSTAT_HEARTBEAT_STEP_S
+                if self._thermo_heartbeat_ts else None
+            ),
             "journal": list(self._thermo_journal.get(eq.id, []))[-10:],
         }
 
@@ -732,7 +755,25 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 handle.cancel()
         self._pending_overrides.clear()
 
+    async def async_release_thermostats(self) -> None:
+        """Hand every boiler Climate Manager drives back to its own programme
+        (integration unloaded or HA stopping): nobody is left to drive it."""
+        for eq in self.plant.equipments:
+            if eq.kind != EquipmentKind.THERMOSTAT:
+                continue
+            try:
+                await self._release_thermostat(eq)
+            except Exception:  # one failure must not block the others
+                _LOGGER.exception("Thermostat %s: hand back failed", eq.name)
+        await self._save_runtime_state_if_changed()
+
     async def async_shutdown(self) -> None:  # type: ignore[override]
+        if not getattr(self, "_thermostats_released", False):
+            self._thermostats_released = True
+            await self.async_release_thermostats()
+        if getattr(self, "_unsub_hass_stop", None):
+            self._unsub_hass_stop()
+            self._unsub_hass_stop = None
         self._cancel_pending_overrides()
         if self._unsub_state_listener:
             self._unsub_state_listener()

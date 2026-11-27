@@ -30,11 +30,9 @@ async def async_setup_entry(
             ZoneRoomTemperatureSensor(coord, zid),
             ZoneSetpointSentSensor(coord, zid),
         ]
-    entities += [
-        ThermostatSetpointSensor(coord, eq.id)
-        for eq in coord.plant.equipments
-        if eq.kind == EquipmentKind.THERMOSTAT
-    ]
+    for eq in coord.plant.equipments:
+        if eq.kind == EquipmentKind.THERMOSTAT:
+            entities += [ThermostatSetpointSensor(coord, eq.id), ThermostatHeartbeatSensor(coord, eq.id)]
     async_add_entities(entities)
 
 
@@ -216,3 +214,48 @@ class ThermostatSetpointSensor(CoordinatorEntity[DelormejClimateCoordinator], Se
                 {**j, "ts": iso(j.get("ts"))} for j in p.get("journal") or []
             ],
         }
+
+
+class ThermostatHeartbeatSensor(CoordinatorEntity[DelormejClimateCoordinator], SensorEntity):
+    """Last time Climate Manager looked after a thermostat equipment.
+
+    A failsafe automation puts the thermostat's time programme back when this
+    stops moving while the programme is off (integration stuck or gone).
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:heart-pulse"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coord: DelormejClimateCoordinator, equipment_id: str) -> None:
+        super().__init__(coord)
+        self._equipment_id = equipment_id
+        self._attr_unique_id = f"{coord.entry.entry_id}_equipment_{equipment_id}_heartbeat"
+        eq = coord.plant.equipment(equipment_id)
+        self._attr_name = f"{eq.name if eq else equipment_id} battement"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, f"{self.coordinator.entry.entry_id}_house")})
+
+    @property
+    def _payload(self) -> dict[str, Any] | None:
+        data = self.coordinator.data or {}
+        for e in (data.get("plant") or {}).get("equipments", []):
+            if e.get("id") == self._equipment_id:
+                return e.get("thermostat")
+        return None
+
+    @property
+    def native_value(self) -> datetime | None:
+        p = self._payload
+        ts = p.get("heartbeat_ts") if p else None
+        return datetime.fromtimestamp(ts, tz=UTC) if ts else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        p = self._payload
+        if not p:
+            return None
+        return {"taken_over": p.get("taken_over"), "observation": p.get("observe")}
