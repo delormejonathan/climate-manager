@@ -3645,7 +3645,7 @@ DelormejClimateSessionsCard.widgetVariant = "sessions";
  *   type: custom:climate-manager-zone-card       zone: rdc  (title, icon)
  *   type: custom:climate-manager-house-card
  *   type: custom:climate-manager-equipment-card  equipment: boiler
- *        (facts: [{entity, name}], hot_water: entity, link: {path, label})
+ *        (facts: [{entity, name}], hot_water: setpoint entity, hot_water_temp, link: {path, label})
  */
 const CM_MODE_ENTITY = "select.climate_manager_operating_mode";
 const cmEsc = (s) => String(s ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
@@ -3923,7 +3923,7 @@ class ClimateManagerEquipmentCard extends ClimateManagerDailyCard {
   _eq() { return (this._plant()?.attributes.equipments || []).find((e) => e.id === this._config.equipment); }
   _watch() {
     const eq = this._eq();
-    return [CM_MODE_ENTITY, eq?.entity, this._config.hot_water, ...(this._config.facts || []).map((f) => f.entity)].filter(Boolean);
+    return [CM_MODE_ENTITY, eq?.entity, this._config.hot_water, this._config.hot_water_temp, ...(this._config.facts || []).map((f) => f.entity)].filter(Boolean);
   }
   _fmt(entityId) {
     const s = this._hass.states[entityId];
@@ -3965,7 +3965,7 @@ class ClimateManagerEquipmentCard extends ClimateManagerDailyCard {
         : ["mdi:power", modesWith.length ? `Éteinte · sert en mode ${cmEsc(modesWith.join(", "))}` : "Éteinte · dans aucun mode"];
     }
     const facts = (this._config.facts || []).map((f) => `<div class="cmd-fact"><b>${cmEsc(this._fmt(f.entity))}</b><span>${cmEsc(f.name || this._hass.states[f.entity]?.attributes.friendly_name || f.entity)}</span></div>`).join("");
-    const hw = this._config.hot_water ? `<span><ha-icon icon="mdi:water-thermometer" style="--mdc-icon-size:17px;color:var(--cmd-accent)"></ha-icon> Eau chaude <b>${cmEsc(this._fmt(this._config.hot_water))}</b></span>` : "";
+    const hw = this._config.hot_water ? `<span><ha-icon icon="mdi:water-thermometer" style="--mdc-icon-size:17px;color:var(--cmd-accent)"></ha-icon> Eau chaude <b>${cmEsc(this._fmt(this._config.hot_water))}</b>${this._config.hot_water_temp && this._fmt(this._config.hot_water_temp) !== "—" ? ` <span class="muted">· ballon ${cmEsc(this._fmt(this._config.hot_water_temp))}</span>` : ""}</span>` : "";
     const link = this._config.link ? `<button class="cmd-link" data-path="${cmEsc(this._config.link.path)}">${cmEsc(this._config.link.label || "Détails")}<ha-icon icon="mdi:chevron-right"></ha-icon></button>` : "";
     this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style>
       <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="${cmEsc(icon)}"></ha-icon></div>
