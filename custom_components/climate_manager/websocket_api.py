@@ -235,7 +235,15 @@ def _settings_payload(hass: HomeAssistant, entry: ConfigEntry, coordinator) -> d
     for zone in zones:
         zone["sources"] = (runtime.get(zone["id"], {}) or {}).get("sources", [])
     return {
-        "equipments": [{**e.to_dict(), "running": live_eq.get(e.id, {}).get("running", False)} for e in plant.equipments],
+        "equipments": [
+            {
+                **e.to_dict(),
+                "running": live_eq.get(e.id, {}).get("running", False),
+                # Thermostat: what Climate Manager wants now and why (observation or driving).
+                "live": live_eq.get(e.id, {}).get("thermostat"),
+            }
+            for e in plant.equipments
+        ],
         "modes": [m.to_dict() for m in plant.modes],
         "active_mode": plant.active_mode,
         "entry_id": entry.entry_id,

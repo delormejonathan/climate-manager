@@ -222,7 +222,7 @@ class DelormejClimateCard extends HTMLElement {
     if (!sources.length) { el.innerHTML = ""; el.style.display = "none"; return; }
     el.style.display = "";
     const verb = dir === "cool" ? "refroidit" : "chauffe";
-    const icon = (s) => (s.kind === "central" ? "mdi:water-boiler" : "mdi:air-conditioner");
+    const icon = (s) => (s.kind === "heat_pump" ? "mdi:air-conditioner" : "mdi:water-boiler");
     el.innerHTML = sources.map((s) => {
       const on = cycleActive && s.engaged;
       const label = s.enabled === false ? "hors service" : on ? (s.running || s.kind !== "central" ? verb : "démarre") : s.running ? "en marche" : "au repos";
@@ -3584,7 +3584,7 @@ class ClimateManagerModeCard extends HTMLElement {
     const rows = (a.equipments || []).filter((e) => byId[e.id]).map((e) => {
       const sw = byId[e.id];
       const on = sw.state === "on";
-      const icon = e.kind === "central" ? "mdi:water-boiler" : "mdi:air-conditioner";
+      const icon = e.kind === "heat_pump" ? "mdi:air-conditioner" : "mdi:water-boiler";
       const status = !on ? "Hors service" : e.running ? (off ? "En marche" : a.direction === "cool" ? "Refroidit" : "Chauffe") : "En service";
       return `<div class="cm-eq ${on ? "" : "out"} ${on && e.running ? "run" : ""}">
         <ha-icon icon="${icon}"></ha-icon>
