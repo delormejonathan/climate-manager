@@ -5,10 +5,10 @@ from custom_components.climate_manager.drivers.thermostat import (
     HOLIDAY,
     MANUAL,
     STANDBY,
-    ThermostatPeriod,
     ThermostatDriver,
     ThermostatEntities,
     ThermostatMemory,
+    ThermostatPeriod,
     ThermostatReading,
     ThermostatSettings,
 )
