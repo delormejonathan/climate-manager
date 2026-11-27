@@ -29,10 +29,10 @@ const KINDS = {
 const THERMOSTAT_DEFAULTS = {
   comfort: 21, night: 19, night_start: "22:30", night_end: "06:00", away: 18.5, floor: 17,
   away_delay_min: 15, min_write_interval_min: 15, holiday_after_h: 24, holiday_setpoint: 16,
-  preheat_max_min: 120, observe: true,
+  observe: true,
 };
 const THERMOSTAT_REASONS = {
-  day: "jour", night: "nuit", away: "absence", preheat: "préchauffe avant la fin de la nuit",
+  day: "jour", night: "nuit", away: "absence", 
   holiday: "vacances", manual: "réglée à la main sur le thermostat", standby: "en retrait, un autre appareil chauffe",
 };
 const NEW_EQUIPMENT = {
@@ -630,7 +630,8 @@ class ClimateManagerPanel extends HTMLElement {
       <div class="group">
         <div class="group-title">Températures</div>
         ${temp("Jour", "comfort", "Quand quelqu'un est là.")}
-        ${this._field("Nuit", `${this._stepper("th:night", Number(t.night), { step: 0.5, min: 10, max: 26 })}<div class="times"><span>de</span>${time("night_start")}<span>à</span>${time("night_end")}</div>`, "La maison est chaude à la fin de la nuit : la chaudière repart avant, selon la vitesse de chauffe mesurée.")}
+        ${this._field("Nuit", `${this._stepper("th:night", Number(t.night), { step: 0.5, min: 10, max: 26 })}<div class="times"><span>à partir de</span>${time("night_start")}</div>`)}
+        ${this._field("Début de chauffe du matin", time("night_end"), "La température Jour revient à cette heure, jamais avant.")}
         ${temp("Absence", "away", "Quand la maison est vide.")}
         ${minutes("Absence confirmée après", "away_delay_min", 0, 240, 5, "Évite de baisser pour un départ de quelques minutes.")}
         ${temp("Jamais sous", "floor", "", { max: 22 })}
@@ -655,7 +656,6 @@ class ClimateManagerPanel extends HTMLElement {
         ${sel("Consigne du programme", "target_entity", "Ce que vise le programme du thermostat en ce moment : sert à mesurer la vitesse de chauffe.")}
         ${sel("En marche quand", "running_entity", "Flamme ou état de marche.")}
         ${minutes("Entre deux écritures", "min_write_interval_min", 1, 240, 5, "Le thermostat garde sa consigne en mémoire : on l'écrit rarement.")}
-        ${minutes("Préchauffe au plus", "preheat_max_min", 0, 360, 15)}
       </details>
       <div class="editor-foot">
         ${e.id ? '<button class="btn plain danger" data-delete-eq><ha-icon icon="mdi:delete-outline"></ha-icon>Supprimer</button>' : ""}

@@ -206,7 +206,6 @@ class ThermostatSetpointSensor(CoordinatorEntity[DelormejClimateCoordinator], Se
             "taken_over": p.get("taken_over"),
             "heat_rate": p.get("heat_rate"),
             "heat_rate_samples": p.get("heat_rate_samples"),
-            "preheat_lead_min": p.get("preheat_lead_min"),
             "last_write": iso(p.get("last_write_ts")),
             "next_write_allowed": iso(p.get("blocked_until_ts")),
             "settings": p.get("settings"),

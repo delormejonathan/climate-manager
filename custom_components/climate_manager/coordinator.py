@@ -549,7 +549,6 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             "role": self._thermostat_role(eq),
             "wanted": plan.wanted if plan else None,
             "reason": plan.reason if plan else None,
-            "preheat_lead_min": plan.preheat_lead_min if plan else None,
             "blocked_until_ts": plan.blocked_until_ts if plan else None,
             "setpoint": self._float_state(eq.entity),
             "room": self._float_state(eq.room_sensor),

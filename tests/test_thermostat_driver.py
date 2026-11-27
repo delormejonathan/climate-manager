@@ -6,7 +6,6 @@ from custom_components.climate_manager.drivers.thermostat import (
     HOLIDAY,
     MANUAL,
     NIGHT,
-    PREHEAT,
     STANDBY,
     ThermostatDriver,
     ThermostatEntities,
@@ -65,20 +64,17 @@ def test_floor():
     assert p.wanted == 17.0
 
 
-def test_preheat_before_the_night_ends_at_learnt_rate():
-    d, s = ThermostatDriver(), live()  # comfort 21, night ends 06:00
-    m = ThermostatMemory(heat_rate=1.0)
-    # 2 °C to gain at 1 °C/h: comfort from 04:00.
-    assert d.plan(E, s, reading(hm(3, 50), room=19.0, setpoint=19.0), m).reason == NIGHT
-    p = d.plan(E, s, reading(hm(4, 0), room=19.0, setpoint=19.0), m)
-    assert (p.reason, p.wanted, p.preheat_lead_min) == (PREHEAT, 21.0, 120)
-    # Faster house: later start.
-    m2 = ThermostatMemory(heat_rate=2.0)
-    assert d.plan(E, s, reading(hm(4, 30), room=19.0, setpoint=19.0), m2).reason == NIGHT
-    assert d.plan(E, s, reading(hm(5, 0), room=19.0, setpoint=19.0), m2).reason == PREHEAT
-    # Nobody home: no preheat.
-    m3 = ThermostatMemory(heat_rate=1.0, absent_since_ts=T0 - 3600)
-    assert d.plan(E, s, reading(hm(5, 30), room=19.0, absent=True), m3).reason == AWAY
+def test_day_starts_exactly_at_night_end_never_earlier():
+    d, s = ThermostatDriver(), live()  # comfort 21, night ends 06:00 (morning heating start)
+    # Even with a slow learnt rate and a cold room, the day setpoint waits for 06:00.
+    m = ThermostatMemory(heat_rate=0.3)
+    for t in (hm(3, 0), hm(4, 56), hm(5, 59)):
+        p = d.plan(E, s, reading(t, room=18.0, setpoint=19.0), m)
+        assert (p.reason, p.wanted) == (NIGHT, 19.0)
+    p = d.plan(E, s, reading(hm(6, 0), room=18.0, setpoint=19.0), m)
+    assert (p.reason, p.wanted) == (DAY, 21.0)
+    # Old settings still carrying preheat_max_min load fine and ignore it.
+    assert "preheat_max_min" not in ThermostatSettings.from_dict({"preheat_max_min": 120}).to_dict()
 
 
 def test_writes_only_on_change_and_not_too_often():
