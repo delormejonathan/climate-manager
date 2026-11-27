@@ -612,9 +612,14 @@ class ClimateManagerPanel extends HTMLElement {
     const time = (key) => `<input type="time" class="text time" data-th-time="${key}" value="${esc(t[key] || "")}">`;
     const status = this._thermostatStatus({ live });
     const rate = live.heat_rate_samples ? `chauffe mesurée ${num(live.heat_rate, 2)} °C/h (${live.heat_rate_samples} montée${live.heat_rate_samples > 1 ? "s" : ""})` : "vitesse de chauffe pas encore mesurée";
+    const facts = [
+      live.setpoint != null ? `thermostat à ${deg(live.setpoint)}` : "",
+      live.room != null ? `pièce à ${deg(live.room)}` : "",
+      rate,
+    ].filter(Boolean).join(", ");
     return `<div class="editor">
       ${e.id && status ? `<div class="note ${t.observe ? "muted" : ""}"><ha-icon icon="${t.observe ? "mdi:eye-outline" : "mdi:thermostat"}"></ha-icon>
-        <span>${t.observe ? "Observation" : "Pilotage"} : ${esc(status)}. Thermostat à ${deg(live.setpoint)}, pièce à ${deg(live.room)} ; ${rate}.</span></div>` : ""}
+        <span>${facts.charAt(0).toUpperCase() + facts.slice(1)}.</span></div>` : ""}
       <div class="group">
         ${this._field("Nom", `<input class="text" data-eq-text="name" value="${esc(e.name)}" maxlength="40" placeholder="Chaudière">`)}
         ${this._field("Type", this._choice("eq-kind", Object.entries(KINDS).map(([k, v]) => [k, v.label]), e.kind), KINDS.thermostat.help)}
