@@ -4194,6 +4194,13 @@ class ClimateManagerSummaryCard extends ClimateManagerDailyCard {
   }
   _paint() {
     const s = cmHouseStory(this._hass);
+    // Boiler mode: say what it does right now (burning or idle), not only who heats
+    const boiler = (this._plant()?.attributes.equipments || []).find((e) => e.kind === "thermostat" && e.enabled !== false);
+    if (s && boiler && s.icon === "mdi:water-boiler") {
+      s.title = boiler.running ? "Chaudière allumée" : "Chaudière en veille";
+      s.sub = s.sub.replace(" · flamme allumée", "").replace(/^Climate Manager · /, "Consigne ");
+      if (boiler.running) s.icon = "mdi:fire"; else s.cls = "off";
+    }
     this._mount(`${!s ? "off" : s.cls} summary`);
     if (!s) { this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style><div>Climate Manager indisponible.</div>`; return; }
     const zones = this._zones();
