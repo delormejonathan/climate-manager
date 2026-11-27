@@ -253,9 +253,13 @@ class Plant:
         if plant.active_mode and plant.mode(plant.active_mode) is None:
             plant.active_mode = None
         raw = {e.get("id"): e for e in options.get("equipments") or []}
+        zone_ids = [z["id"] for z in options.get("zones") or [] if z.get("id")]
         for eq in plant.equipments:
             if "energy_sensors" not in raw.get(eq.id, {}):
                 eq.energy_sensors = zone_counters(options, eq)
+            if eq.kind == EquipmentKind.THERMOSTAT and not eq.zones:
+                # Saved before a boiler had zones: it heats the whole house.
+                eq.zones = list(zone_ids)
         return plant
 
     def to_options(self) -> dict[str, Any]:

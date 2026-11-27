@@ -34,7 +34,7 @@ def _coord(observe: bool, mode: str | None = "chauffage"):
         "id": "boiler", "name": "Chaudière", "kind": "thermostat", "entity": "number.sp",
         "schedule_entity": "switch.prog", "holiday_entity": "switch.hol",
         "room_sensor": "sensor.room", "target_entity": "sensor.target",
-        "heat": True, "cool": False, "zones": [],
+        "heat": True, "cool": False, "zones": ["rdc"],
         "thermostat": {"observe": observe},
     })
     plant = Plant(
@@ -138,6 +138,7 @@ def test_boiler_follows_the_zones_heating_profiles():
         "up": _zone({"name": "away", "target": 18, **AWAY}, {"name": "warm", "target": 21.5, **HOME}),
         "garage": _zone({"name": "frost", "target": 10}),
     }
+    eq.zones = ["rdc", "up", "garage"]
     assert c._thermostat_demand(eq) == (21.5, "warm")  # highest zone wins
     eq.zones = ["rdc"]
     assert c._thermostat_demand(eq) == (20.5, "day")  # only the zones it heats
@@ -146,5 +147,8 @@ def test_boiler_follows_the_zones_heating_profiles():
         assert c._thermostat_demand(eq) == (18, "away")  # empty house: no morning heating
         c._zones["rdc"] = _zone({"name": "day", "target": 21, **HOME})
         assert c._thermostat_demand(eq) == (None, None)  # nothing in force: the floor
+        eq.zones = []
+        STATES["alarm.house"] = "disarmed"
+        assert c._thermostat_demand(eq) == (None, None)  # heats no zone: the floor
     finally:
         STATES["alarm.house"] = "disarmed"

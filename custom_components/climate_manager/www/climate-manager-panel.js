@@ -486,7 +486,7 @@ class ClimateManagerPanel extends HTMLElement {
   _renderInstallation() {
     const s = this._settings;
     const all = this._equipments();
-    const eqs = all.filter((e) => e.kind !== "thermostat");  // a thermostat serves the whole house
+    const eqs = all;
     const zones = s.zones;
     const head = eqs.map((e) => {
       const accent = e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
@@ -532,7 +532,7 @@ class ClimateManagerPanel extends HTMLElement {
     const open = this._eqEdit && this._eqEdit.id === e.id;
     const zones = this._settings.zones;
     const thermostat = e.kind === "thermostat";
-    const where = thermostat || (e.zones.length === zones.length && zones.length > 1) ? "toute la maison" : e.zones.map((id) => zoneName(this._zone(id))).join(", ") || "aucune zone";
+    const where = (e.zones.length === zones.length && zones.length > 1) ? "toute la maison" : e.zones.map((id) => zoneName(this._zone(id))).join(", ") || "aucune zone";
     const status = thermostat ? this._thermostatStatus(e) : "";
     const accent = e.heat && !e.cool ? "warm" : !e.heat && e.cool ? "cool" : "both";
     const inService = e.enabled !== false;
@@ -705,6 +705,7 @@ class ClimateManagerPanel extends HTMLElement {
   async _toggleCover(eqId, zoneId) {
     const e = clone(this._equipment(eqId));
     const on = e.zones.includes(zoneId);
+    if (on && e.kind === "thermostat" && e.zones.length === 1) return this._toast("La chaudière chauffe au moins une zone.");
     e.zones = on ? e.zones.filter((z) => z !== zoneId) : e.kind === "heat_pump" ? [zoneId] : [...e.zones, zoneId];
     await this._ws({ type: "climate_manager/equipment/save", equipment: e });
   }
@@ -1095,7 +1096,7 @@ class ClimateManagerPanel extends HTMLElement {
           e.kind = val;
           if (val === "heat_pump") { e.cool = true; e.heat = true; e.zones = e.zones.slice(0, 1); e.entity = e.entity?.startsWith("climate.") ? e.entity : null; }
           if (val === "thermostat") {
-            e.heat = true; e.cool = false; e.zones = [];
+            e.heat = true; e.cool = false; if (!e.zones.length) e.zones = this._settings.zones.map((z) => z.id);  // a boiler heats the whole house
             e.entity = /^(input_)?number\./.test(e.entity || "") ? e.entity : null;
             e.thermostat = { ...clone(THERMOSTAT_DEFAULTS), ...(e.thermostat || {}) };
           }

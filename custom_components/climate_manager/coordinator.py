@@ -531,11 +531,12 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
     def _thermostat_demand(self, eq: Equipment) -> tuple[float | None, str | None]:
         """The boiler follows the zones' heating profiles (winter bank), the
         same time slots and presence as the heat pumps: in each zone it heats
-        (all of them when none is set) the first profile in force; the highest
-        target wins. None: no profile in force."""
+        the first profile in force; the highest target wins. None: no profile
+        in force."""
         best: tuple[float | None, str | None] = (None, None)
-        for zone_id, zone in self._zones.items():
-            if eq.zones and zone_id not in eq.zones:
+        for zone_id in eq.zones:
+            zone = self._zones.get(zone_id)
+            if zone is None:
                 continue
             for p in zone.config.profile_banks.get(ClimateSeason.WINTER, []):
                 if p.mode != ProfileMode.HEAT:

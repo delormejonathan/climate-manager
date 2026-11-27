@@ -131,3 +131,15 @@ def test_zone_counters_move_to_the_heat_pump():
     opts["equipments"][0]["energy_sensors"] = []
     assert plant.Plant.from_options(opts).equipment("hp_rdc").energy_sensors == []
     assert plant.Plant.migrate({"zones": opts["zones"]}).equipment("hp_rdc").energy_sensors == ["sensor.h", "sensor.c"]
+
+
+def test_boiler_saved_without_zones_heats_every_zone():
+    p = plant.Plant.from_options({
+        "zones": [{"id": "rdc"}, {"id": "up"}],
+        "equipments": [{"id": "boiler", "name": "Chaudière", "kind": "thermostat", "entity": "number.sp",
+                        "heat": True, "cool": False, "zones": []},
+                       {"id": "relay", "name": "Relais", "kind": "central", "entity": "switch.r",
+                        "heat": True, "cool": False, "zones": []}],
+    })
+    assert p.equipment("boiler").zones == ["rdc", "up"]
+    assert p.equipment("relay").zones == []  # other kinds keep their choice
