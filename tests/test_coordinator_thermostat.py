@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from custom_components.climate_manager.const import ZoneState
 from custom_components.climate_manager.coordinator import DelormejClimateCoordinator
 from custom_components.climate_manager.plant import Equipment, OperatingMode, Plant
 from custom_components.climate_manager.zone import Profile
@@ -22,7 +23,9 @@ STATES = {
 def _zone(*profiles, summer=()):
     banks = {"winter": [Profile.from_dict({"mode": "heat", **p}) for p in profiles],
              "summer": [Profile.from_dict({"mode": "cool", **p}) for p in summer]}
-    return SimpleNamespace(config=SimpleNamespace(profile_banks=banks))
+    state = SimpleNamespace(state=ZoneState.IDLE, session_manual=False, session_target=None,
+                            manually_stopped_profile_name=None)
+    return SimpleNamespace(config=SimpleNamespace(profile_banks=banks), state=state)
 
 
 HOME = {"presence_entity": "alarm.house", "presence_required_state": ["disarmed", "armed_home"]}
@@ -152,3 +155,18 @@ def test_boiler_follows_the_zones_heating_profiles():
         assert c._thermostat_demand(eq) == (None, None)  # heats no zone: the floor
     finally:
         STATES["alarm.house"] = "disarmed"
+
+
+def test_zone_card_controls_steer_the_boiler():
+    c, eq = _coord(observe=True)
+    c._zones = {
+        "rdc": _zone({"name": "day", "target": 21, **HOME}),
+        "up": _zone({"name": "day", "target": 20, **HOME}),
+    }
+    eq.zones = ["rdc", "up"]
+    rdc = c._zones["rdc"].state
+    rdc.manually_stopped_profile_name = "day"  # « Couper » on RDC
+    assert c._thermostat_demand(eq) == (20, "day")
+    rdc.manually_stopped_profile_name = None
+    rdc.state, rdc.session_manual, rdc.session_target = ZoneState.RUNNING, True, 22.5  # « Forcer » 22.5
+    assert c._thermostat_demand(eq) == (22.5, "À la main")

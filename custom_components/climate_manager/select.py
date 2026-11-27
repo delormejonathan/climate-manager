@@ -66,6 +66,8 @@ class OperatingModeSelect(CoordinatorEntity[DelormejClimateCoordinator], SelectE
             "direction": data.get("direction"),
             "relation": data.get("relation"),
             "equipments": data.get("equipments", []),
+            "modes": data.get("modes", []),
+            "zones": data.get("zones", []),
         }
 
     async def async_select_option(self, option: str) -> None:

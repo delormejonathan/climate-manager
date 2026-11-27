@@ -90,7 +90,17 @@ class ZoneStateSensor(DelormejClimateZoneEntity, SensorEntity):
             "anomaly_notification_service": d.get("anomaly_notification_service"),
             "session": d.get("session"),
             "zone_id": self._zone_id,
+            "control": d.get("control"),
+            "session_manual": d.get("session_manual"),
         }
+        sched = d.get("schedule") or {}
+        attrs["programme"] = sched.get("programme")
+        attrs["on_return"] = sched.get("on_return")
+        nxt = sched.get("next_change")
+        attrs["next_change"] = (
+            {**{k: v for k, v in nxt.items() if k != "ts"}, "at": datetime.fromtimestamp(nxt["ts"], tz=UTC).isoformat()}
+            if nxt else None
+        )
         sess = d.get("session")
         if sess:
             attrs["session_start_temperature"] = sess.get("start_temperature")

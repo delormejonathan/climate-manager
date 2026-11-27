@@ -279,6 +279,7 @@ def async_register(hass: HomeAssistant) -> None:
         ws_delete_mode,
         ws_set_mode,
         ws_reorder_modes,
+        ws_zone_control,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -605,4 +606,28 @@ async def ws_set_mode(hass: HomeAssistant, connection, msg) -> None:
         connection.send_error(msg["id"], "not_found", "Unknown mode")
         return
     await coordinator.async_tick_now()
+    connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/zone/control",
+        vol.Required("zone_id"): str,
+        vol.Required("action"): vol.In(["auto", "force", "off"]),
+        vol.Optional("target"): vol.Coerce(float),
+    }
+)
+@websocket_api.async_response
+async def ws_zone_control(hass: HomeAssistant, connection, msg) -> None:
+    """Zone card control (daily use, every user): back to the programme,
+    force a setpoint until the next programme change, or stop until then."""
+    entry, coordinator = _entry_and_coordinator(hass)
+    if entry is None:
+        _not_loaded(connection, msg)
+        return
+    try:
+        await coordinator.async_zone_control(msg["zone_id"], msg["action"], msg.get("target"))
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid", str(err))
+        return
     connection.send_result(msg["id"], {})

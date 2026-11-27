@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -32,6 +32,7 @@ from .const import (
     CLIM_MIN_SETPOINT,
     CONF_PRESENCE_ABSENT_STATES,
     CONF_PRESENCE_ENTITY,
+    CONF_PRESENCE_HOME_STATES,
     CONF_PROFILE_BANKS,
     CONF_SEASON,
     CONF_ZONES,
@@ -538,6 +539,13 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             zone = self._zones.get(zone_id)
             if zone is None:
                 continue
+            control = self._zone_control(zone)
+            if control == "off":  # stopped from its card until the next change
+                continue
+            if control == "force" and zone.state.session_target is not None:
+                if best[0] is None or zone.state.session_target > best[0]:
+                    best = (zone.state.session_target, "À la main")
+                continue
             for p in zone.config.profile_banks.get(ClimateSeason.WINTER, []):
                 if p.mode != ProfileMode.HEAT:
                     continue
@@ -604,10 +612,15 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             "active_mode_name": mode.name if mode else None,
             "direction": mode.direction if mode else None,
             "relation": mode.relation if mode else None,
-            "modes": [{"id": m.id, "name": m.name, "direction": m.direction, "icon": m.icon} for m in self.plant.modes],
+            "modes": [
+                {"id": m.id, "name": m.name, "direction": m.direction, "icon": m.icon,
+                 "equipments": [e.name for e in (self.plant.equipment(i) for i in m.equipments) if e]}
+                for m in self.plant.modes
+            ],
+            "zones": [{"id": zid, "name": z.config.name} for zid, z in self._zones.items()],
             "equipments": [
                 {
-                    "id": e.id, "name": e.name, "kind": e.kind, "zones": list(e.zones), "enabled": e.enabled,
+                    "id": e.id, "name": e.name, "kind": e.kind, "entity": e.entity, "zones": list(e.zones), "enabled": e.enabled,
                     "in_mode": bool(mode and e.id in mode.equipments),
                     "on": bool(self._central.get(e.id) and self._central[e.id].on) if e.kind == EquipmentKind.CENTRAL else None,
                     "running": self._equipment_running(e),
@@ -886,18 +899,133 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         now_local = dt_util.now()
         return p.time_window_contains(now_local.hour, now_local.minute)
 
-    def _profile_presence_match(self, p: Profile) -> bool:
+    def _profile_presence_match(self, p: Profile, assume: dict[str, str] | None = None) -> bool:
+        """Presence gate of a profile; ``assume`` replaces some entity states
+        (what would apply if the house were occupied)."""
         if not p.presence_entity:
             return True
         required = p.presence_required_state
         if required is None or required == "" or required == []:
             return True
-        st = self.hass.states.get(p.presence_entity)
-        if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return False
+        if assume and p.presence_entity in assume:
+            state = assume[p.presence_entity]
+        else:
+            st = self.hass.states.get(p.presence_entity)
+            if not st or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                return False
+            state = st.state
         if isinstance(required, str):
-            return st.state == required
-        return st.state in required
+            return state == required
+        return state in required
+
+    # === Programme seen from a dashboard: now, next change, on return ===
+
+    def _programme_profile(
+        self, zone: Zone, at: datetime | None = None, assume: dict[str, str] | None = None
+    ) -> Profile | None:
+        """First profile of the zone's programme whose time slot and presence
+        match at ``at`` (now by default), whatever the house mode."""
+        at = at or dt_util.now()
+        for p in zone.config.profiles:
+            if (not p.active_from and not p.active_to) or p.time_window_contains(at.hour, at.minute):
+                if self._profile_presence_match(p, assume):
+                    return p
+        return None
+
+    def _home_assumption(self) -> dict[str, str]:
+        """Presence entity in its first « home » state, for « on return »."""
+        ent = self.entry.data.get(CONF_PRESENCE_ENTITY)
+        home = self.entry.data.get(CONF_PRESENCE_HOME_STATES) or []
+        return {ent: home[0]} if ent and home else {}
+
+    def _zone_schedule(self, zone: Zone, now: datetime | None = None) -> dict[str, Any]:
+        """What the programme asks now, when it changes next (presence as it
+        is) and what it would ask if someone came home."""
+        now = now or dt_util.now()
+
+        def brief(p: Profile | None) -> dict[str, Any] | None:
+            return {"name": p.name, "target": p.target, "mode": p.mode} if p else None
+
+        cur = self._programme_profile(zone, now)
+        nxt = None
+        start = now.replace(second=0, microsecond=0)
+        for step in range(1, 24 * 12 + 1):  # 5-minute steps over a day
+            at = start + timedelta(minutes=5 * step)
+            at = at.replace(minute=at.minute - at.minute % 5)
+            p = self._programme_profile(zone, at)
+            if (p.name if p else None) != (cur.name if cur else None):
+                nxt = {**(brief(p) or {"name": None, "target": None, "mode": None}), "ts": at.timestamp()}
+                break
+        on_return = None
+        assume = self._home_assumption()
+        if assume and self._house_is_absent():
+            p = self._programme_profile(zone, now, assume)
+            if p and (not cur or p.name != cur.name):
+                on_return = brief(p)
+        return {"programme": brief(cur), "next_change": nxt, "on_return": on_return}
+
+    def _zone_control(self, zone: Zone) -> str:
+        """auto: programme; force: manual session until the next change;
+        off: stopped until the next change; manual: the unit was set by hand."""
+        st = zone.state
+        if st.state in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE):
+            return "manual"
+        if st.state == ZoneState.RUNNING:
+            return "force" if st.session_manual else "auto"
+        return "off" if st.manually_stopped_profile_name else "auto"
+
+    async def async_zone_control(self, zone_id: str, action: str, target: float | None = None) -> None:
+        """One control for a zone card: back to the programme, force a
+        setpoint until the next programme change, or stop until then."""
+        zone = self._zones.get(zone_id)
+        if zone is None:
+            raise ValueError(f"unknown zone {zone_id}")
+        now_ts = utc_now_ts()
+        sched = self._zone_schedule(zone)
+        until = sched["next_change"]["ts"] if sched["next_change"] else now_ts + 4 * 3600
+        prog = sched["programme"]
+        st = zone.state
+        if action == "auto":
+            if st.state in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE):
+                clim = self.hass.states.get(zone.config.climate_entity) if zone.config.climate_entity else None
+                zone.reset_override(
+                    now_ts,
+                    clim_current_hvac_mode=clim.state if clim else "off",
+                    clim_state_last_changed_ts=clim.last_changed.timestamp() if clim and clim.last_changed else None,
+                )
+            elif st.state == ZoneState.RUNNING and st.session_manual:
+                await self.async_cancel_zone_session(zone)
+            zone.state.manually_stopped_profile_name = None
+        elif action == "off":
+            if st.state in (ZoneState.RUNNING, ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE):
+                await self.async_cancel_zone_session(zone)
+            zone.state.manually_stopped_profile_name = prog["name"] if prog else None
+        elif action == "force":
+            mode = self.plant.current_mode
+            if mode is None:
+                raise ValueError("no operating mode: nothing can start")
+            direction = mode.direction
+            if target is None:
+                if st.state == ZoneState.RUNNING and st.session_target is not None:
+                    target = st.session_target
+                elif prog and prog["mode"] == direction:
+                    target = prog["target"]
+                else:
+                    target = 21.0 if direction == ProfileMode.HEAT else 25.0
+            if st.state == ZoneState.RUNNING:
+                zone.update_active_session(target=float(target), max_end_ts=until)
+                zone.state.session_manual = True
+            else:
+                if st.state in (ZoneState.MANUAL_OVERRIDE_TIMED, ZoneState.MANUAL_OVERRIDE_FREE):
+                    zone.reset_override(now_ts)
+                zone.start_manual_session(
+                    now_ts, mode=direction, target=float(target), max_end_ts=until,
+                    parent_profile_name=prog["name"] if prog else None,
+                )
+        else:
+            raise ValueError(f"unknown action {action}")
+        await self._save_runtime_state_if_changed()
+        await self.async_tick_now()
 
     # === Inputs gathering ===
 
@@ -1567,6 +1695,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                     for name in ClimateSeason.ALL
                 },
                 "active_profile_name": active.name if active else None,
+                "schedule": self._zone_schedule(zone),
+                "control": self._zone_control(zone),
+                "session_manual": bool(zone.state.session_manual),
                 "operating_mode": out["plant"]["active_mode"],
                 "operating_mode_name": out["plant"]["active_mode_name"],
                 "sources": self._zone_sources(zid),

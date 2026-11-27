@@ -3639,6 +3639,344 @@ const MODE_STYLES = `
 class DelormejClimateSessionsCard extends DelormejClimateCard {}
 DelormejClimateSessionsCard.widgetVariant = "sessions";
 
+/* ============================================================== daily cards
+ * One card per room, one per equipment, one for the house: everything
+ * Climate Manager decides, in one place, with the controls of daily use.
+ *   type: custom:climate-manager-zone-card       zone: rdc  (title, icon)
+ *   type: custom:climate-manager-house-card
+ *   type: custom:climate-manager-equipment-card  equipment: boiler
+ *        (facts: [{entity, name}], hot_water: entity, link: {path, label})
+ */
+const CM_MODE_ENTITY = "select.climate_manager_operating_mode";
+const cmEsc = (s) => String(s ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+const cmDeg = (v, digits = 1) => (v === null || v === undefined || v === "" || Number.isNaN(Number(v)))
+  ? "—" : `${Number(v).toLocaleString("fr-FR", { minimumFractionDigits: digits, maximumFractionDigits: digits })}°`;
+const cmTime = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  const hm = d.getMinutes() ? `${d.getHours()} h ${String(d.getMinutes()).padStart(2, "0")}` : `${d.getHours()} h`;
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  if (d.toDateString() === now.toDateString()) return hm;
+  if (d.toDateString() === tomorrow.toDateString()) return `demain ${hm}`;
+  return `${d.toLocaleDateString("fr-FR", { weekday: "long" })} ${hm}`;
+};
+const cmNavigate = (path) => {
+  history.pushState(null, "", path);
+  window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+};
+
+const CM_DAILY_STYLES = `
+  ha-card.cmd { padding: 16px 18px; border-radius: var(--ha-card-border-radius, 24px);
+    --cmd-heat: var(--state-climate-heat-color, #ff8a65); --cmd-cool: var(--state-climate-cool-color, #00acc1);
+    --cmd-accent: var(--cmd-heat); --cmd-soft: color-mix(in srgb, var(--cmd-accent), transparent 86%);
+    --cmd-muted: var(--secondary-text-color); --cmd-bg: var(--secondary-background-color, rgba(36,40,50,.05));
+    --cmd-line: var(--divider-color, rgba(0,0,0,.08)); --cmd-ok: var(--success-color, #2f9e6b); color: var(--primary-text-color); }
+  ha-card.cmd.cool { --cmd-accent: var(--cmd-cool); }
+  ha-card.cmd.off { --cmd-accent: var(--cmd-muted); }
+  .cmd-top { display: flex; align-items: center; gap: 12px; }
+  .cmd-ico { width: 40px; height: 40px; border-radius: 13px; display: grid; place-items: center; flex: none;
+    background: var(--cmd-soft); color: var(--cmd-accent); }
+  .cmd-ico ha-icon { --mdc-icon-size: 22px; }
+  .cmd-name { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
+  .cmd-name b { font-size: 16px; font-weight: 600; }
+  .cmd-name span { font-size: 12px; color: var(--cmd-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd-badge { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--cmd-bg); color: var(--cmd-muted);
+    white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+  .cmd-badge ha-icon { --mdc-icon-size: 14px; }
+  .cmd-badge.run { background: var(--cmd-soft); color: var(--cmd-accent); }
+  .cmd-badge.hand { background: color-mix(in srgb, var(--warning-color, #f4a33c), transparent 84%); color: var(--warning-color, #c77a12); }
+  .cmd-temp { font-size: 44px; font-weight: 300; letter-spacing: -.03em; line-height: 1; margin: 16px 0 2px; }
+  .cmd-temp small { font-size: 18px; color: var(--cmd-muted); }
+  .cmd-lines { margin-top: 12px; border-top: 1px solid var(--cmd-line); }
+  .cmd-line { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--cmd-line); font-size: 13px; }
+  .cmd-line > ha-icon { --mdc-icon-size: 17px; color: var(--cmd-muted); flex: none; }
+  .cmd-line .k { color: var(--cmd-muted); width: 92px; flex: none; }
+  .cmd-line .v { font-weight: 600; flex: 1; min-width: 0; }
+  .cmd-line .v span { font-weight: 400; color: var(--cmd-muted); }
+  .cmd-ctl { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; flex-wrap: wrap; }
+  .cmd-step { display: flex; align-items: center; gap: 10px; }
+  .cmd-rnd { width: 36px; height: 36px; border-radius: 50%; border: 1.5px solid color-mix(in srgb, var(--cmd-accent), transparent 55%);
+    background: none; color: var(--cmd-accent); display: grid; place-items: center; cursor: pointer; padding: 0; }
+  .cmd-rnd ha-icon { --mdc-icon-size: 18px; }
+  .cmd-rnd:disabled { opacity: .35; cursor: default; }
+  .cmd-setp { font-size: 24px; font-weight: 600; min-width: 66px; text-align: center; font-variant-numeric: tabular-nums; }
+  .cmd-setp.dim { color: var(--cmd-muted); }
+  .cmd-seg { display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: var(--cmd-bg); flex: 1; max-width: 270px; min-width: 210px; }
+  .cmd-seg button { flex: 1; border: 0; background: transparent; font: inherit; font-size: 13px; font-weight: 600; color: var(--cmd-muted);
+    padding: 7px 8px; border-radius: 9px; cursor: pointer; }
+  .cmd-seg button.on { background: var(--card-background-color, #fff); color: var(--primary-text-color); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .cmd-seg button:disabled { opacity: .4; cursor: default; }
+  .cmd-seg button small { display: block; font-weight: 500; font-size: 11px; color: var(--cmd-muted); }
+  .cmd-banner { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+    background: var(--cmd-soft); color: var(--primary-text-color); border-radius: 12px; padding: 8px 8px 8px 12px; font-size: 13px; }
+  .cmd-banner > span { display: flex; align-items: center; gap: 8px; }
+  .cmd-banner ha-icon { --mdc-icon-size: 17px; color: var(--cmd-accent); }
+  .cmd-pill { border: 0; background: var(--card-background-color, #fff); border-radius: 999px; padding: 6px 12px; font: inherit;
+    font-weight: 600; font-size: 12px; color: var(--primary-text-color); cursor: pointer; }
+  .cmd-note { margin-top: 12px; background: var(--cmd-bg); border-radius: 12px; padding: 10px 12px; font-size: 13px; display: flex; gap: 10px; align-items: center; }
+  .cmd-note > ha-icon { --mdc-icon-size: 18px; color: var(--cmd-muted); flex: none; }
+  .cmd-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-top: 12px; }
+  .cmd-fact { background: var(--cmd-bg); border-radius: 12px; padding: 8px 11px; min-width: 0; }
+  .cmd-fact b { display: block; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd-fact span { font-size: 11px; color: var(--cmd-muted); }
+  .cmd-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; }
+  .cmd-foot .muted { color: var(--cmd-muted); }
+  .cmd-link { border: 0; background: none; font: inherit; font-size: 12px; font-weight: 600; color: var(--cmd-muted); cursor: pointer;
+    display: inline-flex; align-items: center; gap: 2px; padding: 4px 0; margin-left: auto; }
+  .cmd-link ha-icon { --mdc-icon-size: 16px; }
+  .cmd-house { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .cmd-house .cmd-top { flex: none; }
+  .cmd-house .cmd-seg { max-width: none; flex: 1; min-width: 280px; }
+  .cmd-house-line { width: 100%; font-size: 13px; color: var(--cmd-muted); }
+  .cmd-err { margin-top: 10px; font-size: 12px; color: var(--error-color, #db4437); }
+`;
+
+class ClimateManagerDailyCard extends HTMLElement {
+  getCardSize() { return 4; }
+  getGridOptions() { return { columns: 12, rows: "auto" }; }
+  _mount(cls) {
+    if (!this._card) {
+      this._card = document.createElement("ha-card");
+      this.appendChild(this._card);
+      this._card.addEventListener("click", (e) => this._onClick(e));
+    }
+    this._card.className = `cmd ${cls}`;
+  }
+  _plant() { return this._hass?.states[CM_MODE_ENTITY]; }
+  async _ws(msg) {
+    try { this._error = null; await this._hass.callWS(msg); } catch (err) { this._error = err?.message || "Commande refusée"; this._paint(true); }
+  }
+  set hass(hass) {
+    this._hass = hass;
+    const key = JSON.stringify(this._watch().map((e) => {
+      const s = hass.states[e];
+      return s ? [s.state, s.last_updated] : null;
+    }));
+    if (key === this._key) return;
+    this._key = key;
+    this._paint();
+  }
+  _onClick() {}
+}
+
+/** A room: temperature, what the programme asks now and next, and the daily controls. */
+class ClimateManagerZoneCard extends ClimateManagerDailyCard {
+  setConfig(config) {
+    if (!config?.zone) throw new Error("Required: `zone` (e.g. 'rdc')");
+    this._config = config;
+    this._pending = null;
+  }
+  static getStubConfig() { return { type: "custom:climate-manager-zone-card", zone: "rdc" }; }
+  _ent(suffix) { return `sensor.climate_manager_${this._config.zone}_${suffix}`; }
+  _watch() { return [this._ent("state"), this._ent("zone_temperature"), CM_MODE_ENTITY]; }
+
+  _view() {
+    const st = this._hass.states[this._ent("state")];
+    if (!st) return null;
+    const a = st.attributes;
+    const plant = this._plant()?.attributes || {};
+    const dir = plant.direction || null;
+    const prog = a.programme || null;
+    const sess = a.session || null;
+    const control = a.control || "auto";
+    const running = st.state === "running";
+    const sources = (a.sources || []).filter((s) => s.in_mode);
+    const target = sess?.target ?? a.target_temperature ?? (prog && prog.mode === dir ? prog.target : null);
+    return { st, a, dir, prog, sess, control, running, sources, target };
+  }
+
+  _paint(keep) {
+    const v = this._view();
+    if (!v) { this._mount("off"); this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style><div>Zone ${cmEsc(this._config.zone)} introuvable.</div>`; return; }
+    const { st, a, dir, prog, control, running, sources } = v;
+    if (this._pending !== null && !keep && Math.abs(this._pending - (v.target ?? NaN)) < 0.01) this._pending = null;
+    const noMode = !a.operating_mode;
+    this._mount(noMode ? "off" : dir === "cool" ? "cool" : "heat");
+    const room = this._hass.states[this._ent("zone_temperature")]?.state;
+    const title = this._config.title || a.friendly_name?.replace(/ (état|state)$/i, "") || this._config.zone;
+    const icon = this._config.icon || "mdi:home-thermometer-outline";
+    const who = noMode ? "Mode Arrêt" : sources.length ? sources.map((s) => s.name).join(" + ") : "Aucun équipement dans ce mode";
+    const verb = dir === "cool" ? "Refroidit" : "Chauffe";
+    const badge = st.state === "window_open" ? `<span class="cmd-badge hand"><ha-icon icon="mdi:window-open-variant"></ha-icon>Fenêtre ouverte</span>`
+      : control === "manual" ? `<span class="cmd-badge hand"><ha-icon icon="mdi:hand-back-right-outline"></ha-icon>À la main</span>`
+      : running ? `<span class="cmd-badge run"><ha-icon icon="${dir === "cool" ? "mdi:snowflake" : "mdi:fire"}"></ha-icon>${verb}</span>`
+      : `<span class="cmd-badge">${noMode ? "Arrêt" : "En veille"}</span>`;
+
+    // Now
+    const progTxt = prog ? `${cmEsc(prog.name)} · ${cmDeg(prog.target)}` : "Aucun créneau";
+    let now;
+    if (noMode) now = `Rien ne démarre <span>programme : ${progTxt}</span>`;
+    else if (control === "force") now = `À la main · ${cmDeg(v.target)} <span>${prog ? `au lieu de ${progTxt}` : ""}</span>`;
+    else if (control === "off") now = `Coupé <span>${prog ? `au lieu de ${progTxt}` : ""}</span>`;
+    else if (control === "manual") now = `Réglée sur l'appareil <span>le programme attend</span>`;
+    else now = `${progTxt} <span>${running ? (dir === "cool" ? "refroidit" : "chauffe") : prog ? "à température" : "rien à faire"}</span>`;
+    // Next
+    const nxt = a.next_change;
+    const ret = a.on_return;
+    const lines = [`<div class="cmd-line"><ha-icon icon="mdi:calendar-clock"></ha-icon><span class="k">Maintenant</span><span class="v">${now}</span></div>`];
+    if (nxt) {
+      const what = nxt.name ? `${cmEsc(nxt.name)} · ${cmDeg(nxt.target)}` : "fin du programme";
+      const back = control !== "auto" ? "<span>retour au programme</span>" : "";
+      lines.push(`<div class="cmd-line"><ha-icon icon="mdi:clock-outline"></ha-icon><span class="k">${cmTime(nxt.at)}</span><span class="v">${what} ${back}</span></div>`);
+    }
+    if (ret) lines.push(`<div class="cmd-line"><ha-icon icon="mdi:home-import-outline"></ha-icon><span class="k">À ton retour</span><span class="v">${cmEsc(ret.name)} · ${cmDeg(ret.target)}</span></div>`);
+
+    // Controls
+    const shown = this._pending ?? v.target;
+    const canForce = !noMode && sources.some((s) => s.enabled !== false);
+    const canCut = control === "force" || control === "manual" || running || (!!prog && control !== "off");
+    const seg = (id, label, on, enabled) => `<button data-ctl="${id}" class="${on ? "on" : ""}" ${enabled ? "" : "disabled"}>${label}</button>`;
+    const ctl = `<div class="cmd-ctl">
+        <div class="cmd-step">
+          <button class="cmd-rnd" data-step="-1" ${canForce ? "" : "disabled"} title="Baisser"><ha-icon icon="mdi:minus"></ha-icon></button>
+          <div class="cmd-setp ${control === "off" || (control === "auto" && !running) ? "dim" : ""}">${cmDeg(shown)}</div>
+          <button class="cmd-rnd" data-step="1" ${canForce ? "" : "disabled"} title="Monter"><ha-icon icon="mdi:plus"></ha-icon></button>
+        </div>
+        <div class="cmd-seg">${seg("auto", "Auto", control === "auto", true)}${seg("force", "Forcer", control === "force", canForce)}${seg("off", "Couper", control === "off", canCut || control === "off")}</div>
+      </div>`;
+    const until = nxt ? ` jusqu'à ${cmTime(nxt.at)}` : "";
+    const bannerTxt = control === "force" ? `${cmDeg(v.target)} à la main${until}`
+      : control === "off" ? `Coupé${until}`
+      : control === "manual" ? `Réglée directement sur l'appareil${a.override_until_at ? ` jusqu'à ${cmTime(a.override_until_at)}` : ""}` : "";
+    const banner = bannerTxt ? `<div class="cmd-banner"><span><ha-icon icon="mdi:hand-back-right-outline"></ha-icon>${bannerTxt}</span><button class="cmd-pill" data-ctl="auto">Reprendre le programme</button></div>` : "";
+
+    this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style>
+      <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="${cmEsc(icon)}"></ha-icon></div>
+        <div class="cmd-name"><b>${cmEsc(title)}</b><span>${cmEsc(who)}</span></div>${badge}</div>
+      <div class="cmd-temp">${room && !Number.isNaN(Number(room)) ? Number(room).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : "—"}<small> °C</small></div>
+      <div class="cmd-lines">${lines.join("")}</div>
+      ${ctl}${banner}${this._error ? `<div class="cmd-err">${cmEsc(this._error)}</div>` : ""}`;
+  }
+
+  _onClick(e) {
+    const v = this._view();
+    if (!v) return;
+    const zoneId = v.a.zone_id;
+    const step = e.target.closest("[data-step]");
+    if (step && !step.disabled) {
+      const base = this._pending ?? v.target ?? (v.dir === "cool" ? 25 : 21);
+      this._pending = Math.min(30, Math.max(10, Math.round((Number(base) + 0.5 * Number(step.dataset.step)) * 2) / 2));
+      this._paint(true);
+      clearTimeout(this._timer);
+      this._timer = setTimeout(() => this._ws({ type: "climate_manager/zone/control", zone_id: zoneId, action: "force", target: this._pending }), 1200);
+      return;
+    }
+    const ctl = e.target.closest("[data-ctl]");
+    if (!ctl || ctl.disabled || (ctl.classList.contains("on") && ctl.dataset.ctl !== "force")) return;
+    clearTimeout(this._timer);
+    const action = ctl.dataset.ctl;
+    const msg = { type: "climate_manager/zone/control", zone_id: zoneId, action };
+    if (action === "force" && this._pending !== null) msg.target = this._pending;
+    this._pending = null;
+    this._ws(msg);
+  }
+}
+
+/** The house: what heats or cools now (the operating mode). */
+class ClimateManagerHouseCard extends ClimateManagerDailyCard {
+  setConfig(config) { this._config = config || {}; }
+  static getStubConfig() { return { type: "custom:climate-manager-house-card" }; }
+  _watch() { return [CM_MODE_ENTITY]; }
+  _paint() {
+    const st = this._plant();
+    this._mount(!st || !st.attributes.mode_id ? "off" : st.attributes.direction === "cool" ? "cool" : "heat");
+    if (!st) { this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style><div>Climate Manager indisponible.</div>`; return; }
+    const a = st.attributes;
+    const modes = a.modes || [];
+    const running = (a.equipments || []).filter((e) => e.running && e.in_mode);
+    const off = !a.mode_id;
+    const line = off ? "Rien ne démarre seul. Les appareils restent comme on les a laissés."
+      : running.length ? `${running.map((e) => e.name).join(" et ")} ${a.direction === "cool" ? (running.length > 1 ? "refroidissent" : "refroidit") : (running.length > 1 ? "chauffent" : "chauffe")} en ce moment.`
+      : "Tout est à température.";
+    const btn = (name, sub, on, icon) => `<button data-option="${cmEsc(name)}" class="${on ? "on" : ""}">${cmEsc(name)}<small>${cmEsc(sub)}</small></button>`;
+    const offName = (a.options || []).find((o) => !modes.some((m) => m.name === o)) || "Arrêt";
+    const icon = off ? "mdi:power" : a.direction === "cool" ? "mdi:snowflake" : "mdi:fire";
+    this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style>
+      <div class="cmd-house">
+        <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="${icon}"></ha-icon></div>
+          <div class="cmd-name"><b>${cmEsc(this._config.title || "Maison")}</b><span>Avec quoi on ${a.direction === "cool" ? "refroidit" : "chauffe"}</span></div></div>
+        <div class="cmd-seg">${modes.map((m) => btn(m.name, (m.equipments || []).join(", ") || "aucun équipement", m.id === a.mode_id)).join("")}${btn(offName, "rien ne démarre", off)}</div>
+        <div class="cmd-house-line">${cmEsc(line)}</div>
+      </div>`;
+  }
+  _onClick(e) {
+    const b = e.target.closest("button[data-option]");
+    if (!b || b.classList.contains("on")) return;
+    this._hass.callService("select", "select_option", { entity_id: CM_MODE_ENTITY, option: b.dataset.option });
+  }
+}
+
+/** An equipment: what it does, what Climate Manager wants from it. */
+class ClimateManagerEquipmentCard extends ClimateManagerDailyCard {
+  setConfig(config) {
+    if (!config?.equipment) throw new Error("Required: `equipment` (equipment id, e.g. 'boiler')");
+    this._config = config;
+  }
+  static getStubConfig() { return { type: "custom:climate-manager-equipment-card", equipment: "boiler" }; }
+  _eq() { return (this._plant()?.attributes.equipments || []).find((e) => e.id === this._config.equipment); }
+  _watch() {
+    const eq = this._eq();
+    return [CM_MODE_ENTITY, eq?.entity, this._config.hot_water, ...(this._config.facts || []).map((f) => f.entity)].filter(Boolean);
+  }
+  _fmt(entityId) {
+    const s = this._hass.states[entityId];
+    if (!s) return "—";
+    if (this._hass.formatEntityState) return this._hass.formatEntityState(s);
+    return `${s.state}${s.attributes.unit_of_measurement ? ` ${s.attributes.unit_of_measurement}` : ""}`;
+  }
+  _paint() {
+    const plant = this._plant()?.attributes || {};
+    const eq = this._eq();
+    const boiler = eq?.kind === "thermostat";
+    this._mount(!eq || !eq.enabled ? "off" : boiler ? "heat" : eq.running && plant.direction === "cool" ? "cool" : "heat");
+    if (!eq) { this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style><div>Équipement ${cmEsc(this._config.equipment)} introuvable.</div>`; return; }
+    const zones = plant.zones || [];
+    const where = zones.length > 1 && zones.every((z) => eq.zones.includes(z.id)) ? "Toute la maison"
+      : zones.filter((z) => eq.zones.includes(z.id)).map((z) => z.name).join(", ") || "Aucune zone";
+    const modesWith = (plant.modes || []).filter((m) => (m.equipments || []).includes(eq.name)).map((m) => m.name);
+    const icon = this._config.icon || (boiler ? "mdi:water-boiler" : eq.kind === "heat_pump" ? "mdi:air-conditioner" : "mdi:radiator");
+    let badge; let note;
+    if (!eq.enabled) {
+      badge = `<span class="cmd-badge">Hors service</span>`;
+      note = ["mdi:power-plug-off-outline", "Climate Manager ne le démarre pas."];
+    } else if (boiler) {
+      const t = eq.thermostat || {};
+      badge = t.observe ? `<span class="cmd-badge">Observation</span>` : `<span class="cmd-badge run">Piloté</span>`;
+      const why = t.reason ? ` (${cmEsc(t.reason)})` : "";
+      note = t.observe
+        ? ["mdi:eye-outline", `Climate Manager voudrait <b>${cmDeg(t.wanted)}</b>${why} · le thermostat suit son propre programme : <b>${cmDeg(t.target_in_force ?? t.setpoint)}</b>`]
+        : ["mdi:thermostat", `Consigne <b>${cmDeg(t.wanted)}</b>${why} · pièce ${cmDeg(t.room)}`];
+    } else {
+      const clim = eq.entity ? this._hass.states[eq.entity] : null;
+      const on = clim && clim.state !== "off" && clim.state !== "unavailable";
+      badge = eq.running ? `<span class="cmd-badge run">${plant.direction === "cool" ? "Refroidit" : "Chauffe"}</span>`
+        : plant.mode_id && !eq.in_mode ? `<span class="cmd-badge">Pas dans ce mode</span>`
+        : `<span class="cmd-badge">${on ? "Allumée" : "Éteinte"}</span>`;
+      note = on
+        ? ["mdi:air-conditioner", `${cmEsc(this._fmt(eq.entity))} · consigne <b>${cmDeg(clim.attributes.temperature)}</b> · sonde ${cmDeg(clim.attributes.current_temperature)}`]
+        : ["mdi:power", modesWith.length ? `Éteinte · sert en mode ${cmEsc(modesWith.join(", "))}` : "Éteinte · dans aucun mode"];
+    }
+    const facts = (this._config.facts || []).map((f) => `<div class="cmd-fact"><b>${cmEsc(this._fmt(f.entity))}</b><span>${cmEsc(f.name || this._hass.states[f.entity]?.attributes.friendly_name || f.entity)}</span></div>`).join("");
+    const hw = this._config.hot_water ? `<span><ha-icon icon="mdi:water-thermometer" style="--mdc-icon-size:17px;color:var(--cmd-accent)"></ha-icon> Eau chaude <b>${cmEsc(this._fmt(this._config.hot_water))}</b></span>` : "";
+    const link = this._config.link ? `<button class="cmd-link" data-path="${cmEsc(this._config.link.path)}">${cmEsc(this._config.link.label || "Détails")}<ha-icon icon="mdi:chevron-right"></ha-icon></button>` : "";
+    this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style>
+      <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="${cmEsc(icon)}"></ha-icon></div>
+        <div class="cmd-name"><b>${cmEsc(this._config.title || eq.name)}</b><span>${cmEsc(this._config.subtitle || where)}</span></div>${badge}</div>
+      <div class="cmd-note"><ha-icon icon="${note[0]}"></ha-icon><span>${note[1]}</span></div>
+      ${facts ? `<div class="cmd-facts">${facts}</div>` : ""}
+      ${hw || link ? `<div class="cmd-foot">${hw}${link}</div>` : ""}`;
+  }
+  _onClick(e) {
+    const l = e.target.closest("[data-path]");
+    if (l) cmNavigate(l.dataset.path);
+  }
+}
+
+customElements.define("climate-manager-zone-card", ClimateManagerZoneCard);
+customElements.define("climate-manager-house-card", ClimateManagerHouseCard);
+customElements.define("climate-manager-equipment-card", ClimateManagerEquipmentCard);
+
 customElements.define("climate-manager-card", DelormejClimateCard);
 customElements.define("climate-manager-status-card", DelormejClimateStatusCard);
 customElements.define("climate-manager-pilotage-card", DelormejClimatePilotageCard);
@@ -3674,6 +4012,9 @@ window.customCards = window.customCards || [];
     name: "Climate Manager — Mode",
     description: "Mode de fonctionnement de la maison (chaudière, climatisation…).",
   },
+  { type: "climate-manager-zone-card", name: "Climate Manager — Pièce", description: "Température, programme en cours et suivant, consigne, Auto / Forcer / Couper." },
+  { type: "climate-manager-house-card", name: "Climate Manager — Maison", description: "Avec quoi on chauffe ou refroidit (mode de la maison)." },
+  { type: "climate-manager-equipment-card", name: "Climate Manager — Équipement", description: "Ce que fait un équipement et ce que Climate Manager en attend." },
   {
     type: "climate-manager-sessions-card",
     name: "Climate Manager — Sessions",
