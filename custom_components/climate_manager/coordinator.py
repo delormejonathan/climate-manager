@@ -485,6 +485,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             self._thermo_plan.pop(eq.id, None)
             return
         now = dt_util.now()
+        demand, demand_name = self._thermostat_demand(eq)
         reading = ThermostatReading(
             now_ts=now.timestamp(),
             now_min=now.hour * 60 + now.minute,
@@ -495,6 +496,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             holiday_on=self._bool_state(eq.holiday_entity),
             holiday_setpoint=self._float_state(eq.holiday_setpoint_entity),
             target_in_force=self._float_state(eq.target_entity),
+            demand=demand,
+            demand_name=demand_name,
         )
         prev = (mem.last_wanted, mem.last_reason)
         plan = _THERMOSTAT.plan(
@@ -524,6 +527,24 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         for cmd in plan.commands:
             _LOGGER.info("Thermostat %s: %s.%s %s", eq.name, cmd.domain, cmd.service, cmd.data)
             await self._apply_command(cmd)
+
+    def _thermostat_demand(self, eq: Equipment) -> tuple[float | None, str | None]:
+        """The boiler follows the zones' heating profiles (winter bank), the
+        same time slots and presence as the heat pumps: in each zone it heats
+        (all of them when none is set) the first profile in force; the highest
+        target wins. None: no profile in force."""
+        best: tuple[float | None, str | None] = (None, None)
+        for zone_id, zone in self._zones.items():
+            if eq.zones and zone_id not in eq.zones:
+                continue
+            for p in zone.config.profile_banks.get(ClimateSeason.WINTER, []):
+                if p.mode != ProfileMode.HEAT:
+                    continue
+                if self._profile_time_window_on(p) and self._profile_presence_match(p):
+                    if best[0] is None or p.target > best[0]:
+                        best = (p.target, p.name)
+                    break
+        return best
 
     async def _release_thermostat(self, eq: Equipment) -> None:
         mem = self._thermo_mem.get(eq.id)

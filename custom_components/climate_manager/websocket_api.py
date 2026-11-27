@@ -238,7 +238,7 @@ def _settings_payload(hass: HomeAssistant, entry: ConfigEntry, coordinator) -> d
         "equipments": [
             {
                 **e.to_dict(),
-                # Thermostat settings normalised (older saves had no periods).
+                # Thermostat settings normalised (older saves carried their own plan).
                 **({"thermostat": ThermostatSettings.from_dict(e.thermostat).to_dict()}
                    if e.kind == EquipmentKind.THERMOSTAT else {}),
                 "running": live_eq.get(e.id, {}).get("running", False),

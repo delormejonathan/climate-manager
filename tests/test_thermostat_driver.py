@@ -8,7 +8,6 @@ from custom_components.climate_manager.drivers.thermostat import (
     ThermostatDriver,
     ThermostatEntities,
     ThermostatMemory,
-    ThermostatPeriod,
     ThermostatReading,
     ThermostatSettings,
 )
@@ -24,75 +23,53 @@ def hm(h, m=0):
     return h * 60 + m
 
 
+DAY, NIGHT, AWAY = "Présent", "Nuit", "Absent"  # zone heating profiles used below
+
+
+def zones_demand(now_min, absent):
+    """Stand-in for the zones' heating profiles (the coordinator picks them)."""
+    if absent:
+        return 18.5, AWAY
+    if now_min >= hm(22, 30) or now_min < hm(6):
+        return 19.0, NIGHT
+    return 21.0, DAY
+
+
 def reading(now_min, *, ts=T0, absent=False, room=20.0, setpoint=21.0, schedule_on=False,
-            holiday_on=False, target=None):
+            holiday_on=False, target=None, demand=...):
+    value, name = zones_demand(now_min, absent) if demand is ... else (demand, None)
     return ThermostatReading(
         now_ts=ts, now_min=now_min, absent=absent, room=room, setpoint=setpoint,
         schedule_on=schedule_on, holiday_on=holiday_on, holiday_setpoint=10.0, target_in_force=target,
+        demand=value, demand_name=name,
     )
-
-
-DAY, NIGHT, AWAY = "Jour", "Nuit", "Absence"  # names of the default periods
 
 
 def live(**kw):
     return ThermostatSettings(observe=False, **kw)
 
 
-def periods(*rows):
-    return [ThermostatPeriod.from_dict(r) for r in rows]
-
-
-def test_day_and_night():
+def test_setpoint_is_the_zone_profile_target():
     d, s, m = ThermostatDriver(), live(), ThermostatMemory()
     assert d.plan(E, s, reading(hm(14)), m).reason == DAY
     p = d.plan(E, s, reading(hm(23), room=19.0), m)
     assert (p.reason, p.wanted) == (NIGHT, 19.0)
 
 
-def test_away_needs_confirmation_and_wins_day_and_night():
-    d, s, m = ThermostatDriver(), live(), ThermostatMemory()
-    p = d.plan(E, s, reading(hm(14), absent=True), m)
-    assert p.reason == DAY  # not yet confirmed
-    p = d.plan(E, s, reading(hm(14, 20), ts=T0 + 20 * 60, absent=True), m)
-    assert (p.reason, p.wanted) == (AWAY, 18.5)
-    p = d.plan(E, s, reading(hm(23), ts=T0 + 9 * 3600, absent=True), m)
-    assert (p.reason, p.wanted) == (AWAY, 18.5)
-
-
-def test_morning_start_with_nobody_home_stays_away():
-    """06:00 is the morning heating start, for an occupied house only."""
-    d, s = ThermostatDriver(), live()
-    m = ThermostatMemory(absent_since_ts=T0 - 3600)
-    p = d.plan(E, s, reading(hm(6, 0), absent=True, setpoint=18.5), m)
-    assert (p.reason, p.wanted) == (AWAY, 18.5)
-    # Home again: day at once.
-    p = d.plan(E, s, reading(hm(7, 0), ts=T0 + 60, setpoint=18.5), m)
-    assert (p.reason, p.wanted) == (DAY, 21.0)
-
-
-def test_first_matching_period_wins_and_floor_when_none():
+def test_no_profile_in_force_gives_the_floor():
     d, m = ThermostatDriver(), ThermostatMemory()
-    s = live(periods=periods(
-        {"name": "Matin", "setpoint": 22, "start": "06:00", "end": "08:00", "presence": "home"},
-        {"name": "Jour", "setpoint": 20.5, "presence": "home"},
-    ), floor=16.0)
-    assert d.plan(E, s, reading(hm(7)), m).wanted == 22.0
-    assert d.plan(E, s, reading(hm(9)), m).reason == "Jour"
-    m2 = ThermostatMemory(absent_since_ts=T0 - 3600)
-    p = d.plan(E, s, reading(hm(9), absent=True), m2)
+    p = d.plan(E, live(floor=16.0), reading(hm(9), demand=None), m)
     assert (p.reason, p.wanted) == (FLOOR, 16.0)
 
 
 def test_floor():
     d, m = ThermostatDriver(), ThermostatMemory()
-    s = live(periods=periods({"name": "Nuit", "setpoint": 15, "start": "22:00", "end": "06:00"}), floor=17.0)
-    p = d.plan(E, s, reading(hm(2), room=17.0, setpoint=17.0), m)
+    p = d.plan(E, live(floor=17.0), reading(hm(2), room=17.0, setpoint=17.0, demand=15.0), m)
     assert p.wanted == 17.0
 
 
-def test_day_starts_exactly_at_night_end_never_earlier():
-    d, s = ThermostatDriver(), live()  # night 22:30 -> 06:00, then day
+def test_no_preheat_the_setpoint_moves_when_the_profile_does():
+    d, s = ThermostatDriver(), live()  # night until 06:00, then day
     # Even with a slow learnt rate and a cold room, the day setpoint waits for 06:00.
     m = ThermostatMemory(heat_rate=0.3)
     for t in (hm(3, 0), hm(4, 56), hm(5, 59)):
@@ -158,7 +135,7 @@ def test_long_absence_goes_to_holiday_and_back():
 def test_standby_keeps_the_boiler_low():
     d, m = ThermostatDriver(), ThermostatMemory()
     p = d.plan(E, live(), reading(hm(14), setpoint=21.0), m, role=STANDBY)
-    assert (p.reason, p.wanted) == (STANDBY, 18.5)
+    assert (p.reason, p.wanted) == (STANDBY, 17.0)  # the floor
 
 
 def test_heat_rate_learnt_on_a_real_rise():
@@ -175,24 +152,14 @@ def test_heat_rate_learnt_on_a_real_rise():
 
 
 def test_settings_round_trip_and_bounds():
-    s = ThermostatSettings.from_dict({"periods": [
-        {"name": " Matin ", "setpoint": 40, "start": "7:5", "end": "9:00", "presence": "home"},
-        {"name": "", "setpoint": "x", "start": "10:00", "end": "10:00", "presence": "bogus"},
-    ], "observe": False})
-    a, b = s.periods
-    assert (a.name, a.setpoint, a.start, a.end, a.presence) == ("Matin", 26.0, "07:05", "09:00", "home")
-    assert (b.name, b.setpoint, b.start, b.end, b.presence) == ("Plage", 19.0, None, None, "any")
-    assert s.observe is False
+    s = ThermostatSettings.from_dict({"floor": 40, "holiday_setpoint": 2, "observe": False})
+    assert (s.floor, s.holiday_setpoint, s.observe) == (22, 5, False)
     assert ThermostatSettings.from_dict(s.to_dict()) == s
     assert ThermostatMemory.from_dict({"heat_rate": 1.4, "junk": 1}).heat_rate == 1.4
 
 
-def test_settings_saved_before_periods_keep_their_values():
-    s = ThermostatSettings.from_dict({"comfort": 21.5, "night": 18.5, "night_start": "23:00",
-                                      "night_end": "06:00", "away": 18.0, "preheat_max_min": 120})
-    assert [(p.name, p.setpoint, p.start, p.end, p.presence) for p in s.periods] == [
-        ("Absence", 18.0, None, None, "away"),
-        ("Nuit", 18.5, "23:00", "06:00", "any"),
-        ("Jour", 21.5, None, None, "home"),
-    ]
-    assert "comfort" not in s.to_dict() and "preheat_max_min" not in s.to_dict()
+def test_settings_saved_with_their_own_plan_load_without_it():
+    s = ThermostatSettings.from_dict({"comfort": 21.5, "night": 18.5, "periods": [{"name": "x"}],
+                                      "preheat_max_min": 120, "floor": 16.5})
+    assert s.floor == 16.5 and set(s.to_dict()) == {"floor", "min_write_interval_min", "holiday_after_h",
+                                                    "holiday_setpoint", "observe"}
