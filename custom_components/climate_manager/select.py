@@ -26,7 +26,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-OFF_OPTION = "Arrêt"
+OFF_OPTION = "Personne"
 
 
 class OperatingModeSelect(CoordinatorEntity[DelormejClimateCoordinator], SelectEntity):

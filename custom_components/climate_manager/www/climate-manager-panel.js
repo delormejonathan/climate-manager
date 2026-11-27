@@ -729,15 +729,15 @@ class ClimateManagerPanel extends HTMLElement {
     const active = this._activeMode();
     const rows = s.modes.map((m, i) => this._renderModeRow(m, i)).join("");
     const off = `<div class="row ${!active ? "running" : ""}"><div class="row-head static">
-        <span class="row-icon"><ha-icon icon="mdi:power"></ha-icon></span>
-        <span class="row-main"><span class="row-title">Arrêt${!active ? '<span class="badge">Actif</span>' : ""}</span>
-          <span class="row-meta"><span>Rien ne démarre seul. Le pilotage à la main reste possible.</span></span></span>
+        <span class="row-icon"><ha-icon icon="mdi:hand-back-right-outline"></ha-icon></span>
+        <span class="row-main"><span class="row-title">Personne${!active ? '<span class="badge">Actif</span>' : ""}</span>
+          <span class="row-meta"><span>Climate Manager ne pilote rien : chaque appareil suit son propre réglage (la chaudière, son programme).</span></span></span>
         ${active ? '<button class="btn small" data-set-mode="">Activer</button>' : ""}
         <span class="icon-btn flat ghost"></span>
       </div></div>`;
     return `<div class="card">
       ${this._cardHead("mdi:tune-variant", "Modes de fonctionnement")}
-      <div class="hint">Un mode dit quels appareils ont le droit de tourner, pour chauffer ou pour refroidir (jamais les deux). Un seul est actif à la fois, « Arrêt » coupe tout ; le programme, lui, dit quelle température tu veux. Un appareil mis hors service (onglet Installation ou tableau de bord) est sauté : le mode passe au suivant. Change de mode ici, depuis le tableau de bord ou par une automatisation.</div>
+      <div class="hint">Un mode dit quels appareils ont le droit de tourner, pour chauffer ou pour refroidir (jamais les deux). Un seul est actif à la fois ; « Personne » laisse chaque appareil à son propre réglage ; le programme, lui, dit quelle température tu veux. Un appareil mis hors service (onglet Installation ou tableau de bord) est sauté : le mode passe au suivant. Change de mode ici, depuis le tableau de bord ou par une automatisation.</div>
       <div class="rows">${rows}${off}
         ${this._modeEdit && !this._modeEdit.id ? `<div class="row open"><div class="row-head static"><span class="row-icon"><ha-icon icon="mdi:plus"></ha-icon></span><span class="row-main"><span class="row-title">Nouveau mode</span></span></div>${this._renderModeEditor()}</div>`
           : '<button class="add-row" data-add-mode><ha-icon icon="mdi:plus"></ha-icon>Ajouter un mode</button>'}
@@ -1024,7 +1024,7 @@ class ClimateManagerPanel extends HTMLElement {
     on("[data-set-mode]", (b) => {
       const id = b.dataset.setMode || null;
       const m = this._settings.modes.find((x) => x.id === id);
-      this._ws({ type: "climate_manager/mode/set", mode_id: id }, m ? `Mode « ${m.name} » actif` : "Arrêt : rien ne démarre seul");
+      this._ws({ type: "climate_manager/mode/set", mode_id: id }, m ? `Mode « ${m.name} » actif` : "Personne : Climate Manager ne pilote rien");
     });
     on("[data-edit-eq]", (b) => this._openEq(b.dataset.editEq));
     on("[data-add-eq]", () => this._openEq(null));

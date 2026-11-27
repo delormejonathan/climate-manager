@@ -401,7 +401,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         if hp is None or demand.direction is None:
             return commands
         if demand.manual and self.plant.current_mode is None:
-            # « Arrêt »: nothing starts on its own, but a session started by hand
+            # No mode (« Personne »): nothing starts on its own, but a session started by hand
             # still runs on the zone's heat pump.
             return commands
         if any(e.id == hp.id for e in engaged):
@@ -467,7 +467,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
 
     def _thermostat_role(self, eq: Equipment) -> str | None:
         """pilot: the mode heats with it; standby: another equipment heats or
-        cools; None: « Arrêt », the thermostat runs its own programme."""
+        cools; None: no mode (« Personne »), the thermostat runs its own programme."""
         mode = self.plant.current_mode
         if mode is None:
             return None
@@ -481,7 +481,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         mem = self._thermo_mem.setdefault(eq.id, ThermostatMemory())
         role = self._thermostat_role(eq)
         if not eq.enabled or (role is None and not settings.observe):
-            # Out of service or « Arrêt »: hand the house back to its programme.
+            # Out of service or no mode: hand the house back to its programme.
             await self._release_thermostat(eq)
             self._thermo_plan.pop(eq.id, None)
             return
@@ -614,7 +614,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             "relation": mode.relation if mode else None,
             "modes": [
                 {"id": m.id, "name": m.name, "direction": m.direction, "icon": m.icon,
-                 "equipments": [e.name for e in (self.plant.equipment(i) for i in m.equipments) if e]}
+                 "equipments": [e.name for e in (self.plant.equipment(i) for i in m.equipments) if e],
+                 "equipment_ids": [i for i in m.equipments if self.plant.equipment(i)]}
                 for m in self.plant.modes
             ],
             "zones": [{"id": zid, "name": z.config.name} for zid, z in self._zones.items()],

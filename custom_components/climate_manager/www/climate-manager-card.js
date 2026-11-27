@@ -3644,6 +3644,7 @@ DelormejClimateSessionsCard.widgetVariant = "sessions";
  * Climate Manager decides, in one place, with the controls of daily use.
  *   type: custom:climate-manager-zone-card       zone: rdc  (title, icon)
  *   type: custom:climate-manager-house-card
+ *   type: custom:climate-manager-summary-card     (zones: [{zone, name}], path)
  *   type: custom:climate-manager-equipment-card  equipment: boiler
  *        (facts: [{entity, name, on, off}], hot_water: setpoint entity, hot_water_temp, link: {path, label})
  */
@@ -3735,6 +3736,24 @@ const CM_DAILY_STYLES = `
     .cmd-house .cmd-seg button small { display: none; }
     .cmd-house .cmd-seg button { padding: 10px 6px; }
   }
+  .cmd-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-top: 14px; }
+  .cmd-opt { border: 1.5px solid var(--cmd-line); background: none; border-radius: 14px; padding: 10px 12px; text-align: left; font: inherit;
+    color: var(--primary-text-color); cursor: pointer; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .cmd-opt ha-icon { --mdc-icon-size: 20px; color: var(--cmd-muted); margin-bottom: 4px; }
+  .cmd-opt b { font-size: 14px; font-weight: 600; }
+  .cmd-opt span { font-size: 11.5px; color: var(--cmd-muted); }
+  .cmd-opt.on { border-color: var(--cmd-accent); background: var(--cmd-soft); cursor: default; }
+  .cmd-opt.on ha-icon { color: var(--cmd-accent); }
+  .cmd-truth { align-items: flex-start; line-height: 1.45; }
+  .cmd-truth > ha-icon { margin-top: 1px; }
+  .cmd-chev { --mdc-icon-size: 22px; color: var(--cmd-muted); flex: none; }
+  .cmd-facts-1 { grid-template-columns: 1fr; } .cmd-facts-2 { grid-template-columns: 1fr 1fr; } .cmd-facts-3 { grid-template-columns: repeat(3, 1fr); }
+  .cmd-facts-2 .cmd-fact b, .cmd-facts-3 .cmd-fact b { font-size: 20px; font-weight: 600; line-height: 1.2; }
+  .cmd-next { margin-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--cmd-muted); }
+  .cmd-next ha-icon { --mdc-icon-size: 17px; flex: none; }
+  .cmd-next b { color: var(--primary-text-color); font-weight: 600; }
+  ha-card.cmd.summary { cursor: pointer; }
+  @media (max-width: 600px) { .cmd-opts { grid-template-columns: 1fr 1fr; } }
   .cmd-err { margin-top: 10px; font-size: 12px; color: var(--error-color, #db4437); }
 `;
 
@@ -3802,12 +3821,12 @@ class ClimateManagerZoneCard extends ClimateManagerDailyCard {
     const room = this._hass.states[this._ent("zone_temperature")]?.state;
     const title = this._config.title || a.friendly_name?.replace(/ (état|state)$/i, "") || this._config.zone;
     const icon = this._config.icon || "mdi:home-thermometer-outline";
-    const who = noMode ? "Mode Arrêt" : sources.length ? sources.map((s) => s.name).join(" + ") : "Aucun équipement dans ce mode";
+    const who = noMode ? "Climate Manager ne pilote rien" : sources.length ? sources.map((s) => s.name).join(" + ") : "Aucun équipement dans ce mode";
     const verb = dir === "cool" ? "Refroidit" : "Chauffe";
     const badge = st.state === "window_open" ? `<span class="cmd-badge hand"><ha-icon icon="mdi:window-open-variant"></ha-icon>Fenêtre ouverte</span>`
       : control === "manual" ? `<span class="cmd-badge hand"><ha-icon icon="mdi:hand-back-right-outline"></ha-icon>À la main</span>`
       : running ? `<span class="cmd-badge run"><ha-icon icon="${dir === "cool" ? "mdi:snowflake" : "mdi:fire"}"></ha-icon>${verb}</span>`
-      : `<span class="cmd-badge">${noMode ? "Arrêt" : "En veille"}</span>`;
+      : `<span class="cmd-badge">${noMode ? "Pas piloté" : "En veille"}</span>`;
 
     // Now
     const progTxt = prog ? `${cmEsc(prog.name)} · ${cmDeg(prog.target)}` : "Aucun créneau";
@@ -3879,38 +3898,167 @@ class ClimateManagerZoneCard extends ClimateManagerDailyCard {
   }
 }
 
-/** The house: what heats or cools now (the operating mode). */
+/* What really heats or cools the house now, in plain words: the operating
+ * mode, and what each equipment does on its own when Climate Manager does
+ * not drive it (the boiler keeps its own programme in observation or off). */
+const cmIsOn = (st) => !!st && !["off", "unavailable", "unknown"].includes(st.state);
+const cmJoin = (names) => names.length > 1 ? `${names.slice(0, -1).join(", ")} et ${names[names.length - 1]}` : names[0] || "";
+const cmModeLook = (m, plantEqs) => {
+  const kinds = (m.equipment_ids || []).map((id) => plantEqs.find((e) => e.id === id)?.kind).filter(Boolean);
+  if (m.direction === "cool") return { icon: "mdi:snowflake", sub: "l'été" };
+  if (kinds.some((k) => k !== "heat_pump")) return { icon: "mdi:water-boiler", sub: kinds.includes("heat_pump") ? "grand froid" : "l'hiver" };
+  return { icon: "mdi:heat-pump-outline", sub: "mi-saison" };
+};
+function cmHouseStory(hass) {
+  const st = hass.states[CM_MODE_ENTITY];
+  if (!st) return null;
+  const a = st.attributes;
+  const eqs = (a.equipments || []).filter((e) => e.enabled !== false);
+  const mode = (a.modes || []).find((m) => m.id === a.mode_id) || null;
+  const boiler = eqs.find((e) => e.kind === "thermostat");
+  const t = boiler?.thermostat || {};
+  const clims = eqs.filter((e) => e.kind !== "thermostat");
+  const climsOn = clims.filter((e) => cmIsOn(hass.states[e.entity]));
+  const boilerOwn = !!boiler && t.schedule_on !== false && (!mode || !boiler.in_mode || t.observe);
+  const boilerTarget = t.target_in_force ?? t.setpoint;
+  const flame = boiler?.running ? " · flamme allumée" : "";
+  const cool = mode?.direction === "cool";
+  const s = { mode, cls: cool ? "cool" : "heat", truth: [] };
+  if (!mode) {
+    s.lead = "Climate Manager ne pilote rien pour l'instant.";
+    if (boilerOwn) {
+      s.icon = "mdi:water-boiler"; s.title = "La chaudière chauffe la maison";
+      s.sub = `Son propre programme · ${cmDeg(boilerTarget, 0)}${flame}`;
+      s.truth.push(`<b>La chaudière chauffe quand même</b> avec son propre programme (${cmDeg(boilerTarget, 0)}).`);
+    } else if (climsOn.length) {
+      s.icon = "mdi:air-conditioner"; s.title = `${cmJoin(climsOn.map((e) => e.name))} ${climsOn.length > 1 ? "sont allumées" : "est allumée"}`;
+      s.sub = "Réglée à la main";
+    } else {
+      s.icon = "mdi:power"; s.cls = "off"; s.title = "Rien ne chauffe la maison"; s.sub = "Tout est éteint";
+    }
+    if (clims.length) s.truth.push(climsOn.length ? `${cmJoin(climsOn.map((e) => e.name))} ${climsOn.length > 1 ? "sont allumées" : "est allumée"}, réglée${climsOn.length > 1 ? "s" : ""} à la main.` : "Les clims sont éteintes.");
+    return s;
+  }
+  const inMode = eqs.filter((e) => e.in_mode);
+  const running = inMode.filter((e) => e.running);
+  if (boiler && boiler.in_mode) {
+    s.icon = "mdi:water-boiler"; s.title = "La chaudière chauffe la maison";
+    if (t.observe) {
+      s.sub = `Son propre programme · ${cmDeg(boilerTarget, 0)}${flame}`;
+      s.lead = `Mode ${mode.name}, mais la chaudière est encore en observation.`;
+      s.truth.push(`Elle suit son propre programme (${cmDeg(boilerTarget, 0)}). Climate Manager voudrait <b>${cmDeg(t.wanted, 0)}</b>, sans rien écrire.`);
+    } else {
+      s.sub = `Climate Manager · ${cmDeg(t.wanted, 0)}${flame}`;
+      s.lead = `Climate Manager règle la chaudière à <b>${cmDeg(t.wanted, 0)}</b>.`;
+    }
+  } else {
+    const names = inMode.map((e) => e.name);
+    const all = names.length > 1 && names.every((n) => /^clim/i.test(n));
+    const who = all ? "Les clims" : cmJoin(names) || "Aucun appareil";
+    const plural = names.length > 1;
+    s.icon = cool ? "mdi:snowflake" : "mdi:air-conditioner";
+    s.title = `${who} ${cool ? (plural ? "rafraîchissent" : "rafraîchit") : (plural ? "chauffent" : "chauffe")} la maison`;
+    s.sub = running.length ? `${cmJoin(running.map((e) => e.name))} en marche` : "À température";
+    const many = running.length > 1;
+    s.lead = running.length ? `${cmJoin(running.map((e) => e.name))} ${cool ? (many ? "refroidissent" : "refroidit") : (many ? "chauffent" : "chauffe")} en ce moment.` : "Tout est à température.";
+  }
+  if (boiler && !boiler.in_mode) {
+    if (t.observe && t.schedule_on !== false) s.truth.push(`La chaudière suit toujours son propre programme (${cmDeg(boilerTarget, 0)}).`);
+    else if (!t.observe) s.truth.push("La chaudière est mise en veille.");
+  }
+  return s;
+}
+
+/** The house: who heats or cools it (the operating mode), and the plain truth. */
 class ClimateManagerHouseCard extends ClimateManagerDailyCard {
   setConfig(config) { this._config = config || {}; }
   static getStubConfig() { return { type: "custom:climate-manager-house-card" }; }
-  _watch() { return [CM_MODE_ENTITY]; }
-  _paint() {
-    const st = this._plant();
-    this._mount(!st || !st.attributes.mode_id ? "off" : st.attributes.direction === "cool" ? "cool" : "heat");
-    if (!st) { this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style><div>Climate Manager indisponible.</div>`; return; }
-    const a = st.attributes;
-    const modes = a.modes || [];
-    const running = (a.equipments || []).filter((e) => e.running && e.in_mode);
-    const off = !a.mode_id;
-    const line = off ? "Rien ne démarre seul. Les appareils restent comme on les a laissés."
-      : running.length ? `${running.map((e) => e.name).join(" et ")} ${a.direction === "cool" ? (running.length > 1 ? "refroidissent" : "refroidit") : (running.length > 1 ? "chauffent" : "chauffe")} en ce moment.`
-      : "Tout est à température.";
-    const btn = (name, sub, on, icon) => `<button data-option="${cmEsc(name)}" class="${on ? "on" : ""}">${cmEsc(name)}<small>${cmEsc(sub)}</small></button>`;
-    const offName = (a.options || []).find((o) => !modes.some((m) => m.name === o)) || "Arrêt";
-    const icon = off ? "mdi:power" : a.direction === "cool" ? "mdi:snowflake" : "mdi:fire";
-    this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style>
-      <div class="cmd-house">
-        <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="${icon}"></ha-icon></div>
-          <div class="cmd-name"><b>${cmEsc(this._config.title || "Maison")}</b><span>Avec quoi on ${a.direction === "cool" ? "refroidit" : "chauffe"}</span></div></div>
-        <div class="cmd-seg">${modes.map((m) => btn(m.name, (m.equipments || []).join(", ") || "aucun équipement", m.id === a.mode_id)).join("")}${btn(offName, "rien ne démarre", off)}</div>
-        <div class="cmd-house-line">${cmEsc(line)}</div>
-      </div>`;
+  _watch() {
+    const eqs = this._plant()?.attributes.equipments || [];
+    return [CM_MODE_ENTITY, ...eqs.map((e) => e.entity)].filter(Boolean);
   }
-  _onClick(e) {
+  _paint(keep) {
+    const st = this._plant();
+    const s = st && cmHouseStory(this._hass);
+    this._mount(!s ? "off" : s.mode ? s.cls : "off");
+    if (!s) { this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style><div>Climate Manager indisponible.</div>`; return; }
+    const a = st.attributes;
+    const eqs = a.equipments || [];
+    const options = a.options || [];
+    const offName = options.find((o) => !(a.modes || []).some((m) => m.name === o)) || "Personne";
+    const opt = (name, sub, icon, on) => `<button class="cmd-opt ${on ? "on" : ""}" data-option="${cmEsc(name)}">
+        <ha-icon icon="${icon}"></ha-icon><b>${cmEsc(name)}</b><span>${cmEsc(sub)}</span></button>`;
+    const opts = (a.modes || []).map((m) => { const l = cmModeLook(m, eqs); return opt(m.name, l.sub, l.icon, m.id === a.mode_id); }).join("")
+      + opt(offName, "chacun en manuel", "mdi:hand-back-right-outline", !a.mode_id);
+    const pending = this._pendingOption ? `<div class="cmd-note"><ha-icon icon="mdi:timer-sand"></ha-icon><span>Passage à ${cmEsc(this._pendingOption)}…</span></div>` : "";
+    if (!keep && this._pendingOption && st.state === this._pendingOption) this._pendingOption = null;
+    this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style>
+      <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="mdi:home-thermometer-outline"></ha-icon></div>
+        <div class="cmd-name"><b>${cmEsc(this._config.title || "Qui chauffe la maison ?")}</b><span>Climate Manager démarre et règle ce que tu choisis ici</span></div></div>
+      <div class="cmd-opts">${opts}</div>
+      <div class="cmd-note cmd-truth"><ha-icon icon="mdi:information-outline"></ha-icon><span>${s.lead} ${s.truth.join(" ")}</span></div>
+      ${pending}${this._error ? `<div class="cmd-err">${cmEsc(this._error)}</div>` : ""}`;
+  }
+  async _onClick(e) {
     const b = e.target.closest("button[data-option]");
     if (!b || b.classList.contains("on")) return;
-    this._hass.callService("select", "select_option", { entity_id: CM_MODE_ENTITY, option: b.dataset.option });
+    this._pendingOption = b.dataset.option;
+    this._paint(true);
+    try {
+      this._error = null;
+      await this._hass.callService("select", "select_option", { entity_id: CM_MODE_ENTITY, option: b.dataset.option });
+    } catch (err) {
+      this._pendingOption = null; this._error = err?.message || "Commande refusée"; this._paint(true);
+    }
   }
+}
+
+/** Home screen: one line for who heats the house, the rooms' temperatures,
+ * and what comes next. Tap: the climate page.
+ *   type: custom:climate-manager-summary-card
+ *   zones: [{zone: rdc, name: RDC}, …]   (default: every zone)
+ *   path: /ma-maison/clims */
+class ClimateManagerSummaryCard extends ClimateManagerDailyCard {
+  setConfig(config) { this._config = config || {}; }
+  static getStubConfig() { return { type: "custom:climate-manager-summary-card" }; }
+  getCardSize() { return 3; }
+  _zones() {
+    if (this._config.zones?.length) return this._config.zones.map((z) => ({ slug: z.zone, name: z.name || z.zone }));
+    return Object.keys(this._hass.states).filter((k) => /^sensor\.climate_manager_.+_state$/.test(k) && this._hass.states[k].attributes.zone_id)
+      .map((k) => ({ slug: k.slice("sensor.climate_manager_".length, -"_state".length), name: this._hass.states[k].attributes.friendly_name?.replace(/^Climate Manager · /, "").replace(/ (état|state)$/i, "") }));
+  }
+  _watch() {
+    const eqs = this._plant()?.attributes.equipments || [];
+    const zones = this._hass ? this._zones() : [];
+    return [CM_MODE_ENTITY, ...eqs.map((e) => e.entity), ...zones.flatMap((z) => [`sensor.climate_manager_${z.slug}_state`, `sensor.climate_manager_${z.slug}_zone_temperature`])].filter(Boolean);
+  }
+  _paint() {
+    const s = cmHouseStory(this._hass);
+    this._mount(`${!s ? "off" : s.cls} summary`);
+    if (!s) { this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style><div>Climate Manager indisponible.</div>`; return; }
+    const zones = this._zones();
+    const temps = zones.map((z) => {
+      const v = this._hass.states[`sensor.climate_manager_${z.slug}_zone_temperature`]?.state;
+      return `<div class="cmd-fact"><b>${cmDeg(v)}</b><span>${cmEsc(z.name)}</span></div>`;
+    }).join("");
+    let foot;
+    if (!s.mode) foot = `<ha-icon icon="mdi:hand-back-right-outline"></ha-icon><span>Climate Manager ne pilote rien</span>`;
+    else {
+      const attrs = zones.map((z) => this._hass.states[`sensor.climate_manager_${z.slug}_state`]?.attributes || {});
+      const ret = attrs.map((x) => x.on_return).filter(Boolean);
+      const nxt = attrs.map((x) => x.next_change).filter((x) => x?.at).sort((x, y) => new Date(x.at) - new Date(y.at))[0];
+      if (ret.length) foot = `<ha-icon icon="mdi:home-export-outline"></ha-icon><span>Maison vide · à ton retour <b>${cmDeg(Math.max(...ret.map((x) => x.target)), 0)}</b></span>`;
+      else if (nxt) foot = `<ha-icon icon="mdi:clock-outline"></ha-icon><span>${cmTime(nxt.at)} · <b>${nxt.name ? `${cmEsc(nxt.name)} ${cmDeg(nxt.target, 0)}` : "fin du programme"}</b></span>`;
+      else foot = `<ha-icon icon="mdi:calendar-check-outline"></ha-icon><span>Mode ${cmEsc(s.mode.name)}</span>`;
+    }
+    this._card.innerHTML = `<style>${CM_DAILY_STYLES}</style>
+      <div class="cmd-top"><div class="cmd-ico"><ha-icon icon="${s.icon}"></ha-icon></div>
+        <div class="cmd-name"><b>${cmEsc(s.title)}</b><span>${cmEsc(s.sub)}</span></div>
+        <ha-icon class="cmd-chev" icon="mdi:chevron-right"></ha-icon></div>
+      ${temps ? `<div class="cmd-facts cmd-facts-${Math.min(zones.length, 4)}">${temps}</div>` : ""}
+      <div class="cmd-next">${foot}</div>`;
+  }
+  _onClick() { cmNavigate(this._config.path || "/ma-maison/clims"); }
 }
 
 /** An equipment: what it does, what Climate Manager wants from it. */
@@ -3986,6 +4134,7 @@ class ClimateManagerEquipmentCard extends ClimateManagerDailyCard {
 
 customElements.define("climate-manager-zone-card", ClimateManagerZoneCard);
 customElements.define("climate-manager-house-card", ClimateManagerHouseCard);
+customElements.define("climate-manager-summary-card", ClimateManagerSummaryCard);
 customElements.define("climate-manager-equipment-card", ClimateManagerEquipmentCard);
 
 customElements.define("climate-manager-card", DelormejClimateCard);
@@ -4024,7 +4173,8 @@ window.customCards = window.customCards || [];
     description: "Mode de fonctionnement de la maison (chaudière, climatisation…).",
   },
   { type: "climate-manager-zone-card", name: "Climate Manager — Pièce", description: "Température, programme en cours et suivant, consigne, Auto / Forcer / Couper." },
-  { type: "climate-manager-house-card", name: "Climate Manager — Maison", description: "Avec quoi on chauffe ou refroidit (mode de la maison)." },
+  { type: "climate-manager-house-card", name: "Climate Manager — Maison", description: "Qui chauffe ou refroidit la maison, et ce qui se passe vraiment." },
+  { type: "climate-manager-summary-card", name: "Climate Manager — Accueil", description: "Une ligne pour l'accueil : qui chauffe, les températures, la suite." },
   { type: "climate-manager-equipment-card", name: "Climate Manager — Équipement", description: "Ce que fait un équipement et ce que Climate Manager en attend." },
   {
     type: "climate-manager-sessions-card",
