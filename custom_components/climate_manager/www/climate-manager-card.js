@@ -3716,7 +3716,7 @@ const CM_DAILY_STYLES = `
     font-weight: 600; font-size: 12px; color: var(--primary-text-color); cursor: pointer; }
   .cmd-note { margin-top: 12px; background: var(--cmd-bg); border-radius: 12px; padding: 10px 12px; font-size: 13px; display: flex; gap: 10px; align-items: center; }
   .cmd-note > ha-icon { --mdc-icon-size: 18px; color: var(--cmd-muted); flex: none; }
-  .cmd-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-top: 12px; }
+  .cmd-facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
   .cmd-fact { background: var(--cmd-bg); border-radius: 12px; padding: 8px 11px; min-width: 0; }
   .cmd-fact b { display: block; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cmd-fact span { font-size: 11px; color: var(--cmd-muted); }
@@ -3729,6 +3729,12 @@ const CM_DAILY_STYLES = `
   .cmd-house .cmd-top { flex: none; }
   .cmd-house .cmd-seg { max-width: none; flex: 1; min-width: 280px; }
   .cmd-house-line { width: 100%; font-size: 13px; color: var(--cmd-muted); }
+  .cmd-ctl .cmd-seg { flex: 1 1 220px; max-width: none; }
+  @media (max-width: 600px) {
+    .cmd-facts { grid-template-columns: repeat(2, 1fr); }
+    .cmd-house .cmd-seg button small { display: none; }
+    .cmd-house .cmd-seg button { padding: 10px 6px; }
+  }
   .cmd-err { margin-top: 10px; font-size: 12px; color: var(--error-color, #db4437); }
 `;
 
@@ -3782,7 +3788,7 @@ class ClimateManagerZoneCard extends ClimateManagerDailyCard {
     const control = a.control || "auto";
     const running = st.state === "running";
     const sources = (a.sources || []).filter((s) => s.in_mode);
-    const target = sess?.target ?? a.target_temperature ?? (prog && prog.mode === dir ? prog.target : null);
+    const target = sess?.target ?? a.target_temperature ?? (prog && (!dir || prog.mode === dir) ? prog.target : null);
     return { st, a, dir, prog, sess, control, running, sources, target };
   }
 
@@ -3921,7 +3927,7 @@ class ClimateManagerEquipmentCard extends ClimateManagerDailyCard {
   }
   _fmt(entityId) {
     const s = this._hass.states[entityId];
-    if (!s) return "—";
+    if (!s || s.state === "unknown" || s.state === "unavailable") return "—";
     if (this._hass.formatEntityState) return this._hass.formatEntityState(s);
     return `${s.state}${s.attributes.unit_of_measurement ? ` ${s.attributes.unit_of_measurement}` : ""}`;
   }
@@ -3943,7 +3949,8 @@ class ClimateManagerEquipmentCard extends ClimateManagerDailyCard {
     } else if (boiler) {
       const t = eq.thermostat || {};
       badge = t.observe ? `<span class="cmd-badge">Observation</span>` : `<span class="cmd-badge run">Piloté</span>`;
-      const why = t.reason ? ` (${cmEsc(t.reason)})` : "";
+      const REASONS = { floor: "aucun créneau", holiday: "vacances", manual: "réglée à la main", standby: "en veille" };
+      const why = t.reason ? ` (${cmEsc(REASONS[t.reason] || t.reason)})` : "";
       note = t.observe
         ? ["mdi:eye-outline", `Climate Manager voudrait <b>${cmDeg(t.wanted)}</b>${why} · le thermostat suit son propre programme : <b>${cmDeg(t.target_in_force ?? t.setpoint)}</b>`]
         : ["mdi:thermostat", `Consigne <b>${cmDeg(t.wanted)}</b>${why} · pièce ${cmDeg(t.room)}`];
