@@ -499,6 +499,7 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             target_in_force=self._float_state(eq.target_entity),
             demand=demand,
             demand_name=demand_name,
+            house=self._thermostat_house(eq),
         )
         prev = (mem.last_wanted, mem.last_reason)
         plan = _THERMOSTAT.plan(
@@ -514,6 +515,8 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
                 "reason": plan.reason,
                 "setpoint": reading.setpoint,
                 "room": reading.room,
+                "house": reading.house,
+                "target": plan.target,
                 "written": any(c.service == "set_value" and c.data.get("entity_id") == eq.entity for c in plan.commands),
                 "observe": settings.observe,
             }
@@ -528,6 +531,19 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
         for cmd in plan.commands:
             _LOGGER.info("Thermostat %s: %s.%s %s", eq.name, cmd.domain, cmd.service, cmd.data)
             await self._apply_command(cmd)
+
+    def _thermostat_house(self, eq: Equipment) -> float | None:
+        """House temperature for the boiler: mean of the averages of the zones
+        it heats (every valid sensor of each zone, see ``_effective_room_temp``)."""
+        values = []
+        for zone_id in eq.zones:
+            zone = self._zones.get(zone_id)
+            if zone is None or not getattr(getattr(zone, "config", None), "temperature_sensors", None):
+                continue
+            avg = self._effective_room_temp(zone, self._read_sensor_temps(zone))
+            if avg is not None:
+                values.append(avg)
+        return round(sum(values) / len(values), 2) if values else None
 
     def _thermostat_demand(self, eq: Equipment) -> tuple[float | None, str | None]:
         """The boiler follows the zones' heating profiles (winter bank), the
@@ -578,6 +594,9 @@ class DelormejClimateCoordinator(DataUpdateCoordinator):
             "settings": settings.to_dict(),
             "role": self._thermostat_role(eq),
             "wanted": plan.wanted if plan else None,
+            "target": plan.target if plan else None,
+            "correction": plan.correction if plan else None,
+            "house": self._thermostat_house(eq),
             "reason": plan.reason if plan else None,
             "blocked_until_ts": plan.blocked_until_ts if plan else None,
             "setpoint": self._float_state(eq.entity),

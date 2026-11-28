@@ -15,6 +15,14 @@ rises is information only). A long absence switches the thermostat to its
 holiday mode. A setpoint changed by hand on the thermostat is respected for a
 while.
 
+The thermostat only sees its own sensor (in the entrance), not the house.
+The setpoint written is therefore corrected by the gap between that sensor
+and the house temperature (mean of the zones it heats): when the rooms are
+warmer than the entrance, the thermostat is asked less, so the house
+average, not the entrance, decides when the burner stops. The correction is
+bounded (``MAX_CORRECTION``) and has a dead band of one step, so the
+thermostat is not rewritten for every tenth of a degree.
+
 The thermostat keeps its setpoint in non-volatile memory: writes are rare
 (only on change, at least ``min_write_interval_min`` apart).
 """
@@ -42,6 +50,7 @@ RISE_MIN_HOURS = 0.25
 MANUAL_HOLD_HOURS = 3.0
 WRITE_ECHO_SECONDS = 180  # the thermostat reports a written value a bit later
 SETPOINT_STEP = 0.5
+MAX_CORRECTION = 1.5  # °C the written setpoint may move away from the comfort target
 
 
 @dataclass
@@ -98,6 +107,7 @@ class ThermostatReading:
     target_in_force: float | None = None  # what the thermostat aims now (programme, override...)
     demand: float | None = None  # target of the zone heating profile in force, None: none
     demand_name: str | None = None  # that profile's name
+    house: float | None = None  # mean temperature of the zones the boiler heats
 
 
 @dataclass
@@ -139,6 +149,8 @@ class ThermostatPlan:
     take_over: bool = False  # the time programme must be switched off
     holiday: bool = False
     blocked_until_ts: float | None = None  # write wanted but too soon after the previous one
+    target: float | None = None  # setpoint for the thermostat: ``wanted`` corrected by the house
+    correction: float = 0.0  # target - wanted
 
 
 class ThermostatDriver(Driver):
@@ -189,6 +201,11 @@ class ThermostatDriver(Driver):
 
         plan = ThermostatPlan(wanted=wanted, reason=reason, holiday=holiday)
         mem.last_wanted, mem.last_reason = wanted, reason
+        raw = wanted
+        if reason not in (MANUAL, HOLIDAY):
+            raw = wanted + self.correction(r)
+        plan.target = round_half(raw)
+        plan.correction = round(plan.target - wanted, 1)
         if s.observe:
             return plan
 
@@ -216,16 +233,27 @@ class ThermostatDriver(Driver):
             # Not read yet (HA or ebusd just restarted): never write blind,
             # the zones may not be loaded either (a passing « floor »).
             return plan
-        if r.setpoint is not None and abs(r.setpoint - wanted) < SETPOINT_STEP:
+        # Dead band: the setpoint held stays while it is within one step of
+        # the exact corrected value (no rewrite for a tenth of a degree).
+        if abs(r.setpoint - raw) < SETPOINT_STEP:
             return plan
+        target = plan.target
         if mem.last_write_ts is not None:
             ready = mem.last_write_ts + s.min_write_interval_min * 60
             if r.now_ts < ready:
                 plan.blocked_until_ts = ready
                 return plan
-        cmds.append(self._set_value(e.setpoint, wanted))
-        mem.last_write_ts, mem.last_written = r.now_ts, wanted
+        cmds.append(self._set_value(e.setpoint, target))
+        mem.last_write_ts, mem.last_written = r.now_ts, target
         return plan
+
+    @staticmethod
+    def correction(r: ThermostatReading) -> float:
+        """Thermostat sensor minus house temperature, bounded. Positive: the
+        entrance is warmer than the rooms, the thermostat must aim higher."""
+        if r.room is None or r.house is None:
+            return 0.0
+        return max(-MAX_CORRECTION, min(MAX_CORRECTION, r.room - r.house))
 
     def release(self, entity: str | None, state: str | None) -> list[Command]:
         """Give the house back to the thermostat's own time programme."""
@@ -277,6 +305,11 @@ class ThermostatDriver(Driver):
         """Measure how fast the house warms up when the target jumps up."""
         target = r.target_in_force
         room = r.room
+        if target is not None and r.house is not None and room is not None:
+            # The thermostat aims a corrected setpoint: measure the house
+            # against the comfort target, not the entrance.
+            target = target - ThermostatDriver.correction(r)
+            room = r.house
         if target is None or room is None:
             return
         if mem.rise_start_ts is None:

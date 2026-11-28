@@ -4268,7 +4268,8 @@ class ClimateManagerEquipmentCard extends ClimateManagerDailyCard {
       const why = t.reason ? ` (${cmEsc(REASONS[t.reason] || t.reason)})` : "";
       note = t.observe
         ? ["mdi:eye-outline", `Climate Manager voudrait <b>${cmDeg(t.wanted)}</b>${why} · le thermostat suit son propre programme : <b>${cmDeg(t.target_in_force ?? t.setpoint)}</b>`]
-        : ["mdi:thermostat", `Consigne <b>${cmDeg(t.wanted)}</b>${why} · pièce ${cmDeg(t.room)}`];
+        : ["mdi:thermostat", `Consigne <b>${cmDeg(t.wanted)}</b>${why} · maison ${cmDeg(t.house ?? t.room)}`
+          + (t.target != null && t.target !== t.wanted ? ` · thermostat réglé à ${cmDeg(t.target)} (son capteur, dans l'entrée : ${cmDeg(t.room)})` : "")];
     } else {
       const clim = eq.entity ? this._hass.states[eq.entity] : null;
       const on = clim && clim.state !== "off" && clim.state !== "unavailable";

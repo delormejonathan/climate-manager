@@ -173,3 +173,42 @@ def test_nothing_written_while_the_setpoint_is_unknown():
     assert m.last_write_ts is None
     p = d.plan(E, s, reading(hm(14), setpoint=21.0, demand=18.0), m)
     assert any(c.service == "set_value" and c.data["value"] == 18.0 for c in p.commands)
+
+
+def house_reading(now_min, *, room, house, setpoint, ts=T0):
+    r = reading(now_min, room=room, setpoint=setpoint, ts=ts)
+    return ThermostatReading(**{**r.__dict__, "house": house})
+
+
+def test_rooms_warmer_than_the_entrance_lower_the_setpoint():
+    # Saturday 9:30: entrance thermostat 22.0, rooms 23.0 for 21 wanted.
+    d, s, m = ThermostatDriver(), live(), ThermostatMemory()
+    p = d.plan(E, s, house_reading(hm(9, 30), room=22.0, house=23.0, setpoint=21.0), m)
+    assert (p.wanted, p.target, p.correction) == (21.0, 20.0, -1.0)
+    assert p.commands[-1].data == {"entity_id": "number.sp", "value": 20.0}
+
+
+def test_cold_rooms_raise_the_setpoint_within_bounds():
+    d, s, m = ThermostatDriver(), live(), ThermostatMemory()
+    p = d.plan(E, s, house_reading(hm(9), room=21.0, house=18.0, setpoint=21.0), m)
+    assert p.target == 22.5  # +1.5 at most
+
+
+def test_small_gap_inside_the_dead_band_writes_nothing():
+    d, s, m = ThermostatDriver(), live(), ThermostatMemory()
+    p = d.plan(E, s, house_reading(hm(9), room=20.2, house=20.5, setpoint=21.0), m)
+    assert p.commands == []
+
+
+def test_no_house_temperature_keeps_the_plain_target():
+    d, s, m = ThermostatDriver(), live(), ThermostatMemory()
+    p = d.plan(E, s, house_reading(hm(9), room=20.0, house=None, setpoint=20.0), m)
+    assert p.target == 21.0
+    assert p.commands[-1].data["value"] == 21.0
+
+
+def test_manual_setpoint_is_not_corrected():
+    d, s, m = ThermostatDriver(), live(), ThermostatMemory()
+    d.plan(E, s, house_reading(hm(9), room=21.0, house=21.0, setpoint=21.0, ts=T0), m)
+    p = d.plan(E, s, house_reading(hm(9, 30), room=21.0, house=23.0, setpoint=23.0, ts=T0 + 1800), m)
+    assert (p.reason, p.target, p.commands) == (MANUAL, 23.0, [])
